@@ -1,0 +1,95 @@
+service_name: llm-gateway
+
+# 留空表示开发模式不校验调用方；生产环境请设置 GATEWAY_API_KEY。
+api_keys:
+  - ${GATEWAY_API_KEY:-}
+
+database_url: data/gateway.db
+structured_output_retries: 1
+
+retry:
+  max_retries_per_route: 3
+  base_delay_seconds: 0.25
+  max_delay_seconds: 4
+  retry_statuses: [408, 409, 429, 500, 502, 503, 504]
+
+circuit_breaker:
+  failure_threshold: 5
+  cooldown_seconds: 30
+
+rate_limit:
+  enabled: true
+  requests_per_minute: 60
+  burst: 10
+
+# 默认关闭，避免在未评估隐私策略前保存模型正文。
+stream_checkpoint:
+  enabled: false
+  flush_interval_seconds: 1
+  max_chars: 200000
+
+providers:
+  openai:
+    base_url: https://api.openai.com
+    api_key: ${OPENAI_API_KEY}
+    timeout_seconds: 120
+  openai-backup:
+    base_url: ${OPENAI_BACKUP_BASE_URL:-https://api.backup-openai.example}
+    api_key: ${OPENAI_BACKUP_API_KEY}
+    timeout_seconds: 120
+  anthropic:
+    base_url: https://api.anthropic.com
+    api_key: ${ANTHROPIC_API_KEY}
+    timeout_seconds: 120
+
+models:
+  smart:
+    strategy: priority
+    routes:
+      - provider: openai
+        model: gpt-5.2
+        api: "chat,responses"
+      - provider: openai-backup
+        model: gpt-5-mini
+        api: "responses"
+
+  fast:
+    strategy: weighted_round_robin
+    routes:
+      - provider: openai
+        model: gpt-5-mini
+        weight: 3
+        api: "chat,responses"
+      - provider: openai-backup
+        model: gpt-5-mini
+        weight: 1
+        api: "chat,responses"
+
+  claude-fast:
+    strategy: priority
+    routes:
+      - provider: anthropic
+        model: claude-sonnet-4-5
+        api: "messages"
+
+  universal:
+    strategy: priority
+    routes:
+      - provider: openai
+        model: gpt-5.2
+        api: all
+
+# 单位：美元 / 1M tokens。请按供应商当前价格自行维护。
+pricing:
+  gpt-5.2:
+    input_per_million: 1.75
+    output_per_million: 14
+    cached_input_per_million: 0.175
+  gpt-5-mini:
+    input_per_million: 0.25
+    output_per_million: 2
+    cached_input_per_million: 0.025
+  claude-sonnet-4-5:
+    input_per_million: 3
+    output_per_million: 15
+    cached_input_per_million: 0.30

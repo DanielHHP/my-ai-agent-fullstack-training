@@ -24,8 +24,25 @@
 /logs/
 *.log
 
-# Local Python tool caches, mirrored here so the project is portable on its own.
+# Local Python tool caches and bytecode, mirrored here so the project is portable on its own.
 /.venv/
-/__pycache__/
+__pycache__/
+*.py[cod]
 /.pytest_cache/
 /.ruff_cache/
+
+# Test coverage output.
+/.coverage
+/.coverage.*
+/htmlcov/
+
+# Packaging artifacts.
+/build/
+/dist/
+/*.egg-info/
+
+# macOS and editor/IDE local files.
+.DS_Store
+**/.DS_Store
+/.idea/
+/.vscode/
