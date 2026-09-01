@@ -14,9 +14,9 @@
 | --- | --- | --- |
 | D1 | 是否保留 Chat Completions | 保留，并支持 `chat`、`responses`、`messages`、`all` 协议能力 |
 | D2 | SSE 对外格式 | 沿用参考项目的原始 SSE 透明转发 |
-| D3 | 重试次数语义 | 首次请求 + 最多 3 次重试，总计最多 4 次请求 |
+| D3 | 重试次数语义 | 每条路由最多 3 次重试，fallback 后重新计数 |
 | D4 | 跨协议 fallback | 不允许 |
-| D5 | 限流维度 | 按公开模型别名独立限流 |
+| D5 | 限流维度 | 按调用方限流，仅模型调用端点参与 |
 | D6 | Anthropic 结构化输出 | 系统提示注入 Schema + 本地校验修复 |
 | D7 | Anthropic Prompt 位置 | 渲染后写入 `system` 字段 |
 | D8 | `/v1/models` 鉴权 | 沿用参考项目，要求 Bearer Key 鉴权 |
@@ -40,7 +40,9 @@
 
 - 对外 API 面同时支持 Chat Completions、Responses 和 Messages。
 - 配置和路由过滤需要支持三种协议能力。
-- `all` 表示供应商自身支持的协议能力；OpenAI 的 `all` 指 `chat` 和 `responses`，Anthropic 的 `all` 当前指 `messages`。
+- `api` 使用逗号分隔字符串。
+- `all` 是保留字，只能单独出现，字面表示 `chat + responses + messages`。
+- 不做供应商能力推断，完全信任 `routes[].api`。
 
 ## 3. D2：SSE 处理方式
 
@@ -63,9 +65,11 @@
 
 结论：
 
-- “最多 3 次重试”表示首次请求之后最多再发起 3 次重试。
-- 单次模型调用最多发生 4 次上游请求。
-- 配置字段建议使用 `retry.max_retries: 3`。
+- “最多 3 次重试”表示每条路由最多重试 3 次。
+- 每路由最多发生 4 次上游请求。
+- fallback 到下一候选路由后，重试计数重新计算。
+- 不设置单次网关请求的全局总尝试上限。
+- 配置字段使用 `retry.max_retries_per_route: 3`。
 - 重试间隔采用指数退避，并保留随机抖动。
 
 ## 5. D4：不允许跨协议 fallback
@@ -77,16 +81,16 @@
 - 不在 Chat Completions、Responses 和 Messages 之间跨协议切换模型。
 - 首选供应商失败后，只允许在同协议的供应商之间 fallback。
 
-## 6. D5：按模型独立限流
+## 6. D5：按调用方限流
 
 结论：
 
-- 限流器以公开模型别名为 key。
-- 每个模型使用独立令牌桶，互不影响。
-- 某个模型超限只影响该模型，不影响其他模型。
-- 超限返回 HTTP `429` 和 `Retry-After`。
-
-后续如需要按调用方隔离，可在不破坏接口的前提下扩展为“模型 + API Key 指纹”维度。
+- 限流器以调用方身份为 key。
+- 只对 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 进行限流。
+- Prompt、模型列表和管理接口不限流。
+- 配置了 API Key 时使用 API Key 指纹，未配置 API Key 的开发模式使用客户端 IP 指纹。
+- 配置使用单层 `rate_limit: {enabled, requests_per_minute, burst}`。
+- 超限返回 HTTP `429`、`rate_limit_exceeded` 和 `Retry-After`。
 
 ## 7. D6：Anthropic 结构化输出
 
@@ -142,3 +146,38 @@ tool schema 仅作为后续可选扩展，不在本次实现范围内。
 - `/v1/models` 要求 Bearer API Key 鉴权。
 - 行为与参考项目保持一致。
 - `/healthz` 和 `/readyz` 继续不鉴权。
+
+## 10. 细化决策速查
+
+以下决策在阶段 0 追问过程中确认：
+
+| 主题 | 结论 |
+| --- | --- |
+| 非流式响应 | 各入口返回协议原生结构 |
+| 模型别名路由 | 允许同一别名聚合多协议，入口协议过滤候选路由 |
+| `api` 配置 | 逗号分隔字符串；`all` 保留字且只能单独出现 |
+| Provider 能力 | 不配置协议能力或 `vendor`，完全信任 `routes[].api` |
+| 跨协议 fallback | 不允许 |
+| 普通 4xx | 不重试，但允许同协议 fallback |
+| 4xx 与熔断器 | 4xx 计入熔断器失败 |
+| 加权轮询 key | 只按模型别名维护 |
+| TTFT | 首个内容增量事件 |
+| Anthropic `system` | 支持字符串和文本块数组；Prompt 渲染结果放在开头 |
+| OpenAI Responses `input` | 支持字符串和消息数组，其他结构透传 |
+| 未知字段 | 模型调用入口允许透传；Prompt 和管理接口严格校验 |
+| 失败调用记录 | 所有路由失败时仍记录 `status=error` |
+| 用量字段 | `cost_usd` 只含成功响应；失败 Token/成本用 `retry_*` |
+| `retries`/`fallbacks`/`repair_retries` | `retries` 只记录普通重试，`fallbacks` 记录跳过路由数，`repair_retries` 单独记录结构化修复 |
+| 原始 usage 细节 | 放入 `metadata`，不进入顶层账本字段 |
+| `/admin/usage` | 保持 `{"data": [...]}` 结构 |
+| 非模型端点限流 | 不限流，只鉴权 |
+| 限流身份 | API Key 指纹；开发模式未配置密钥时使用客户端 IP 指纹 |
+| 限流配置 | 单层 `enabled`、`requests_per_minute`、`burst`，默认 `true/60/10` |
+| Prompt 激活 | 新版本默认 `activate=true` |
+| 结构化修复 | `structured_output_retries` 默认 1，沿用参考项目重启路由循环 |
+| Anthropic `max_tokens` | 必填，缺失返回 `422` |
+| Anthropic `messages` | 必须非空 |
+| 上游鉴权头 | OpenAI 使用 Bearer，Anthropic 使用 `x-api-key` |
+| Provider 配置 | 沿用参考项目字段，不增加 `vendor` 或协议列表 |
+| 配置加载 | 沿用 `${ENV_VAR}` 和 `${ENV_VAR:-default}` 展开 |
+| 异常处理 | `GatewayError` 统一为 OpenAI 风格错误；参数校验错误转换为统一结构 |

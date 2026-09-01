@@ -10,7 +10,7 @@
 /Users/app_dev/code/ai_agent/ai_agent_training/ai-agent-fullstack-training/course_code/week01/1-7/llm-gateway
 ```
 
-参考项目本质上是一个 OpenAI-compatible 多供应商网关。其配置加载、错误封装、路由重试、结构化校验、Prompt 版本、用量账本均可复用；但当前需求新增了 Anthropic Messages API 适配器，并且“按模型独立限流、最多 3 次重试、TTFT”等要求需要调整，不应整目录复制。
+参考项目本质上是一个 OpenAI-compatible 多供应商网关。其配置加载、错误封装、路由重试、结构化校验、Prompt 版本、用量账本均可复用；但当前需求新增了 Anthropic Messages API 适配器，并且“调用方限流、按路由重试、TTFT”等要求需要调整，不应整目录复制。
 
 ## 2. 需求范围
 
@@ -28,24 +28,24 @@
 - 结构化输出
 - Prompt 模板版本管理
 - Token、延迟、TTFT 可观测性
-- 统一错误码、指数退避重试、按模型独立限流
+- 统一错误码、指数退避重试、按调用方限流
 
 ## 3. 参考项目复用判断
 
 | 参考模块 | 当前需求下的处理方式 |
 | --- | --- |
-| `app/config.py` | 基本复用，补充 `protocol`/`api` 能力声明、按模型限流配置 |
+| `app/config.py` | 基本复用，补充逗号分隔的 `api` 多协议能力声明 |
 | `app/schemas.py` | 基本复用，新增统一请求/响应模型与 Messages API 入参 |
 | `app/core/errors.py` | 基本复用，保持 OpenAI 风格统一错误对象 |
 | `app/core/security.py` | 基本复用，继续使用 `SecretStr` + `hmac.compare_digest` |
-| `app/core/rate_limit.py` | 需要重构，从全局限流改为按模型独立限流注册表 |
+| `app/core/rate_limit.py` | 沿用参考项目按调用方限流，仅接入模型调用端点 |
 | `app/services/upstream.py` | 保留通用 HTTP 客户端职责，路由函数不直接创建 httpx 请求 |
 | `app/services/router.py` | 复用路由、熔断、fallback 骨架，增加协议适配器选择 |
 | `app/services/gateway.py` | 复用编排思路，但把 OpenAI 专属协议逻辑抽到 adapter 层 |
 | `app/services/structured.py` | 复用 JSON 提取与 Schema 校验，补充 Anthropic 结构化策略 |
 | `app/services/prompts.py` | 基本复用，继续使用 Jinja2 Sandbox 与 StrictUndefined |
 | `app/services/usage.py` | 复用 SQLite 账本，扩展 TTFT 与 Anthropic usage 归一化 |
-| `tests/` | 复用 `MockTransport` 思路，新增适配器与按模型限流测试 |
+| `tests/` | 复用 `MockTransport` 思路，新增适配器与调用方限流测试 |
 
 新增的协议适配器建议独立组织：
 
@@ -68,11 +68,12 @@ app/services/adapters/
 阶段 0 已确认的决策包括：
 
 - 对外提供 `/v1/chat/completions`、`/v1/responses` 和 `/v1/messages`，内部复用统一 `GatewayService`。
-- 路由协议能力使用 `chat`、`responses`、`messages`、`all`，不再使用 `both`。
+- 路由协议能力使用逗号分隔字符串，支持 `chat`、`responses`、`messages` 和保留字 `all`，不再使用 `both`。
+- 同一模型别名可以聚合多协议路由，入口协议负责过滤候选路由。
 - SSE 沿用参考项目的透明转发方式，网关不强制改写为统一事件格式。
-- 重试语义为“首次请求 + 最多 3 次重试”，总计最多 4 次请求。
+- 每条路由最多 3 次重试；fallback 后重试计数重新计算；结构化修复沿用参考项目行为。
 - 不允许跨协议 fallback。
-- 按公开模型别名独立限流。
+- 按调用方限流，仅模型调用端点参与限流。
 - Anthropic 结构化输出采用系统提示注入 Schema + 本地校验修复。
 - Anthropic Prompt 渲染后写入 `system` 字段。
 - `/v1/models` 与模型调用一致，要求 Bearer Key 鉴权。
@@ -89,7 +90,7 @@ app/services/adapters/
 - 基础 FastAPI 生命周期
 - 环境变量 `${ENV_VAR}` 与 `${ENV_VAR:-default}` 展开
 - 启动时校验 `models` 引用的 `provider` 已声明
-- 每个模型路由声明 `protocol` 能力
+- 每个模型路由声明逗号分隔的 `api` 协议能力
 
 配置示意：
 
@@ -100,16 +101,16 @@ models:
     routes:
       - provider: openai
         model: gpt-5.2
-        api: all
+        api: "chat,responses"
       - provider: openai-backup
         model: gpt-5-mini
-        api: responses
+        api: "responses"
   claude-fast:
     strategy: priority
     routes:
       - provider: anthropic
         model: claude-sonnet-4-5
-        api: messages
+        api: "messages"
 ```
 
 验收：
@@ -167,7 +168,7 @@ class ProtocolAdapter:
 
 与当前需求强相关：
 
-- 重试最多 3 次，指数退避并加抖动；即首次请求加最多 3 次重试，总计最多 4 次请求。
+- 每条路由最多 3 次重试，指数退避并加抖动；fallback 后重新计算重试预算。
 - 普通 4xx 不重试。
 - 重试和 fallback 次数要能进入用量记录。
 - 继续保留参考项目中的进程内熔断器，但保持接口独立。
@@ -196,7 +197,7 @@ class ProtocolAdapter:
 
 验收：
 
-- 两种协议都能以 SSE 返回。
+- 三种协议都能以 SSE 返回。
 - 能记录 TTFT。
 - 断开后上游被取消。
 
@@ -252,9 +253,12 @@ id, version, name, description, role, content, is_active, created_at
 - TTFT
 - 重试次数
 - fallback 次数
+- 结构化修复次数
+- 失败尝试的输入、输出、缓存 Token 和成本
 - 公开模型、供应商、上游模型
 - 状态码与错误类型
 - 使用的 Prompt ID 与版本
+- 供应商原始 usage 细节放入 metadata
 
 adapter 负责将 OpenAI 和 Anthropic 的 usage 结构统一为：
 
@@ -276,7 +280,7 @@ cached_tokens
 
 - 统一错误封装。
 - Bearer API Key 鉴权。
-- 按模型独立限流，超限返回 `429`。
+- 按调用方限流，仅模型调用端点参与，超限返回 `429`。
 - `/admin/routes` 查看路由与熔断状态。
 - `/healthz`、`/readyz`。
 - `/v1/models` 返回公开模型别名，并要求 Bearer Key 鉴权。
@@ -287,10 +291,11 @@ cached_tokens
 - 模型路由与 fallback
 - 重试次数
 - 结构化输出修复
+- 失败尝试 Token/成本与 `repair_retries` 记录
 - Prompt 版本与渲染
 - SSE 流式、TTFT、断开取消
 - Anthropic usage 归一化
-- 按模型独立限流返回 429
+- 调用方限流返回 429
 - 统一错误对象
 
 测试统一使用 `httpx.MockTransport`，不消耗真实模型额度。
@@ -313,5 +318,5 @@ cached_tokens
 | M1：协议契约定稿 | 统一请求/响应/流式事件模型、错误模型、模型路由配置已确定 |
 | M2：双协议基础打通 | OpenAI Responses 与 Anthropic Messages 的非流式调用可用 |
 | M3：流式与结构化可用 | SSE 转发、TTFT、结构化输出校验与修复可用 |
-| M4：平台能力完整 | Prompt 版本、用量账本、按模型限流、管理接口可用 |
+| M4：平台能力完整 | Prompt 版本、用量账本、调用方限流、管理接口可用 |
 | M5：测试收敛 | 核心路径均有 MockTransport 测试，`pytest` 与 `ruff` 通过 |

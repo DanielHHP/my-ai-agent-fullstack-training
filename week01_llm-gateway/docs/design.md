@@ -1,27 +1,17 @@
-# 阶段 0 设计细化
+# 阶段 0 设计细化（已确认版）
 
 ## 1. 设计目标
 
-本文档细化 [task-breakdown.md](./task-breakdown.md) 中的阶段 0，目标是锁定后续实现所依赖的协议契约，包括：
-
-- 对外 API 面
-- 统一请求、响应、流式事件和 usage 数据模型
-- 协议适配器接口
-- 模型路由与配置模型
-- 结构化输出、Prompt 版本、可观测性、错误和限流的统一语义
-
-阶段 0 完成后，后续阶段不应再频繁修改跨模块接口。
+本文档是阶段 0 的最终设计基线，用于锁定后续实现所依赖的协议契约。所有内容均已经过设计决策确认。
 
 ## 2. 对外 API 面
-
-建议对外保留两个协议兼容入口：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/v1/chat/completions` | OpenAI Chat Completions 兼容入口 |
 | POST | `/v1/responses` | OpenAI Responses API 入口 |
 | POST | `/v1/messages` | Anthropic Messages API 入口 |
-| GET | `/v1/models` | 返回公开模型别名及其协议能力 |
+| GET | `/v1/models` | 返回公开模型别名及 `supported_protocols` |
 | POST | `/v1/prompts` | 创建 Prompt 新版本 |
 | GET | `/v1/prompts` | 查询 Prompt 版本 |
 | GET | `/v1/prompts/{id}` | 查询指定 Prompt 版本 |
@@ -31,19 +21,33 @@
 | GET | `/healthz` | 存活检查 |
 | GET | `/readyz` | 就绪检查 |
 
-`/v1/chat/completions`、`/v1/responses` 和 `/v1/messages` 应共享同一个内部 `GatewayService`，只在外层做协议入参校验和响应序列化。
+三个模型调用端点共享同一个内部 `GatewayService`，只在外层做协议入参校验和响应序列化。
 
-## 3. 统一数据模型
+非流式响应保持各协议原生结构。SSE 沿用参考项目透明转发。
 
-统一模型定义在 `app/schemas.py` 或独立的 `app/services/protocols.py` 中，用于适配器之间交换数据。
+## 3. 协议与适配器
 
-### 3.1 协议类型
+支持以下协议：
+
+- `chat_completions`
+- `openai_responses`
+- `anthropic_messages`
+
+适配器：
+
+- `OpenAIChatAdapter`
+- `OpenAIResponsesAdapter`
+- `AnthropicMessagesAdapter`
+
+## 4. 统一数据模型
+
+### 4.1 协议类型
 
 ```python
 ProtocolName = Literal["chat_completions", "openai_responses", "anthropic_messages"]
 ```
 
-### 3.2 统一消息
+### 4.2 统一消息
 
 ```python
 class UnifiedMessage(BaseModel):
@@ -55,7 +59,7 @@ class UnifiedMessage(BaseModel):
 
 初始阶段只完整支持文本消息。图片、工具调用和复杂内容块由适配器按能力透传或显式拒绝。
 
-### 3.3 统一请求
+### 4.3 统一请求
 
 ```python
 class UnifiedRequest(BaseModel):
@@ -71,9 +75,9 @@ class UnifiedRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 ```
 
-`model` 始终是网关公开别名。适配器负责将它替换为供应商真实模型 ID。
+`model` 始终是网关公开别名，适配器负责替换为供应商真实模型 ID。
 
-### 3.4 统一响应
+### 4.4 统一响应
 
 ```python
 class UnifiedResponse(BaseModel):
@@ -85,9 +89,7 @@ class UnifiedResponse(BaseModel):
     raw: dict[str, Any]
 ```
 
-`content_text` 是从响应中提取出的稳定文本字段，用于结构化校验、修复和 checkpoint。
-
-### 3.5 统一流式事件
+### 4.5 统一流式事件
 
 ```python
 class UnifiedStreamEvent(BaseModel):
@@ -98,24 +100,22 @@ class UnifiedStreamEvent(BaseModel):
     raw: dict[str, Any] | None = None
 ```
 
-适配器把 OpenAI 和 Anthropic 的流式事件归一化为上述事件，用于内部处理。对下游仍透明转发上游原始 SSE 数据块，不强制改写为统一事件格式。
+该事件仅用于内部处理。对下游仍透明转发上游原始 SSE 数据块。
 
-### 3.6 统一 usage
+### 4.6 统一 usage
+
+顶层字段只保留跨协议稳定字段：
 
 ```python
 class NormalizedUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
-    cached_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
-    token_details: dict[str, int] = Field(default_factory=dict)
+    cached_tokens: int = 0
 ```
 
-顶层字段是跨协议稳定字段，`token_details` 保留供应商特有的分类统计。
+供应商特有的 usage 细节放入 `UsageEvent.metadata`，不进入顶层账本字段。
 
-## 4. 协议适配器接口
-
-新增 `app/services/adapters/`，定义统一接口：
+## 5. 协议适配器接口
 
 ```python
 class ProtocolAdapter(Protocol):
@@ -161,26 +161,49 @@ class UpstreamRequest(BaseModel):
     timeout: httpx.Timeout
 ```
 
-需要实现三个适配器：
+上游鉴权头由适配器处理：
 
-- `OpenAIChatAdapter`
-- `OpenAIResponsesAdapter`
-- `AnthropicMessagesAdapter`
+- OpenAI：`Authorization: Bearer <api_key>`
+- Anthropic：`x-api-key: <api_key>`
 
-路由函数和 `GatewayService` 不直接创建 httpx 请求，只消费 `UpstreamRequest`。
+## 6. 配置模型
 
-## 5. 模型路由与配置
+### 6.1 Provider
 
-每个模型别名通过 `routes` 声明可用的供应商、上游模型和协议能力。同一条路由链按请求入口协议过滤，不跨协议 fallback。
+沿用参考项目字段，不增加 `vendor` 或协议能力声明：
+
+```python
+class ProviderConfig(BaseModel):
+    base_url: str
+    api_key: SecretStr = SecretStr("")
+    enabled: bool = True
+    timeout_seconds: float = 120
+    connect_timeout_seconds: float = 10
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+```
+
+### 6.2 路由能力
+
+`api` 是逗号分隔字符串，支持：
+
+```text
+chat
+responses
+messages
+all
+```
+
+`all` 是保留字，只能单独出现，字面表示 `chat + responses + messages`。配置不做供应商能力推断，完全信任路由声明。
 
 ```yaml
 providers:
   openai:
-    protocol: openai_responses
     base_url: https://api.openai.com
     api_key: ${OPENAI_API_KEY}
+  openai-backup:
+    base_url: https://api.backup-openai.example
+    api_key: ${OPENAI_BACKUP_API_KEY}
   anthropic:
-    protocol: anthropic_messages
     base_url: https://api.anthropic.com
     api_key: ${ANTHROPIC_API_KEY}
 
@@ -190,58 +213,110 @@ models:
     routes:
       - provider: openai
         model: gpt-5.2
-        api: all
+        api: "chat,responses"
       - provider: openai-backup
         model: gpt-5-mini
-        api: responses
+        api: "responses"
   claude-fast:
     strategy: priority
     routes:
       - provider: anthropic
         model: claude-sonnet-4-5
-        api: messages
+        api: "messages"
 ```
 
-配置校验规则：
+配置校验：
 
 - `models.<alias>.routes[].provider` 必须存在于 `providers`。
-- `api` 取值只允许 `chat`、`responses`、`messages`、`all`，不再使用 `both`。
-- `all` 表示该供应商自身支持的协议能力；例如 OpenAI 供应商的 `all` 指 `chat` 和 `responses`，Anthropic 供应商的 `all` 指 `messages`。
-- `strategy` 支持 `priority` 和 `weighted_round_robin`。
-- `weighted_round_robin` 只在相同协议的路由中轮询。
+- `api` 字符串必须能解析为合法协议集合。
+- `all` 不能与其他协议值组合。
+- 不校验供应商是否真的支持声明的协议。
 
-`ModelRouter.candidates(model, protocol)` 返回按策略排序后的 `RouteTarget` 列表，并负责熔断状态过滤和协议能力过滤。
+## 7. 模型路由
 
-## 6. 非流式调用流程
+- 同一公开模型别名可以聚合多协议路由。
+- `ModelRouter.candidates(model, protocol)` 按入口协议过滤候选路由。
+- 不允许跨协议 fallback。
+- 同协议候选路由可以 fallback。
+- `priority` 按配置顺序选择。
+- `weighted_round_robin` 的计数器按模型别名维护，不区分入口协议。
 
-1. 根据入口解析 `protocol`。
-2. 校验 `model` 是否存在，且协议与入口匹配。
-3. 若包含 `prompt_ref`，渲染 Prompt 并合并到统一请求。
-4. 应用结构化输出策略。
-5. 使用 `ModelRouter` 获取候选路由。
-6. 由 `ProtocolAdapter.build_request` 构造 `UpstreamRequest`。
-7. `UpstreamClient.request_json` 执行 HTTP 调用。
-8. 网络错误、超时和可重试状态码按退避策略重试。
-9. 当前路由失败时，在同协议候选路由中 fallback。
-10. 成功后由 adapter 解析为 `UnifiedResponse`。
-11. 结构化输出需要时，本地 `jsonschema` 校验并修复重试。
-12. 记录 usage、latency、retries、fallbacks。
+如果模型别名存在，但没有支持当前入口协议的路由：
 
-## 7. 流式调用流程
+```json
+{
+  "error": {
+    "message": "Model does not support the requested protocol",
+    "type": "invalid_request_error",
+    "param": "model",
+    "code": "protocol_not_supported"
+  }
+}
+```
 
-1. 使用 `UpstreamClient.open_stream` 打开上游 SSE。
-2. 适配器逐行解析 `UnifiedStreamEvent`。
-3. 检测客户端断开，断开时取消上游读取并记录为 `cancelled`。
-4. 首次出现内容增量时记录 TTFT。
-5. 向下游发送内容。
-6. 已发送内容后不切换模型；失败时发送错误事件和结束标记。
-7. 流结束后记录 usage 和延迟。
+HTTP 状态码为 `422`。
 
-TTFT 定义为“首个内容增量事件”出现的时间，而不是首个 HTTP 字节到达的时间。
+`/v1/models` 返回的 `supported_protocols` 是所有候选路由协议能力展开后的并集：
 
-SSE 对外采用参考项目的透明转发方式：下游收到的 `data:` 事件保持上游协议原生格式。适配器只在内部解析事件，用于提取内容增量、usage、TTFT 和 checkpoint，不强制改写下游事件格式。
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "smart",
+      "object": "model",
+      "created": 0,
+      "owned_by": "llm-gateway",
+      "supported_protocols": ["chat", "responses"]
+    }
+  ]
+}
+```
 
-## 8. 结构化输出
+## 8. 重试、fallback 与熔断
+
+重试语义：
+
+- 每条路由最多重试 3 次，即每路由最多 4 次上游请求。
+- fallback 到下一路由后，重试计数重新计算。
+- 结构化修复沿用参考项目行为，重新进入候选路由循环。
+- 不设置单次网关请求的全局总尝试上限。
+
+配置字段：
+
+```yaml
+retry:
+  max_retries_per_route: 3
+  base_delay_seconds: 0.25
+  max_delay_seconds: 4
+  retry_statuses: [408, 409, 429, 500, 502, 503, 504]
+```
+
+退避采用指数退避，并加 `0.75~1.25` 随机抖动。
+
+- 网络错误和超时可重试。
+- 普通 4xx 不重试，但允许继续同协议 fallback。
+- 4xx 也计入熔断器失败。
+
+熔断器默认参数：
+
+```yaml
+circuit_breaker:
+  failure_threshold: 5
+  cooldown_seconds: 30
+```
+
+## 9. 流式输出
+
+- 使用 `UpstreamClient.open_stream` 打开上游 SSE。
+- 下游透明转发上游原始 SSE 数据块。
+- 适配器只在内部解析事件，用于提取内容增量、usage、TTFT 和 checkpoint。
+- TTFT 定义为第一个内容增量事件出现的时间。
+- 客户端断开时取消上游请求，并记录为 `cancelled`。
+- 已发送内容后不切换模型；失败时发送错误事件和结束标记。
+- 流式 checkpoint 保留，默认关闭。
+
+## 10. 结构化输出
 
 统一结构化输出规格：
 
@@ -255,14 +330,15 @@ class StructuredOutputSpec(BaseModel):
 处理规则：
 
 - OpenAI Responses：优先使用原生 `text.format` 传入 JSON Schema。
-- Anthropic Messages：初始阶段通过系统提示注入 Schema 和“仅返回 JSON”约束，再由本地 `jsonschema` 二次校验。
-- 当前阶段明确不升级 Anthropic tool schema；tool schema 仅作为后续可选扩展，不在本次实现范围内。
+- OpenAI Chat Completions：使用原生 `response_format`。
+- Anthropic Messages：当前阶段采用系统提示注入 Schema + “仅返回合法 JSON”，本地 `jsonschema` 校验修复。
+- 当前阶段不升级 Anthropic tool schema。
 - 所有模型输出都不可信，必须本地解析和校验。
 - 支持提取 Markdown code fence 中的 JSON。
-- 校验失败后构造修复消息重试，重试次数由 `structured_output_retries` 控制。
-- 流式输出一旦开始，不进行无损结构化修复；严格业务协议应使用非流式接口。
+- 结构化修复重试轮数由 `structured_output_retries` 控制，默认值为 1。
+- 流式输出一旦开始，不进行无损结构化修复。
 
-## 9. Prompt 版本管理
+## 11. Prompt 版本管理
 
 统一 Prompt 引用：
 
@@ -278,15 +354,17 @@ class PromptReference(BaseModel):
 
 - 未指定 `version` 时使用当前激活版本。
 - 指定 `version` 时使用精确版本。
+- 创建新版本默认 `activate=true`。
 - 渲染使用 Jinja2 `SandboxedEnvironment` 与 `StrictUndefined`。
 
-不同协议的插入位置：
+插入规则：
 
-- OpenAI Responses：系统 Prompt 写入 `instructions`。
-- Anthropic Messages：系统 Prompt 写入 `system` 字段。
-- 如果仍保留 Chat Completions 兼容入口：按 `prepend`/`append` 插入 `messages`。
+- OpenAI Responses：系统 Prompt 写入 `instructions`，已有内容放在渲染结果之后。
+- Anthropic Messages：系统 Prompt 写入 `system` 字段，渲染结果放在已有内容之前。
+- Anthropic `system` 支持字符串和文本内容块数组；数组形式下将渲染结果作为新的 `{"type":"text","text":"..."}` 块插入开头。
+- Chat Completions：按 `prepend`/`append` 插入消息。
 
-## 10. 可观测性
+## 12. 可观测性
 
 `UsageEvent` 至少包含：
 
@@ -303,23 +381,48 @@ status
 status_code
 input_tokens
 output_tokens
-cached_input_tokens
-cache_creation_input_tokens
-token_details
+cached_tokens
 cost_usd
 latency_ms
 first_token_ms
 retries
 fallbacks
+repair_retries
+retry_input_tokens
+retry_output_tokens
+retry_cached_tokens
+retry_cost_usd
 error_type
 error_message
 prompt_id
 prompt_version
+metadata
 ```
 
-用量记录只保存 API Key 的不可逆短指纹，不保存密钥原文、Prompt 正文或用户消息正文。
+统计口径：
 
-## 11. 错误映射
+- `cost_usd` 只包含最终成功响应的成本。
+- `retry_*` 记录所有非最终成功尝试的 Token 和成本。
+- `retries` 只记录普通重试。
+- `fallbacks` 记录跳过的候选路由数量。
+- `repair_retries` 单独记录结构化修复次数。
+- 供应商原始 usage 细节放入 `metadata`。
+- 所有路由都失败时，仍记录一条 `status=error` 的用量事件。
+- 用量记录只保存 API Key 的不可逆短指纹，不保存密钥原文、Prompt 正文或用户消息正文。
+
+`/admin/usage` 返回：
+
+```json
+{
+  "data": [
+    {
+      "request_id": "..."
+    }
+  ]
+}
+```
+
+## 13. 错误映射
 
 对外统一使用 OpenAI 风格错误对象：
 
@@ -343,6 +446,7 @@ prompt_version
 | `invalid_request_error` | 400 / 404 / 422 |
 | `rate_limit_error` | 429 |
 | `model_not_found` | 404 |
+| `protocol_not_supported` | 422 |
 | `prompt_not_found` | 404 |
 | `prompt_render_error` | 422 |
 | `structured_output_error` | 422 |
@@ -352,35 +456,41 @@ prompt_version
 
 Anthropic 错误类型在 adapter 内映射为上述统一类型。
 
-## 12. 按模型独立限流
+## 14. 鉴权与限流
 
-建议将限流器从单实例全局限流重构为：
+鉴权：
 
-```python
-class ModelRateLimiter:
-    def check(self, model: str) -> None: ...
-    def status(self) -> dict[str, RateLimitStatus]: ...
-```
+- 除 `/healthz`、`/readyz` 外，所有业务和管理端点要求 Bearer Key。
+- 使用 `SecretStr` 和 `hmac.compare_digest`。
+- 用量记录只保存 API Key 指纹。
 
-配置示例：
+限流：
+
+- 按调用方身份限流。
+- 只对 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 进行限流。
+- Prompt、模型列表和管理接口不限流。
+- 配置使用单层结构：
 
 ```yaml
 rate_limit:
-  default:
-    requests_per_minute: 60
-    burst: 10
-  models:
-    smart:
-      requests_per_minute: 120
-      burst: 20
-    claude-fast:
-      requests_per_minute: 30
-      burst: 5
+  enabled: true
+  requests_per_minute: 60
+  burst: 10
 ```
 
-默认按公开模型别名独立限流，即 `D5` 已确认方案。一个模型耗尽不影响其他模型。超限返回 `429` 和 `Retry-After`。
+- 配置了 API Key 时，身份使用 API Key 指纹。
+- 未配置 API Key 的开发模式，使用客户端 IP 指纹。
+- 超限返回 `429`、`type="rate_limit_error"`、`code="rate_limit_exceeded"` 和 `Retry-After`。
 
-## 13. 目标目录结构
+## 15. 请求校验
+
+- 模型调用入口允许未知字段并透传。
+- Prompt 和管理接口严格校验。
+- Anthropic `messages` 必须非空；缺失时返回 `422`。
+- Anthropic `max_tokens` 必填；缺失时返回 `422`，`param="max_tokens"`，`code="missing_required_parameter"`。
+- OpenAI Responses 的 `input` 支持字符串和消息数组，其他复杂结构尽量透传。
+
+## 16. 目标目录结构
 
 ```text
 app/
@@ -392,8 +502,9 @@ app/
 ├── services/
 │   ├── adapters/
 │   │   ├── base.py
-│   │   ├── openai.py
-│   │   └── anthropic.py
+│   │   ├── openai_chat.py
+│   │   ├── openai_responses.py
+│   │   └── anthropic_messages.py
 │   ├── gateway.py
 │   ├── upstream.py
 │   ├── router.py
@@ -405,23 +516,10 @@ app/
 └── main.py
 ```
 
-## 14. 阶段 0 验收标准
+## 17. 阶段 0 验收标准
 
+- 三个协议适配器接口已定义。
 - 统一请求、响应、流式事件和 usage 模型已定义。
-- 两个协议适配器接口已定义，接口边界不依赖具体 httpx 调用细节。
-- 模型配置支持协议声明和同协议路由 fallback。
-- SSE、结构化输出、Prompt、错误、用量、限流的语义已写入本文档。
-- 后续阶段可以直接基于本文档实现，无需再改跨模块接口。
-
-## 15. 已确认决策
-
-| ID | 决策点 | 确认方案 |
-| --- | --- | --- |
-| D1 | 是否保留 `/v1/chat/completions` | 保留 Chat Completions 支持，路由协议能力使用 `chat`、`responses`、`messages`、`all`，不再使用 `both` |
-| D2 | 对外 SSE 格式 | 沿用参考项目的透明转发方案，内部仅解析用于 usage、TTFT 和 checkpoint |
-| D3 | “最多 3 次重试”的语义 | 首次请求 + 最多 3 次重试，总计最多 4 次请求 |
-| D4 | 是否允许跨协议 fallback | 不允许，按入口协议过滤候选路由 |
-| D5 | 限流维度 | 按公开模型别名独立限流 |
-| D6 | Anthropic 结构化输出方案 | 系统提示注入 Schema + 本地 `jsonschema` 校验修复 |
-| D7 | Prompt 在 Anthropic 中的位置 | 渲染后写入 `system` 字段 |
-| D8 | `/v1/models` 是否必须鉴权 | 沿用参考项目实现，要求 Bearer Key 鉴权；`/healthz` 和 `/readyz` 不鉴权 |
+- 模型配置支持逗号分隔的 `api` 能力和同协议 fallback。
+- 重试、fallback、结构化修复、SSE、Prompt、错误、用量、鉴权和限流语义均已写入本文档。
+- 后续阶段可以直接基于本文档实现。
