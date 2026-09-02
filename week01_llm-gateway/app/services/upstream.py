@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,9 +20,18 @@ class OpenStream:
 class UpstreamClient:
     """Executes protocol-agnostic upstream requests produced by adapters."""
 
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient | None = None,
+        retry_statuses: Iterable[int] | None = None,
+    ) -> None:
         self.client = client or httpx.AsyncClient()
         self._owns_client = client is None
+        self.retry_statuses = (
+            set(retry_statuses)
+            if retry_statuses is not None
+            else {408, 409, 429, 500, 502, 503, 504}
+        )
 
     async def close(self) -> None:
         if self._owns_client:
@@ -86,6 +96,6 @@ class UpstreamClient:
         return UpstreamError(
             message,
             status_code=status_code,
-            retryable=response.status_code in {408, 409, 429, 500, 502, 503, 504},
+            retryable=response.status_code in self.retry_statuses,
             details=details,
         )

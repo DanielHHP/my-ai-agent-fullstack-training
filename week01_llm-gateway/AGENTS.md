@@ -37,6 +37,7 @@
 
 - `POST /v1/chat/completions`：Chat Completions 兼容入口。
 - `POST /v1/responses`：Responses API 兼容入口。
+- `POST /v1/messages`：Anthropic Messages API 兼容入口。
 - `GET /v1/models`：返回网关公开的模型别名。
 - `POST /v1/prompts`、`GET /v1/prompts`、`GET /v1/prompts/{id}`、`POST /v1/prompts/{id}/render`：Prompt 模板版本管理。
 - `GET /admin/usage`：查询调用用量。
@@ -46,6 +47,7 @@
 网关层需实现：
 
 - 多供应商、模型别名、优先级路由与加权轮询。
+- 通过适配器统一封装 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
 - 首选供应商失败后的自动重试与 fallback。
 - 轻量级进程内熔断器。
 - SSE 流式响应透明转发；客户端断开时取消上游请求。
@@ -66,6 +68,11 @@ app/
 │   ├── security.py
 │   └── rate_limit.py
 ├── services/
+│   ├── adapters/
+│   │   ├── base.py
+│   │   ├── openai_chat.py
+│   │   ├── openai_responses.py
+│   │   └── anthropic_messages.py
 │   ├── gateway.py         # 调用编排、流式、重试、结构化纠错
 │   ├── upstream.py        # OpenAI-compatible 上游 HTTP 客户端
 │   ├── router.py          # 路由、加权、fallback、熔断
@@ -79,8 +86,10 @@ app/
 docs/                      # 项目文档，当前保持轻量，后续按需沉淀
 
 tests/
-├── conftest.py
-└── test_gateway.py
+├── test_adapters.py
+├── test_config.py
+├── test_gateway.py
+└── test_router_upstream.py
 
 gateway.example.yaml
 requirements.txt
@@ -98,7 +107,7 @@ README.md
 - 配置文件中支持 `${ENV_VAR}` 和 `${ENV_VAR:-default}` 环境变量展开。
 - 仓库只提交 `gateway.example.yaml`，不提交真实 `gateway.yaml`、`.env` 或任何真实密钥。
 - 模型路由引用的 `provider` 必须已经在 `providers` 中声明，启动或加载配置时应校验。
-- 每个路由需声明协议能力：`chat`、`responses` 或 `both`。
+- 每个路由需声明协议能力：`chat`、`responses`、`messages`；`all` 是保留字，只能单独出现，表示三种协议都支持，不再使用 `both`。
 
 配置示例：
 
@@ -107,9 +116,9 @@ providers:
   openai:
     base_url: https://api.openai.com
     api_key: ${OPENAI_API_KEY}
-  deepseek:
-    base_url: https://api.deepseek.com
-    api_key: ${DEEPSEEK_API_KEY}
+  anthropic:
+    base_url: https://api.anthropic.com
+    api_key: ${ANTHROPIC_API_KEY}
 
 models:
   smart:
@@ -117,10 +126,13 @@ models:
     routes:
       - provider: openai
         model: gpt-5.2
-        api: both
-      - provider: deepseek
-        model: deepseek-chat
-        api: chat
+        api: "chat,responses"
+  claude-fast:
+    strategy: priority
+    routes:
+      - provider: anthropic
+        model: claude-sonnet-4-5
+        api: "messages"
 ```
 
 ## 编码与设计约定
@@ -177,7 +189,7 @@ docker compose up --build
 - 结构化输出本地校验与自动修复。
 - Prompt 版本创建、激活版本、变量渲染和渲染错误。
 - SSE 流式转发、TTFT、断开取消和检查点。
-- Responses API 协议路由。
+- Chat Completions、Responses 和 Messages 三种协议路由。
 - API Key 鉴权与限流错误语义。
 
 ## 建议实现顺序
@@ -185,8 +197,8 @@ docker compose up --build
 1. 初始化 Python 项目脚手架、`requirements.txt`、配置加载和 FastAPI 生命周期。
 2. 实现健康检查、鉴权、OpenAI 风格错误和基础路由。
 3. 实现上游 HTTP 客户端、模型路由、重试、fallback 和熔断。
-4. 打通非流式 Chat Completions 与 Responses API。
-5. 实现 SSE 流式转发与客户端断开处理。
+4. 打通非流式 Chat Completions、Responses 与 Messages API。
+5. 实现三种协议的 SSE 流式转发与客户端断开处理。
 6. 实现结构化输出校验与修复重试。
 7. 实现 Prompt 模板版本管理与安全渲染。
 8. 实现 SQLite 用量与成本账本。

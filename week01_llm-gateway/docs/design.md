@@ -119,17 +119,21 @@ class NormalizedUsage(BaseModel):
 
 ```python
 class ProtocolAdapter(Protocol):
-    name: ProtocolName
+    name: str
+    protocol: ProtocolName
 
     def build_request(
         self,
         *,
-        model: str,
+        target: RouteTarget,
         request: UnifiedRequest,
         request_id: str,
+        provider: ProviderConfig,
     ) -> UpstreamRequest: ...
 
     def parse_response(self, raw: dict[str, Any]) -> UnifiedResponse: ...
+
+    def parse_stream_event(self, payload: dict[str, Any]) -> UnifiedStreamEvent | None: ...
 
     def parse_stream_line(self, line: str) -> UnifiedStreamEvent | None: ...
 
@@ -524,9 +528,9 @@ app/
 - 重试、fallback、结构化修复、SSE、Prompt、错误、用量、鉴权和限流语义均已写入本文档。
 - 后续阶段可以直接基于本文档实现。
 
-## 18. 阶段 2 当前实现的调用链路模块图
+## 18. 阶段 2-4 当前实现的调用链路模块图
 
-> 本图基于当前仓库中阶段 2 已落地代码整理。当前阶段已完成统一抽象层、三个协议适配器、模型路由筛选和通用上游 HTTP 客户端；`GatewayService` 及三个模型调用 API 入口尚未接入，因此下面的调用链中由“后续 `GatewayService` / 测试”发起，仅用于说明已实现模块之间的协作关系。
+> 18.1-18.3 是阶段 2 已落地的底层模块关系。阶段 3/4 已在该基础上接入 `GatewayService`、`/v1/chat/completions`、`/v1/responses` 和 `/v1/messages`，实际调用链见 18.4。
 
 ### 18.1 模块关系
 
@@ -618,3 +622,38 @@ UnifiedResponse / UnifiedStreamEvent / NormalizedUsage / GatewayError
 | `ProtocolAdapter.name` | `chat`、`responses`、`messages` |
 
 当前 `ModelRouter.resolve(model, entry_protocol)` 使用配置层短名称，`get_adapter` 也按短名称查找适配器；进入具体适配器后，统一请求模型中的 `protocol` 字段才使用完整协议名。
+
+### 18.4 阶段 3/4 新增的网关调用链
+
+```text
+POST /v1/chat/completions | /v1/responses | /v1/messages
+        │ 转换为 UnifiedRequest
+        v
+GatewayService.complete() / GatewayService.stream()
+        │
+        ├─> ModelRouter.candidates(model, 路由短协议名)
+        │
+        ├─> ProtocolAdapter.build_request(target, request, request_id, provider)
+        │
+        ├─> UpstreamClient.request_json(UpstreamRequest)       # 非流式
+        └─> UpstreamClient.open_stream(UpstreamRequest)        # 流式
+                    │
+                    v
+        httpx.AsyncClient / MockTransport
+```
+
+阶段 3 非流式行为：
+
+- `complete()` 返回 `CompletionResult(raw, request_id, metrics)`，对外仍序列化 `raw`，保持协议原生响应。
+- 每个候选路由最多执行 `retry.max_retries_per_route` 次普通重试。
+- 仅网络错误、超时和 `retry.retry_statuses` 中的状态码重试；普通 4xx 不重试，但允许同协议 fallback。
+- 成功时 `metrics.fallbacks` 等于跳过的候选路由数，`metrics.retries` 等于普通重试次数。
+- 所有候选路由失败时通过当前 adapter 的 `map_error()` 返回统一 `GatewayError`。
+
+阶段 4 流式行为：
+
+- `stream()` 返回 `StreamResult(stream, request_id, metrics)`，`stream` 逐块透明转发上游原始 SSE。
+- 内部通过 `parse_stream_line()` / `parse_stream_event()` 提取首个内容增量，记录 `first_token_ms`。
+- 任一字节已向下游发送后，不再切换路由；失败时发送 SSE 错误事件和 `data: [DONE]`。
+- 客户端断开时通过 `request.is_disconnected()` 检测，关闭上游并记录 `status="cancelled"`、`status_code=499`。
+- 上游 usage 事件会合并进 `CallMetrics`；当前 `CallMetrics` 是阶段 7 接入 SQLite 账本前的进程内指标载体。
