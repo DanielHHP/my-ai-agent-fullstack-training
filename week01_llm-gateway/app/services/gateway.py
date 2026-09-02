@@ -12,10 +12,22 @@ from typing import Any
 import httpx
 
 from app.config import GatewayConfig, RouteTarget
-from app.core.errors import GatewayError, UpstreamError, error_payload
-from app.schemas import NormalizedUsage, UnifiedRequest, UnifiedStreamEvent
+from app.core.errors import (
+    GatewayError,
+    StructuredOutputError,
+    UpstreamError,
+    error_payload,
+)
+from app.schemas import (
+    NormalizedUsage,
+    UnifiedMessage,
+    UnifiedRequest,
+    UnifiedStreamEvent,
+)
 from app.services.adapters import ProtocolAdapter, get_adapter
+from app.services.prompts import PromptRepository
 from app.services.router import ModelRouter
+from app.services.structured import repair_instruction, validate_structured_content
 from app.services.upstream import UpstreamClient
 
 _ROUTE_PROTOCOLS = {
@@ -29,6 +41,7 @@ _ROUTE_PROTOCOLS = {
 class CallMetrics:
     retries: int = 0
     fallbacks: int = 0
+    repair_retries: int = 0
     first_token_ms: float | None = None
     latency_ms: float | None = None
     status: str | None = None
@@ -64,10 +77,12 @@ class GatewayService:
         config: GatewayConfig,
         router: ModelRouter,
         upstream: UpstreamClient,
+        prompts: PromptRepository | None = None,
     ) -> None:
         self.config = config
         self.router = router
         self.upstream = upstream
+        self.prompts = prompts
 
     def _route_protocol(self, request: UnifiedRequest) -> str:
         try:
@@ -90,50 +105,97 @@ class GatewayService:
         call_id = request_id or f"req_{uuid.uuid4().hex}"
         protocol = self._route_protocol(request)
         adapter = get_adapter(protocol)
-        candidates = self.router.candidates(request.model, protocol)
-        working_request = request.model_copy(update={"stream": False})
+        prepared_request = await self._prepare_request(request)
+        working_request = prepared_request.model_copy(update={"stream": False})
 
         metrics = CallMetrics()
         started = time.perf_counter()
         last_error: UpstreamError | None = None
+        structured_attempt = 0
 
         try:
-            for route_index, target in enumerate(candidates):
-                upstream_request = adapter.build_request(
-                    target=target,
-                    request=working_request,
-                    request_id=call_id,
-                    provider=self.config.providers[target.provider],
-                )
-                attempts = 0
-                while True:
-                    try:
-                        raw = await self.upstream.request_json(upstream_request)
-                    except UpstreamError as exc:
-                        last_error = exc
-                        self.router.record_failure(target.provider)
-                        if exc.retryable and attempts < self.config.retry.max_retries_per_route:
-                            metrics.retries += 1
-                            await self._backoff(attempts)
-                            attempts += 1
-                            continue
+            while True:
+                candidates = self.router.candidates(working_request.model, protocol)
+                raw: dict[str, Any] | None = None
+                selected_target: RouteTarget | None = None
+
+                for route_index, target in enumerate(candidates):
+                    upstream_request = adapter.build_request(
+                        target=target,
+                        request=working_request,
+                        request_id=call_id,
+                        provider=self.config.providers[target.provider],
+                    )
+                    attempts = 0
+                    while True:
+                        try:
+                            raw = await self.upstream.request_json(upstream_request)
+                        except UpstreamError as exc:
+                            last_error = exc
+                            self.router.record_failure(target.provider)
+                            if exc.retryable and attempts < self.config.retry.max_retries_per_route:
+                                metrics.retries += 1
+                                await self._backoff(attempts)
+                                attempts += 1
+                                continue
+                            break
+
+                        self.router.record_success(target.provider)
+                        metrics.fallbacks = route_index
+                        metrics.provider = target.provider
+                        metrics.upstream_model = target.model
+                        metrics.status = "success"
+                        metrics.status_code = 200
+                        self._capture_usage(adapter, raw, metrics)
+                        selected_target = target
                         break
 
-                    self.router.record_success(target.provider)
-                    metrics.fallbacks = route_index
-                    metrics.provider = target.provider
-                    metrics.upstream_model = target.model
-                    metrics.status = "success"
-                    metrics.status_code = 200
-                    self._capture_usage(adapter, raw, metrics)
+                    if raw is not None:
+                        break
+
+                if raw is None or selected_target is None:
+                    metrics.fallbacks = max(0, len(candidates) - 1)
+                    raise self._final_error(adapter, last_error)
+
+                if working_request.response_format is None:
                     return CompletionResult(
                         raw=raw,
                         request_id=call_id,
                         metrics=metrics,
                     )
 
-            metrics.fallbacks = max(0, len(candidates) - 1)
-            raise self._final_error(adapter, last_error)
+                try:
+                    unified = adapter.parse_response(raw)
+                    validate_structured_content(
+                        unified.content_text,
+                        working_request.response_format.schema,
+                    )
+                except StructuredOutputError as exc:
+                    if structured_attempt >= self.config.structured_output_retries:
+                        metrics.status = "error"
+                        metrics.status_code = exc.status_code
+                        metrics.error_type = exc.error_type
+                        metrics.error_message = exc.message
+                        raise
+                    structured_attempt += 1
+                    metrics.repair_retries += 1
+                    working_request = self._request_with_repair(
+                        adapter,
+                        working_request,
+                        raw,
+                        repair_instruction(
+                            exc,
+                            working_request.response_format.schema,
+                        ),
+                    )
+                    last_error = None
+                    continue
+
+                return CompletionResult(
+                    raw=raw,
+                    request_id=call_id,
+                    metrics=metrics,
+                )
         finally:
             metrics.latency_ms = round((time.perf_counter() - started) * 1000, 3)
 
@@ -148,8 +210,9 @@ class GatewayService:
         call_id = request_id or f"req_{uuid.uuid4().hex}"
         protocol = self._route_protocol(request)
         adapter = get_adapter(protocol)
-        candidates = self.router.candidates(request.model, protocol)
-        working_request = request.model_copy(update={"stream": True})
+        prepared_request = await self._prepare_request(request)
+        candidates = self.router.candidates(prepared_request.model, protocol)
+        working_request = prepared_request.model_copy(update={"stream": True})
 
         # Validate the first route synchronously so invalid request parameters surface
         # as normal JSON errors instead of a stream that starts and then emits an error.
@@ -271,6 +334,82 @@ class GatewayService:
                 metrics.latency_ms = round((time.perf_counter() - started) * 1000, 3)
 
         return StreamResult(stream=generate(), request_id=call_id, metrics=metrics)
+
+    async def _prepare_request(self, request: UnifiedRequest) -> UnifiedRequest:
+        if request.prompt_ref is None:
+            return request
+        if self.prompts is None:
+            raise GatewayError(
+                "Prompt repository is not configured",
+                status_code=503,
+                error_type="gateway_error",
+                code="prompt_repository_unavailable",
+            )
+
+        prompt_ref = request.prompt_ref
+        prompt, rendered = await self.prompts.render(
+            prompt_ref.id,
+            prompt_ref.variables,
+            prompt_ref.version,
+        )
+        return self._apply_prompt(request, prompt.role, rendered, prompt_ref.position)
+
+    @staticmethod
+    def _apply_prompt(
+        request: UnifiedRequest,
+        role: str,
+        rendered: str,
+        position: str,
+    ) -> UnifiedRequest:
+        if request.protocol == "chat_completions":
+            message = UnifiedMessage(role=role, content=rendered)
+            messages = list(request.messages)
+            if position == "append":
+                messages.append(message)
+            else:
+                messages.insert(0, message)
+            return request.model_copy(update={"messages": messages})
+
+        if request.protocol == "openai_responses":
+            existing = request.instructions
+            instructions = f"{rendered}\n\n{existing}" if existing else rendered
+            return request.model_copy(update={"instructions": instructions})
+
+        if request.protocol == "anthropic_messages":
+            messages = list(request.messages)
+            system_index = next(
+                (index for index, message in enumerate(messages) if message.role == "system"),
+                None,
+            )
+            if system_index is None:
+                messages.insert(0, UnifiedMessage(role="system", content=rendered))
+            else:
+                existing = messages[system_index].content
+                if isinstance(existing, str):
+                    merged = f"{rendered}\n\n{existing}"
+                else:
+                    merged = [{"type": "text", "text": rendered}, *existing]
+                messages[system_index] = messages[system_index].model_copy(
+                    update={"content": merged}
+                )
+            return request.model_copy(update={"messages": messages})
+
+        return request
+
+    @staticmethod
+    def _request_with_repair(
+        adapter: ProtocolAdapter,
+        request: UnifiedRequest,
+        raw: dict[str, Any],
+        instruction: str,
+    ) -> UnifiedRequest:
+        """Append the failed assistant output and a repair instruction to the request."""
+        unified = adapter.parse_response(raw)
+        previous = unified.content_text
+        messages = list(request.messages)
+        messages.append(UnifiedMessage(role="assistant", content=previous))
+        messages.append(UnifiedMessage(role="user", content=instruction))
+        return request.model_copy(update={"messages": messages})
 
     async def _backoff(self, attempt: int) -> None:
         base = self.config.retry.base_delay_seconds * (2**attempt)

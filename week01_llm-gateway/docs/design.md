@@ -342,6 +342,20 @@ class StructuredOutputSpec(BaseModel):
 - 结构化修复重试轮数由 `structured_output_retries` 控制，默认值为 1。
 - 流式输出一旦开始，不进行无损结构化修复。
 
+入口字段解析：
+
+- Chat Completions：从 `response_format` 中识别 `{"type": "json_schema", "json_schema": {...}}`。
+- OpenAI Responses：从 `text.format` 中识别 `{"type": "json_schema", ...}`。
+- Anthropic Messages：兼容 `response_format` 或 `text.format`；适配器将提取出的 Schema 注入 `system`，最终仍由本地校验兜底。
+
+结构化输出模块职责：
+
+- `extract_json_text`：提取裸 JSON 或 Markdown code fence 中的 JSON。
+- `validate_structured_content`：执行 `json.loads` 和 `jsonschema.validate`，失败时抛出 `StructuredOutputError`。
+- `repair_instruction`：根据校验错误和原始 Schema 构造本地修复提示。
+
+`GatewayService.complete` 在成功拿到非流式响应后，如果请求包含 `response_format`，会再次调用本地校验；校验失败时最多按 `structured_output_retries` 重新进入候选路由循环。
+
 ## 11. Prompt 版本管理
 
 统一 Prompt 引用：
@@ -352,6 +366,34 @@ class PromptReference(BaseModel):
     version: int | None = None
     variables: dict[str, Any] = Field(default_factory=dict)
     position: Literal["prepend", "append"] = "prepend"
+```
+
+Prompt 管理接口的数据模型：
+
+```python
+class PromptCreate(BaseModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
+    name: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    description: str | None = None
+    role: Literal["system", "user", "assistant"] = "system"
+    activate: bool = True
+
+
+class PromptRender(BaseModel):
+    version: int | None = Field(default=None, ge=1)
+    variables: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptRecord(BaseModel):
+    id: str
+    version: int
+    name: str
+    description: str | None = None
+    role: str
+    content: str
+    is_active: bool
+    created_at: str
 ```
 
 版本解析：
@@ -367,6 +409,8 @@ class PromptReference(BaseModel):
 - Anthropic Messages：系统 Prompt 写入 `system` 字段，渲染结果放在已有内容之前。
 - Anthropic `system` 支持字符串和文本内容块数组；数组形式下将渲染结果作为新的 `{"type":"text","text":"..."}` 块插入开头。
 - Chat Completions：按 `prepend`/`append` 插入消息。
+
+`PromptReference.position` 目前只对 Chat Completions 生效；OpenAI Responses 和 Anthropic Messages 固定将渲染结果放在已有内容之前。
 
 ## 12. 可观测性
 
@@ -453,6 +497,7 @@ metadata
 | `protocol_not_supported` | 422 |
 | `prompt_not_found` | 404 |
 | `prompt_render_error` | 422 |
+| `prompt_repository_unavailable` | 503 |
 | `structured_output_error` | 422 |
 | `upstream_error` | 502 / 503 |
 | `service_unavailable_error` | 503 |

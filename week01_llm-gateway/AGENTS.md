@@ -20,7 +20,7 @@
 
 ## 技术栈
 
-- Python 3.10+，推荐 3.12
+- Python 3.10+；推荐本地/CI 使用 3.12。当前开发 `.venv` 为 Python 3.14，运行测试时会看到 `pytest-asyncio` 的 deprecation warning，不影响功能。
 - FastAPI + Uvicorn
 - Pydantic v2
 - httpx
@@ -65,8 +65,8 @@ app/
 ├── api/routes.py          # 兼容 API、Prompt 与管理接口
 ├── core/                  # 错误、鉴权、限流
 │   ├── errors.py
-│   ├── security.py
-│   └── rate_limit.py
+│   ├── security.py        # 阶段 8：待实现
+│   └── rate_limit.py      # 阶段 8：待实现
 ├── services/
 │   ├── adapters/
 │   │   ├── base.py
@@ -76,9 +76,9 @@ app/
 │   ├── gateway.py         # 调用编排、流式、重试、结构化纠错
 │   ├── upstream.py        # OpenAI-compatible 上游 HTTP 客户端
 │   ├── router.py          # 路由、加权、fallback、熔断
-│   ├── prompts.py         # Prompt 版本和安全渲染
-│   ├── structured.py      # JSON 提取与 Schema 校验
-│   └── usage.py           # Token、Cost、Latency 账本
+│   ├── prompts.py         # 已实现：Prompt 版本和安全渲染
+│   ├── structured.py      # 已实现：JSON 提取与 Schema 校验
+│   └── usage.py           # 阶段 7：待实现
 ├── config.py              # YAML + 环境变量配置
 ├── schemas.py             # Pydantic 入参/出参模型
 └── main.py                # FastAPI 生命周期与依赖组装
@@ -89,7 +89,9 @@ tests/
 ├── test_adapters.py
 ├── test_config.py
 ├── test_gateway.py
-└── test_router_upstream.py
+├── test_prompts.py
+├── test_router_upstream.py
+└── test_structured.py
 
 gateway.example.yaml
 requirements.txt
@@ -100,6 +102,8 @@ README.md
 ```
 
 `docs/` 当前保持轻量，先不预设复杂的文档目录。等接口和实现逐步稳定后，再按实际需要补充架构、API、配置、部署和开发文档。
+
+当前已完成阶段 1-6 的主要代码路径，阶段 7 用量账本、阶段 8 鉴权/限流/管理接口尚未落地。
 
 ## 配置约定
 
@@ -159,7 +163,7 @@ models:
 - 流式输出无法在已经发送内容后进行无损结构化纠错；严格业务协议建议使用非流式接口。
 - 用量记录只保存 API Key 的不可逆短指纹，不保存原密钥、Prompt 正文或用户消息正文。
 - 进程内熔断器和限流器需保持独立接口；多副本部署时应替换为 Redis 等共享存储。
-- SQLite 路径由配置决定，启动时自动创建父目录和表结构。
+- SQLite 路径由配置决定，启动时自动创建父目录和表结构。当前 `PromptRepository.initialize()` 会创建 `prompts` 表；阶段 7 的用量账本表尚未创建。
 
 ## 安全要求
 
@@ -172,12 +176,13 @@ models:
 ## 验证与开发命令
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+cp gateway.example.yaml gateway.yaml
 set -a; source .env; set +a
 GATEWAY_CONFIG=gateway.yaml uvicorn app.main:app --reload --port 8000
-pytest -q
+python -m pytest -q
 ruff check .
 docker compose up --build
 ```

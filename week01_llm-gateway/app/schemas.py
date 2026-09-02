@@ -30,6 +30,31 @@ class PromptReference(BaseModel):
     position: Literal["prepend", "append"] = "prepend"
 
 
+class PromptCreate(BaseModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
+    name: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    description: str | None = None
+    role: Literal["system", "user", "assistant"] = "system"
+    activate: bool = True
+
+
+class PromptRender(BaseModel):
+    version: int | None = Field(default=None, ge=1)
+    variables: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptRecord(BaseModel):
+    id: str
+    version: int
+    name: str
+    description: str | None = None
+    role: str
+    content: str
+    is_active: bool
+    created_at: str
+
+
 class UnifiedRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

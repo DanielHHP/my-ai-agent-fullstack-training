@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from app.api.routes import router
 from app.config import GatewayConfig, load_config
 from app.core.errors import GatewayError, error_payload
 from app.services.gateway import GatewayService
+from app.services.prompts import PromptRepository
 from app.services.router import ModelRouter
 from app.services.upstream import UpstreamClient
 
@@ -28,18 +30,24 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.config = gateway_config
+        db_path = Path(gateway_config.database_url)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        prompts = PromptRepository(gateway_config.database_url)
+        await prompts.initialize()
         router_service = ModelRouter(gateway_config)
         client = httpx.AsyncClient()
         upstream = UpstreamClient(
             client=client,
             retry_statuses=gateway_config.retry.retry_statuses,
         )
+        app.state.prompts = prompts
         app.state.router = router_service
         app.state.upstream = upstream
         app.state.gateway = GatewayService(
             gateway_config,
             router_service,
             upstream,
+            prompts,
         )
         try:
             yield

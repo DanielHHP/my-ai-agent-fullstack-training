@@ -2,7 +2,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import GatewayError, error_payload
-from app.schemas import UnifiedMessage, UnifiedRequest
+from app.schemas import (
+    PromptCreate,
+    PromptRender,
+    StructuredOutputSpec,
+    UnifiedMessage,
+    UnifiedRequest,
+)
 
 router = APIRouter()
 
@@ -24,6 +30,29 @@ def _unified_messages_from_openai(payload: dict) -> list[UnifiedMessage]:
     return [UnifiedMessage.model_validate(item) for item in messages if isinstance(item, dict)]
 
 
+def _structured_spec_from_payload(payload: dict) -> StructuredOutputSpec | None:
+    value = payload.get("response_format")
+    if isinstance(value, dict):
+        if value.get("type") == "json_schema":
+            value = value.get("json_schema") or {}
+    else:
+        text_format = (payload.get("text") or {}).get("format")
+        if isinstance(text_format, dict) and text_format.get("type") == "json_schema":
+            value = text_format
+
+    if not isinstance(value, dict):
+        return None
+
+    schema = value.get("schema")
+    if not isinstance(schema, dict):
+        return None
+    return StructuredOutputSpec(
+        schema=schema,
+        name=value.get("name"),
+        strict=bool(value.get("strict", False)),
+    )
+
+
 def _chat_request(payload: dict) -> UnifiedRequest:
     model = payload.get("model")
     if not isinstance(model, str) or not model:
@@ -43,6 +72,7 @@ def _chat_request(payload: dict) -> UnifiedRequest:
         temperature=payload.get("temperature"),
         top_p=payload.get("top_p"),
         max_tokens=payload.get("max_tokens"),
+        response_format=_structured_spec_from_payload(payload),
         metadata=payload.get("metadata") or {},
     )
 
@@ -93,6 +123,7 @@ def _responses_request(payload: dict) -> UnifiedRequest:
         temperature=payload.get("temperature"),
         top_p=payload.get("top_p"),
         max_tokens=payload.get("max_output_tokens", payload.get("max_tokens")),
+        response_format=_structured_spec_from_payload(payload),
         metadata=payload.get("metadata") or {},
     )
 
@@ -150,6 +181,7 @@ def _messages_request(payload: dict) -> UnifiedRequest:
         temperature=payload.get("temperature"),
         top_p=payload.get("top_p"),
         max_tokens=payload.get("max_tokens"),
+        response_format=_structured_spec_from_payload(payload),
         metadata=payload.get("metadata") or {},
     )
 
@@ -206,6 +238,57 @@ async def messages(request: Request):
         payload = await request.json()
         unified = _messages_request(payload)
         return await _model_call(request, unified)
+    except GatewayError as exc:
+        return _gateway_error_response(exc)
+
+
+@router.post("/v1/prompts", status_code=201)
+async def create_prompt(request: Request):
+    try:
+        payload = await request.json()
+        prompt = PromptCreate.model_validate(payload)
+        record = await request.app.state.prompts.create_version(prompt)
+        return JSONResponse(record.model_dump(mode="json"), status_code=201)
+    except GatewayError as exc:
+        return _gateway_error_response(exc)
+
+
+@router.get("/v1/prompts")
+async def list_prompts(request: Request):
+    try:
+        records = await request.app.state.prompts.list()
+        return JSONResponse([record.model_dump(mode="json") for record in records])
+    except GatewayError as exc:
+        return _gateway_error_response(exc)
+
+
+@router.get("/v1/prompts/{prompt_id}")
+async def get_prompt(prompt_id: str, request: Request, version: int | None = None):
+    try:
+        record = await request.app.state.prompts.get(prompt_id, version)
+        return JSONResponse(record.model_dump(mode="json"))
+    except GatewayError as exc:
+        return _gateway_error_response(exc)
+
+
+@router.post("/v1/prompts/{prompt_id}/render")
+async def render_prompt(prompt_id: str, request: Request):
+    try:
+        payload = await request.json()
+        render = PromptRender.model_validate(payload)
+        prompt, content = await request.app.state.prompts.render(
+            prompt_id,
+            render.variables,
+            render.version,
+        )
+        return JSONResponse(
+            {
+                "id": prompt.id,
+                "version": prompt.version,
+                "role": prompt.role,
+                "content": content,
+            }
+        )
     except GatewayError as exc:
         return _gateway_error_response(exc)
 
