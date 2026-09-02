@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+
+import httpx
 from fastapi.testclient import TestClient
 
 from app.config import GatewayConfig
@@ -82,4 +85,72 @@ def test_models_admin_usage_and_routes_are_available_with_key(tmp_path) -> None:
         assert routes_response.status_code == 200
         body = routes_response.json()
         assert "smart" in body["models"]
+        assert body["models"]["smart"]["routes"][0]["protocols"] == [
+            "chat",
+            "responses",
+        ]
         assert body["circuits"] == {}
+
+
+def test_model_endpoint_rate_limits_after_burst(tmp_path) -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "api_keys": ["test-key"],
+            "database_url": str(tmp_path / "gateway.db"),
+            "rate_limit": {
+                "enabled": True,
+                "requests_per_minute": 60,
+                "burst": 1,
+            },
+            "retry": {
+                "max_retries_per_route": 0,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+            },
+            "providers": {
+                "openai": {
+                    "base_url": "https://openai.test",
+                    "api_key": "openai-key",
+                }
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-primary",
+                            "api": "chat",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["model"] == "gpt-primary"
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_1",
+                "object": "chat.completion",
+                "model": "gpt-primary",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(config, http_client=mock_client)
+    headers = {"Authorization": "Bearer test-key"}
+    body = {"model": "smart", "messages": [{"role": "user", "content": "hi"}]}
+
+    with TestClient(app) as client:
+        first = client.post("/v1/chat/completions", headers=headers, json=body)
+        assert first.status_code == 200
+
+        second = client.post("/v1/chat/completions", headers=headers, json=body)
+        assert second.status_code == 429
+        assert second.headers.get("retry-after") == "1"
+        assert second.json()["error"]["code"] == "rate_limit_exceeded"

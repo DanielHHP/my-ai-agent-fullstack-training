@@ -75,7 +75,7 @@ class CallMetrics:
     retry_output_tokens: int = 0
     retry_cached_tokens: int = 0
     retry_cost_usd: float = 0.0
-    retry_upstream_model: str | None = None
+    retry_usage_by_model: dict[str, NormalizedUsage] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -158,6 +158,7 @@ class GatewayService:
                 selected_target: RouteTarget | None = None
 
                 for route_index, target in enumerate(candidates):
+                    self._record_attempted_route(metrics, target)
                     upstream_request = adapter.build_request(
                         target=target,
                         request=working_request,
@@ -182,7 +183,7 @@ class GatewayService:
                             break
 
                         self.router.record_success(target.provider)
-                        metrics.fallbacks = route_index
+                        metrics.fallbacks += route_index
                         metrics.provider = target.provider
                         metrics.upstream_model = target.model
                         metrics.status = "success"
@@ -195,7 +196,7 @@ class GatewayService:
                         break
 
                 if raw is None or selected_target is None:
-                    metrics.fallbacks = max(0, len(candidates) - 1)
+                    metrics.fallbacks += max(0, len(candidates) - 1)
                     error = self._final_error(adapter, last_error)
                     self._apply_error_metrics(metrics, error)
                     raise error
@@ -293,13 +294,14 @@ class GatewayService:
             raise
 
         async def generate() -> AsyncIterator[bytes]:
-            started = time.perf_counter()
+            started = started_sync
             emitted = False
             last_error: UpstreamError | None = None
             parse_buffer = b""
 
             try:
                 for route_index, target in enumerate(candidates):
+                    self._record_attempted_route(metrics, target)
                     upstream_request = adapter.build_request(
                         target=target,
                         request=working_request,
@@ -493,6 +495,13 @@ class GatewayService:
         delay = min(base, self.config.retry.max_delay_seconds)
         await asyncio.sleep(delay * random.uniform(0.75, 1.25))
 
+    @staticmethod
+    def _record_attempted_route(metrics: CallMetrics, target: RouteTarget) -> None:
+        attempted = metrics.metadata.setdefault("attempted_routes", [])
+        entry = {"provider": target.provider, "upstream_model": target.model}
+        if entry not in attempted:
+            attempted.append(entry)
+
     def _capture_usage(
         self,
         adapter: ProtocolAdapter,
@@ -523,7 +532,14 @@ class GatewayService:
         metrics.retry_input_tokens += unified.usage.input_tokens
         metrics.retry_output_tokens += unified.usage.output_tokens
         metrics.retry_cached_tokens += unified.usage.cached_tokens
-        metrics.retry_upstream_model = upstream_model
+
+        accumulated = metrics.retry_usage_by_model.setdefault(
+            upstream_model,
+            NormalizedUsage(),
+        )
+        accumulated.input_tokens += unified.usage.input_tokens
+        accumulated.output_tokens += unified.usage.output_tokens
+        accumulated.cached_tokens += unified.usage.cached_tokens
 
         usage = raw.get("usage")
         if usage:
@@ -553,17 +569,15 @@ class GatewayService:
                     metrics.cached_tokens,
                 )
 
-            retry_model = metrics.retry_upstream_model or metrics.upstream_model
-            if retry_model and (
-                metrics.retry_input_tokens
-                or metrics.retry_output_tokens
-                or metrics.retry_cached_tokens
-            ):
-                metrics.retry_cost_usd = self.usage.calculate_cost(
-                    retry_model,
-                    metrics.retry_input_tokens,
-                    metrics.retry_output_tokens,
-                    metrics.retry_cached_tokens,
+            if metrics.retry_usage_by_model:
+                metrics.retry_cost_usd = sum(
+                    self.usage.calculate_cost(
+                        model,
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        usage.cached_tokens,
+                    )
+                    for model, usage in metrics.retry_usage_by_model.items()
                 )
 
             event = UsageEvent(
@@ -639,8 +653,46 @@ class GatewayService:
             metrics.first_token_ms = round((time.perf_counter() - started) * 1000, 3)
         if event.usage is not None:
             self._merge_usage(metrics, event.usage)
-            if isinstance(event.raw, dict) and event.raw.get("usage"):
-                metrics.metadata["usage"] = event.raw["usage"]
+            raw_usage = self._stream_usage_payload(event.raw)
+            if raw_usage is not None:
+                self._merge_usage_metadata(metrics, raw_usage)
+
+    @staticmethod
+    def _stream_usage_payload(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        if isinstance(raw.get("usage"), dict):
+            return raw["usage"]
+        if isinstance(raw.get("message"), dict) and isinstance(
+            raw["message"].get("usage"), dict
+        ):
+            return raw["message"]["usage"]
+        if isinstance(raw.get("response"), dict) and isinstance(
+            raw["response"].get("usage"), dict
+        ):
+            return raw["response"]["usage"]
+        usage_keys = {
+            "input_tokens",
+            "output_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        }
+        if usage_keys.intersection(raw):
+            return raw
+        return None
+
+    @staticmethod
+    def _merge_usage_metadata(
+        metrics: CallMetrics,
+        raw_usage: dict[str, Any],
+    ) -> None:
+        current = metrics.metadata.get("usage")
+        if not isinstance(current, dict):
+            metrics.metadata["usage"] = dict(raw_usage)
+            return
+        current.update(raw_usage)
 
     @staticmethod
     def _merge_usage(metrics: CallMetrics, usage: NormalizedUsage) -> None:

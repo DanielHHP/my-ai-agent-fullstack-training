@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -349,5 +351,413 @@ async def test_gateway_records_stream_usage_and_ttft(tmp_path) -> None:
         assert rows[0]["output_tokens"] == 3
         assert rows[0]["cached_tokens"] == 2
         assert rows[0]["first_token_ms"] is not None
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_records_anthropic_stream_raw_usage_metadata() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "retry": {
+                "max_retries_per_route": 0,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+            },
+            "providers": {
+                "anthropic": {
+                    "base_url": "https://anthropic.test",
+                    "api_key": "anthropic-key",
+                }
+            },
+            "models": {
+                "claude-fast": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "anthropic",
+                            "model": "claude-sonnet-4-5",
+                            "api": "messages",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    body = (
+        b'data: {"type":"message_start","message":{"usage":{"input_tokens":5,'
+        b'"cache_read_input_tokens":2}}}\n\n'
+        b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n'
+        b'data: {"type":"message_delta","usage":{"output_tokens":3}}\n\n'
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+        request = UnifiedRequest(
+            model="claude-fast",
+            protocol="anthropic_messages",
+            messages=[UnifiedMessage(role="user", content="hi")],
+            max_tokens=32,
+            stream=True,
+        )
+
+        result = await service.stream(request)
+        chunks = [chunk async for chunk in result.stream]
+
+        assert chunks
+        assert result.metrics.metadata["usage"] == {
+            "input_tokens": 5,
+            "cache_read_input_tokens": 2,
+            "output_tokens": 3,
+        }
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_records_responses_stream_raw_usage_metadata() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "retry": {
+                "max_retries_per_route": 0,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+            },
+            "providers": {
+                "openai": {
+                    "base_url": "https://openai.test",
+                    "api_key": "openai-key",
+                }
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-primary",
+                            "api": "responses",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    body = (
+        b'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"resp_1",'
+        b'"usage":{"input_tokens":4,"output_tokens":2,'
+        b'"input_tokens_details":{"cached_tokens":1}}}}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+        request = UnifiedRequest(
+            model="smart",
+            protocol="openai_responses",
+            messages=[UnifiedMessage(role="user", content="hi")],
+            stream=True,
+        )
+
+        result = await service.stream(request)
+        chunks = [chunk async for chunk in result.stream]
+
+        assert chunks
+        assert result.metrics.metadata["usage"] == {
+            "input_tokens": 4,
+            "output_tokens": 2,
+            "input_tokens_details": {"cached_tokens": 1},
+        }
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stream_latency_includes_prompt_preparation() -> None:
+    config = _config("/tmp/unused-stream-latency.db")
+
+    async def fake_render(prompt_id: str, variables: dict, version: int | None = None):
+        del variables, version
+        await asyncio.sleep(0.03)
+        return (
+            SimpleNamespace(id=prompt_id, version=1, role="system"),
+            "be concise",
+        )
+
+    body = (
+        b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+        b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+            prompts=SimpleNamespace(render=fake_render),
+        )
+        request = _chat_request(
+            stream=True,
+            prompt_ref=PromptReference(id="p", variables={}),
+        )
+
+        result = await service.stream(request)
+        chunks = [chunk async for chunk in result.stream]
+
+        assert chunks
+        assert result.metrics.latency_ms is not None
+        assert result.metrics.latency_ms >= 20
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_structured_repair_cost_uses_each_upstream_model(tmp_path) -> None:
+    database_path = str(tmp_path / "gateway.db")
+    config = GatewayConfig.model_validate(
+        {
+            "database_url": database_path,
+            "structured_output_retries": 2,
+            "retry": {
+                "max_retries_per_route": 0,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+                "retry_statuses": [500],
+            },
+            "pricing": {
+                "gpt-primary": {
+                    "input_per_million": 1.0,
+                    "output_per_million": 2.0,
+                    "cached_input_per_million": 1.0,
+                },
+                "gpt-backup": {
+                    "input_per_million": 10.0,
+                    "output_per_million": 20.0,
+                    "cached_input_per_million": 10.0,
+                },
+            },
+            "providers": {
+                "openai": {
+                    "base_url": "https://primary.test",
+                    "api_key": "primary-key",
+                },
+                "openai-backup": {
+                    "base_url": "https://backup.test",
+                    "api_key": "backup-key",
+                },
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-primary",
+                            "api": "chat",
+                        },
+                        {
+                            "provider": "openai-backup",
+                            "model": "gpt-backup",
+                            "api": "chat",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    repo = UsageRepository(database_path, config)
+    await repo.initialize()
+
+    primary_calls = 0
+    backup_calls = 0
+
+    def response(content: str, model: str, prompt: int, completion: int, cached: int) -> dict:
+        return {
+            "id": "chatcmpl_usage",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{"message": {"role": "assistant", "content": content}}],
+            "usage": {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "prompt_tokens_details": {"cached_tokens": cached},
+            },
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal primary_calls, backup_calls
+        if "primary.test" in str(request.url):
+            primary_calls += 1
+            if primary_calls == 1:
+                return httpx.Response(
+                    200,
+                    json=response(
+                        "not-json",
+                        "gpt-primary",
+                        prompt=10,
+                        completion=5,
+                        cached=1,
+                    ),
+                )
+            if primary_calls == 2:
+                return httpx.Response(
+                    500,
+                    json={"error": {"message": "primary down"}},
+                )
+            return httpx.Response(
+                200,
+                json=response(
+                    '{"name":"Alice"}',
+                    "gpt-primary",
+                    prompt=30,
+                    completion=8,
+                    cached=3,
+                ),
+            )
+
+        backup_calls += 1
+        return httpx.Response(
+            200,
+            json=response(
+                "not-json",
+                "gpt-backup",
+                prompt=20,
+                completion=7,
+                cached=2,
+            ),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+            usage=repo,
+        )
+        request = _chat_request(
+            response_format=StructuredOutputSpec(
+                schema={
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+                name="person",
+            )
+        )
+
+        result = await service.complete(request)
+
+        assert primary_calls == 3
+        assert backup_calls == 1
+        assert result.metrics.repair_retries == 2
+        assert result.metrics.retry_input_tokens == 30
+        assert result.metrics.retry_output_tokens == 12
+        assert result.metrics.retry_cached_tokens == 3
+        assert result.metrics.retry_cost_usd == pytest.approx(0.00036)
+        assert result.metrics.fallbacks == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_records_attempted_routes_when_all_routes_fail(tmp_path) -> None:
+    database_path = str(tmp_path / "gateway.db")
+    config = GatewayConfig.model_validate(
+        {
+            "database_url": database_path,
+            "retry": {
+                "max_retries_per_route": 0,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+                "retry_statuses": [500],
+            },
+            "providers": {
+                "openai": {
+                    "base_url": "https://primary.test",
+                    "api_key": "primary-key",
+                },
+                "openai-backup": {
+                    "base_url": "https://backup.test",
+                    "api_key": "backup-key",
+                },
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-primary",
+                            "api": "chat",
+                        },
+                        {
+                            "provider": "openai-backup",
+                            "model": "gpt-backup",
+                            "api": "chat",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    repo = UsageRepository(database_path, config)
+    await repo.initialize()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"message": "down"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+            usage=repo,
+        )
+
+        with pytest.raises(GatewayError):
+            await service.complete(_chat_request())
+
+        rows = await repo.recent()
+        assert len(rows) == 1
+        assert rows[0]["fallbacks"] == 1
+        assert rows[0]["metadata"]["attempted_routes"] == [
+            {"provider": "openai", "upstream_model": "gpt-primary"},
+            {"provider": "openai-backup", "upstream_model": "gpt-backup"},
+        ]
     finally:
         await client.aclose()

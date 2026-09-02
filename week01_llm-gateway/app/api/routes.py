@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.config import parse_protocols
 from app.core.errors import GatewayError, error_payload
 from app.core.security import authenticate
 from app.schemas import (
@@ -439,16 +440,28 @@ async def usage(
 
 @router.get("/admin/routes")
 async def route_status(request: Request, _: Identity):
+    models: dict[str, dict] = {}
+    for alias, model in request.app.state.config.models.items():
+        model_data = model.model_dump(mode="json")
+        for route in model_data["routes"]:
+            route["protocols"] = sorted(parse_protocols(route["api"]))
+        models[alias] = model_data
     return {
-        "models": {
-            alias: model.model_dump(mode="json")
-            for alias, model in request.app.state.config.models.items()
-        },
+        "models": models,
         "circuits": request.app.state.router.status(),
     }
 
 
 @router.get("/readyz")
 async def readyz(request: Request) -> dict[str, str]:
-    config_loaded = getattr(request.app.state, "config", None) is not None
-    return {"status": "ok" if config_loaded else "starting"}
+    required = (
+        "config",
+        "prompts",
+        "router",
+        "upstream",
+        "usage",
+        "rate_limiter",
+        "gateway",
+    )
+    ready = all(getattr(request.app.state, name, None) is not None for name in required)
+    return {"status": "ok" if ready else "starting"}
