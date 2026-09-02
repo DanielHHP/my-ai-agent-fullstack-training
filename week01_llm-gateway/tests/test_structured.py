@@ -23,6 +23,21 @@ def test_validate_structured_content_accepts_markdown_fenced_json() -> None:
     assert parsed == {"name": "Alice"}
 
 
+def test_validate_structured_content_extracts_fenced_json_with_surrounding_text() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
+
+    parsed = validate_structured_content(
+        "Here is the answer:\n```json\n{\"name\":\"Alice\"}\n```\nHope this helps.",
+        schema,
+    )
+
+    assert parsed == {"name": "Alice"}
+
+
 def test_validate_structured_content_rejects_invalid_json() -> None:
     schema = {"type": "object"}
 

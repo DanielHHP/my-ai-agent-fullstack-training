@@ -68,6 +68,26 @@ async def test_prompt_repository_reports_missing_variable(tmp_path: Path) -> Non
     assert exc_info.value.code == "prompt_render_error"
 
 
+@pytest.mark.asyncio
+async def test_prompt_repository_reports_invalid_template(tmp_path: Path) -> None:
+    repo = PromptRepository(str(tmp_path / "prompts.db"))
+    await repo.initialize()
+    await repo.create_version(
+        PromptCreate(
+            id="broken",
+            name="Broken",
+            content="{% if %}broken",
+            role="system",
+        )
+    )
+
+    with pytest.raises(GatewayError) as exc_info:
+        await repo.render("broken", {})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "prompt_render_error"
+
+
 def _request(protocol: str, messages: list[UnifiedMessage], **overrides: object) -> UnifiedRequest:
     data: dict[str, object] = {
         "model": "demo",
