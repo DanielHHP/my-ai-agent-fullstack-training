@@ -20,9 +20,8 @@ def _normalize_usage(payload: dict[str, Any]) -> NormalizedUsage:
     usage = payload.get("usage") or {}
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
-    cached_tokens = int(
-        usage.get("cache_read_input_tokens", usage.get("cache_creation_input_tokens", 0))
-        or 0
+    cached_tokens = int(usage.get("cache_read_input_tokens", 0) or 0) + int(
+        usage.get("cache_creation_input_tokens", 0) or 0
     )
     return NormalizedUsage(
         input_tokens=input_tokens,

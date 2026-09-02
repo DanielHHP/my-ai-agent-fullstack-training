@@ -167,7 +167,7 @@ class GatewayService:
             started = time.perf_counter()
             emitted = False
             last_error: UpstreamError | None = None
-            parse_buffer = ""
+            parse_buffer = b""
 
             try:
                 for route_index, target in enumerate(candidates):
@@ -292,28 +292,28 @@ class GatewayService:
     def _consume_stream_chunk(
         self,
         adapter: ProtocolAdapter,
-        buffer: str,
+        buffer: bytes,
         chunk: bytes,
         metrics: CallMetrics,
         started: float,
-    ) -> str:
-        buffer += chunk.decode("utf-8", errors="ignore")
-        lines = buffer.split("\n")
+    ) -> bytes:
+        buffer += chunk
+        lines = buffer.split(b"\n")
         buffer = lines.pop()
         for line in lines:
-            event = adapter.parse_stream_line(line)
+            event = adapter.parse_stream_line(line.decode("utf-8", errors="ignore"))
             self._apply_stream_event(metrics, event, started)
         return buffer
 
     def _flush_stream_buffer(
         self,
         adapter: ProtocolAdapter,
-        buffer: str,
+        buffer: bytes,
         metrics: CallMetrics,
         started: float,
     ) -> None:
         if buffer.strip():
-            event = adapter.parse_stream_line(buffer)
+            event = adapter.parse_stream_line(buffer.decode("utf-8", errors="ignore"))
             self._apply_stream_event(metrics, event, started)
 
     def _apply_stream_event(
@@ -342,9 +342,10 @@ class GatewayService:
     def _stream_error(target: RouteTarget, exc: Exception) -> UpstreamError:
         if isinstance(exc, UpstreamError):
             return exc
+        retryable = isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
         return UpstreamError(
             f"{target.provider}: stream interrupted: {type(exc).__name__}",
-            retryable=False,
+            retryable=retryable,
         )
 
     @staticmethod

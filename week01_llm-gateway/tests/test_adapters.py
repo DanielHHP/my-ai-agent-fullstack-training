@@ -124,6 +124,26 @@ def test_openai_responses_adapter_converts_input() -> None:
     assert upstream.body["model"] == "gpt-5.2"
 
 
+def test_openai_responses_adapter_keeps_instructions() -> None:
+    config = _config()
+    target = config.models["smart"].routes[0]
+    request = UnifiedRequest(
+        model="smart",
+        protocol="openai_responses",
+        messages=[UnifiedMessage(role="user", content="hello")],
+        instructions="be concise",
+    )
+
+    upstream = OpenAIResponsesAdapter().build_request(
+        target=target,
+        request=request,
+        request_id="req_2b",
+        provider=config.providers["openai"],
+    )
+
+    assert upstream.body["instructions"] == "be concise"
+
+
 def test_anthropic_adapter_uses_x_api_key_and_requires_max_tokens() -> None:
     config = _config()
     target = config.models["smart"].routes[1]
@@ -160,6 +180,23 @@ def test_anthropic_adapter_uses_x_api_key_and_requires_max_tokens() -> None:
         )
     assert exc_info.value.status_code == 422
     assert exc_info.value.param == "max_tokens"
+
+
+def test_anthropic_adapter_sums_cache_tokens() -> None:
+    normalized = AnthropicMessagesAdapter().normalize_usage(
+        {
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2,
+                "cache_read_input_tokens": 3,
+                "cache_creation_input_tokens": 4,
+            }
+        }
+    )
+
+    assert normalized.input_tokens == 1
+    assert normalized.output_tokens == 2
+    assert normalized.cached_tokens == 7
 
 
 def test_anthropic_adapter_injects_structured_schema_into_system() -> None:

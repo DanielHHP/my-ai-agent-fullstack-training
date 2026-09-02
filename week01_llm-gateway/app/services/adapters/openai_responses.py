@@ -68,6 +68,8 @@ class OpenAIResponsesAdapter(ProtocolAdapter):
             "input": input_value,
             "stream": request.stream,
         }
+        if request.instructions is not None:
+            body["instructions"] = request.instructions
         if request.temperature is not None:
             body["temperature"] = request.temperature
         if request.top_p is not None:

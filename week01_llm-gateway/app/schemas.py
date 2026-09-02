@@ -36,6 +36,7 @@ class UnifiedRequest(BaseModel):
     model: str
     protocol: ProtocolName
     messages: list[UnifiedMessage]
+    instructions: str | None = None
     stream: bool = False
     temperature: float | None = None
     top_p: float | None = None

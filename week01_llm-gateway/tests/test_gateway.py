@@ -87,6 +87,15 @@ def _anthropic_request(*, stream: bool = False) -> UnifiedRequest:
     )
 
 
+def _responses_request(*, stream: bool = False) -> UnifiedRequest:
+    return UnifiedRequest(
+        model="smart",
+        protocol="openai_responses",
+        messages=[UnifiedMessage(role="user", content="hello")],
+        stream=stream,
+    )
+
+
 def _chat_response(content: str) -> dict[str, Any]:
     return {
         "id": "chatcmpl_1",
@@ -361,5 +370,39 @@ async def test_stream_supports_anthropic_native_events() -> None:
         assert stream_result.metrics.first_token_ms is not None
         assert stream_result.metrics.input_tokens == 5
         assert stream_result.metrics.output_tokens == 3
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_supports_openai_responses_native_events() -> None:
+    body = (
+        b'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n'
+        b'data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":4,"output_tokens":2}}}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config = _config()
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+
+        stream_result = await service.stream(_responses_request(stream=True))
+        chunks = [chunk async for chunk in stream_result.stream]
+
+        assert b"Hello" in b"".join(chunks)
+        assert stream_result.metrics.first_token_ms is not None
+        assert stream_result.metrics.input_tokens == 4
+        assert stream_result.metrics.output_tokens == 2
     finally:
         await client.aclose()

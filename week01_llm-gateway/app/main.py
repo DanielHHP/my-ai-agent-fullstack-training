@@ -5,10 +5,13 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app import __version__
 from app.api.routes import router
 from app.config import GatewayConfig, load_config
+from app.core.errors import GatewayError, error_payload
 from app.services.gateway import GatewayService
 from app.services.router import ModelRouter
 from app.services.upstream import UpstreamClient
@@ -49,6 +52,26 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         description="Multi-protocol LLM gateway for OpenAI Chat Completions, Responses, and Anthropic Messages.",
         lifespan=lifespan,
     )
+
+    @app.exception_handler(ValidationError)
+    async def validation_error_handler(
+        request,
+        exc: ValidationError,
+    ) -> JSONResponse:
+        del request
+        first = exc.errors()[0] if exc.errors() else {}
+        loc = first.get("loc", [])
+        param = str(loc[-1]) if loc else None
+        message = str(first.get("msg", "invalid request"))
+        error = GatewayError(
+            f"Request validation failed: {message}",
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param=param,
+        )
+        return JSONResponse(error_payload(error), status_code=error.status_code)
+
     app.include_router(router)
     return app
 

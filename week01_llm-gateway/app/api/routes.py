@@ -84,13 +84,11 @@ def _responses_request(payload: dict) -> UnifiedRequest:
             param="input",
         )
 
-    if isinstance(payload.get("instructions"), str):
-        messages.insert(0, UnifiedMessage(role="system", content=payload["instructions"]))
-
     return UnifiedRequest(
         model=model,
         protocol="openai_responses",
         messages=messages,
+        instructions=payload.get("instructions"),
         stream=bool(payload.get("stream", False)),
         temperature=payload.get("temperature"),
         top_p=payload.get("top_p"),
