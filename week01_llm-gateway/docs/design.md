@@ -523,3 +523,98 @@ app/
 - 模型配置支持逗号分隔的 `api` 能力和同协议 fallback。
 - 重试、fallback、结构化修复、SSE、Prompt、错误、用量、鉴权和限流语义均已写入本文档。
 - 后续阶段可以直接基于本文档实现。
+
+## 18. 阶段 2 当前实现的调用链路模块图
+
+> 本图基于当前仓库中阶段 2 已落地代码整理。当前阶段已完成统一抽象层、三个协议适配器、模型路由筛选和通用上游 HTTP 客户端；`GatewayService` 及三个模型调用 API 入口尚未接入，因此下面的调用链中由“后续 `GatewayService` / 测试”发起，仅用于说明已实现模块之间的协作关系。
+
+### 18.1 模块关系
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ app.config                                                   │
+│ GatewayConfig / ProviderConfig / RouteTarget                 │
+│ parse_protocols() / load_config()                            │
+└─────────────────────────────┬────────────────────────────────┘
+                              │ 读取并校验模型路由
+                              v
+┌──────────────────────────────────────────────────────────────┐
+│ app.services.router.ModelRouter                              │
+│ candidates() / resolve()                                     │
+│ 协议过滤、熔断状态、加权轮询计数器                              │
+└─────────────────────────────┬────────────────────────────────┘
+                              │ get_adapter(protocol)
+                              v
+┌──────────────────────────────────────────────────────────────┐
+│ ProtocolAdapter                                              │
+└───────────────┬───────────────────┬──────────────────────────┘
+                │                   │
+                v                   v                           
+┌───────────────────────┐ ┌─────────────────────┐ ┌──────────────────────────┐
+│ OpenAIChatAdapter     │ │ OpenAIResponsesAdapter│ │ AnthropicMessagesAdapter │
+└───────────┬───────────┘ └──────────┬──────────┘ └────────────┬─────────────┘
+            │                        │                         │
+            └────────────────────────┼─────────────────────────┘
+                                     │ build_request() -> UpstreamRequest
+                                     v
+                       ┌─────────────────────────────────────┐
+                       │ app.services.upstream.UpstreamClient│
+                       │ request_json() / open_stream()      │
+                       └─────────────────┬───────────────────┘
+                                         │ POST / SSE
+                                         v
+                       ┌─────────────────────────────────────┐
+                       │ httpx.AsyncClient / MockTransport    │
+                       └─────────────────────────────────────┘
+
+依赖模型：
+
+- app.schemas：UnifiedRequest / UnifiedResponse / NormalizedUsage /
+  UnifiedStreamEvent / UpstreamRequest
+- app.core.errors：GatewayError / UpstreamError / error_payload()
+```
+
+### 18.2 单次模型调用的调用链
+
+```text
+后续 GatewayService / 测试
+        │
+        │ resolve(model, entry_protocol)
+        v
+ModelRouter
+        │ candidates(model, entry_protocol)
+        │ get_adapter(entry_protocol)
+        v
+ProtocolAdapter
+        │ build_request(target, request, request_id, provider)
+        │ 转换 URL、鉴权头、请求体、结构化输出约束
+        v
+UpstreamRequest
+        │ request_json(req) / open_stream(req)
+        v
+UpstreamClient
+        │ POST 上游，必要时携带 stream=true
+        v
+httpx.AsyncClient / MockTransport
+        │ raw JSON / SSE bytes
+        v
+UpstreamClient
+        │ dict / OpenStream
+        v
+ProtocolAdapter
+        │ parse_response / parse_stream_event / normalize_usage / map_error
+        v
+UnifiedResponse / UnifiedStreamEvent / NormalizedUsage / GatewayError
+```
+
+### 18.3 当前实现需要注意的协议名称映射
+
+阶段 2 代码中存在两组协议名称，调用链中必须保持边界清晰：
+
+| 用途 | 取值 |
+| --- | --- |
+| 配置路由能力、`ModelRouter`、`get_adapter` | `chat`、`responses`、`messages` |
+| `UnifiedRequest.protocol`、`ProtocolAdapter.protocol` | `chat_completions`、`openai_responses`、`anthropic_messages` |
+| `ProtocolAdapter.name` | `chat`、`responses`、`messages` |
+
+当前 `ModelRouter.resolve(model, entry_protocol)` 使用配置层短名称，`get_adapter` 也按短名称查找适配器；进入具体适配器后，统一请求模型中的 `protocol` 字段才使用完整协议名。
