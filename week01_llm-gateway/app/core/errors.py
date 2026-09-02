@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
 
 class GatewayError(Exception):
     def __init__(
@@ -64,3 +67,20 @@ def error_payload(error: GatewayError) -> dict[str, Any]:
     if error.details is not None:
         payload["error"]["details"] = error.details
     return payload
+
+
+async def gateway_error_handler(_: Request, error: GatewayError) -> JSONResponse:
+    headers: dict[str, str] | None = None
+    if error.status_code == 429:
+        retry_after = "1"
+        if (
+            isinstance(error.details, dict)
+            and error.details.get("retry_after") is not None
+        ):
+            retry_after = str(error.details["retry_after"])
+        headers = {"Retry-After": retry_after}
+    return JSONResponse(
+        error_payload(error),
+        status_code=error.status_code,
+        headers=headers,
+    )

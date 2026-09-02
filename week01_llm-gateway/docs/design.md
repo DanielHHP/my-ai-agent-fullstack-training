@@ -1,5 +1,7 @@
 # 阶段 0 设计细化（已确认版）
 
+> 实现状态：阶段 7/8 已落地，本文档已按当前实现同步修订。
+
 ## 1. 设计目标
 
 本文档是阶段 0 的最终设计基线，用于锁定后续实现所依赖的协议契约。所有内容均已经过设计决策确认。
@@ -458,6 +460,14 @@ metadata
 - 所有路由都失败时，仍记录一条 `status=error` 的用量事件。
 - 用量记录只保存 API Key 的不可逆短指纹，不保存密钥原文、Prompt 正文或用户消息正文。
 
+当前实现：
+
+- 持久化入口为 `app/services/usage.py` 的 `UsageRepository`。
+- 启动时自动创建 `usage_events` 表，字段与上表一致。
+- `GatewayService` 在非流式 `complete()` 和流式 `generate()` 的 `finally` 阶段，将 `CallMetrics` 映射为 `UsageEvent` 并调用 `UsageRepository.record()`。
+- `metadata` 保存供应商原始 usage；结构化修复产生的非最终成功 attempt 会进入 `metadata.retry_usage`，同时汇总到 `retry_*` 字段。
+- 用量成本按 `gateway.yaml` 中 `pricing.<upstream_model>` 计算。
+
 `/admin/usage` 返回：
 
 ```json
@@ -469,6 +479,8 @@ metadata
   ]
 }
 ```
+
+`/admin/usage` 支持 `limit` 查询参数，默认 `100`，范围为 `1..1000`。
 
 ## 13. 错误映射
 
@@ -531,6 +543,14 @@ rate_limit:
 - 未配置 API Key 的开发模式，使用客户端 IP 指纹。
 - 超限返回 `429`、`type="rate_limit_error"`、`code="rate_limit_exceeded"` 和 `Retry-After`。
 
+当前实现：
+
+- 鉴权位于 `app/core/security.py`，限流位于 `app/core/rate_limit.py`。
+- 路由层使用 FastAPI 依赖注入 `Identity` 与 `LimitedIdentity`；前者只鉴权，后者鉴权后执行令牌桶检查。
+- `authenticate()` 优先接受 `Authorization: Bearer <key>`，同时兼容 `x-api-key`。
+- `InMemoryRateLimiter` 使用进程内 `asyncio.Lock` 保护令牌桶；多副本部署时应替换为 Redis 等共享实现。
+- 限流超限由全局 `GatewayError` handler 返回 `Retry-After`，错误详情中包含 `retry_after`。
+
 ## 15. 请求校验
 
 - 模型调用入口允许未知字段并透传。
@@ -543,23 +563,23 @@ rate_limit:
 
 ```text
 app/
-├── api/routes.py
+├── api/routes.py          # 兼容 API、Prompt、模型列表与管理接口
 ├── core/
-│   ├── errors.py
-│   ├── security.py
-│   └── rate_limit.py
+│   ├── errors.py          # 统一错误对象与全局异常响应
+│   ├── security.py        # Bearer Key 鉴权与密钥指纹
+│   └── rate_limit.py      # 进程内令牌桶限流
 ├── services/
 │   ├── adapters/
 │   │   ├── base.py
 │   │   ├── openai_chat.py
 │   │   ├── openai_responses.py
 │   │   └── anthropic_messages.py
-│   ├── gateway.py
-│   ├── upstream.py
-│   ├── router.py
-│   ├── prompts.py
-│   ├── structured.py
-│   └── usage.py
+│   ├── gateway.py         # 调用编排、重试、结构化纠错、用量指标收集
+│   ├── upstream.py        # 上游 HTTP/SSE 客户端
+│   ├── router.py          # 路由、加权、fallback、熔断
+│   ├── prompts.py         # Prompt 版本与安全渲染
+│   ├── structured.py      # JSON 提取与 Schema 校验
+│   └── usage.py           # SQLite 用量与成本账本
 ├── config.py
 ├── schemas.py
 └── main.py
@@ -573,7 +593,7 @@ app/
 - 重试、fallback、结构化修复、SSE、Prompt、错误、用量、鉴权和限流语义均已写入本文档。
 - 后续阶段可以直接基于本文档实现。
 
-## 18. 阶段 2-4 当前实现的调用链路模块图
+## 18. 阶段 2-8 当前实现的调用链路模块图
 
 > 18.1-18.3 是阶段 2 已落地的底层模块关系。阶段 3/4 已在该基础上接入 `GatewayService`、`/v1/chat/completions`、`/v1/responses` 和 `/v1/messages`，实际调用链见 18.4。
 
@@ -701,4 +721,43 @@ GatewayService.complete() / GatewayService.stream()
 - 内部通过 `parse_stream_line()` / `parse_stream_event()` 提取首个内容增量，记录 `first_token_ms`。
 - 任一字节已向下游发送后，不再切换路由；失败时发送 SSE 错误事件和 `data: [DONE]`。
 - 客户端断开时通过 `request.is_disconnected()` 检测，关闭上游并记录 `status="cancelled"`、`status_code=499`。
-- 上游 usage 事件会合并进 `CallMetrics`；当前 `CallMetrics` 是阶段 7 接入 SQLite 账本前的进程内指标载体。
+- 上游 usage 事件会合并进 `CallMetrics`；`CallMetrics` 仍是落库前的进程内指标载体，阶段 7 已由 `GatewayService` 在结束阶段映射为 `UsageEvent` 并写入 SQLite。
+
+### 18.5 阶段 7/8 新增的可观测、鉴权与限流链路
+
+```text
+Request
+  │
+  ├─> FastAPI 依赖 Identity = Depends(authenticate)
+  │     ├─ 配置了 api_keys：Bearer Key 鉴权，返回密钥指纹
+  │     └─ 未配置 api_keys：开发模式，返回客户端 IP 指纹
+  │
+  ├─> FastAPI 依赖 LimitedIdentity = Depends(limited_identity)
+  │     └─ 仅模型调用端点使用，执行 InMemoryRateLimiter.check()
+  │
+  v
+路由层 routes.py
+  │
+  ├─> /v1/chat/completions
+  ├─> /v1/responses
+  ├─> /v1/messages
+  ├─> /v1/models
+  ├─> /v1/prompts*
+  ├─> /admin/usage
+  └─> /admin/routes
+        │
+        v
+GatewayService.complete() / stream()
+        │ 汇总 CallMetrics
+        v
+UsageRepository.record()
+        │
+        v
+SQLite usage_events
+```
+
+管理接口的返回结构：
+
+- `/v1/models`：返回模型别名、`owned_by=llm-gateway` 和展开后的 `supported_protocols`。
+- `/admin/usage`：返回 `{"data": [...]}`，按 `created_at` 倒序读取 `usage_events`。
+- `/admin/routes`：返回 `models` 路由配置与 `circuits` 熔断状态。

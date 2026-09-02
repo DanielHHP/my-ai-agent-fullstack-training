@@ -65,8 +65,8 @@ app/
 ├── api/routes.py          # 兼容 API、Prompt 与管理接口
 ├── core/                  # 错误、鉴权、限流
 │   ├── errors.py
-│   ├── security.py        # 阶段 8：待实现
-│   └── rate_limit.py      # 阶段 8：待实现
+│   ├── security.py        # 已实现：Bearer Key 鉴权与密钥指纹
+│   └── rate_limit.py      # 已实现：进程内令牌桶限流
 ├── services/
 │   ├── adapters/
 │   │   ├── base.py
@@ -78,7 +78,7 @@ app/
 │   ├── router.py          # 路由、加权、fallback、熔断
 │   ├── prompts.py         # 已实现：Prompt 版本和安全渲染
 │   ├── structured.py      # 已实现：JSON 提取与 Schema 校验
-│   └── usage.py           # 阶段 7：待实现
+│   └── usage.py           # 已实现：SQLite 用量与成本账本
 ├── config.py              # YAML + 环境变量配置
 ├── schemas.py             # Pydantic 入参/出参模型
 └── main.py                # FastAPI 生命周期与依赖组装
@@ -87,11 +87,14 @@ docs/                      # 项目文档，当前保持轻量，后续按需沉
 
 tests/
 ├── test_adapters.py
+├── test_admin_routes.py
 ├── test_config.py
 ├── test_gateway.py
 ├── test_prompts.py
 ├── test_router_upstream.py
-└── test_structured.py
+├── test_security_rate_limit.py
+├── test_structured.py
+└── test_usage.py
 
 gateway.example.yaml
 requirements.txt
@@ -103,7 +106,7 @@ README.md
 
 `docs/` 当前保持轻量，先不预设复杂的文档目录。等接口和实现逐步稳定后，再按实际需要补充架构、API、配置、部署和开发文档。
 
-当前已完成阶段 1-6 的主要代码路径，阶段 7 用量账本、阶段 8 鉴权/限流/管理接口尚未落地。
+当前阶段 1-8 的主要代码路径均已落地：模型路由、三种协议适配器、流式与结构化输出、Prompt 版本管理、SQLite 用量账本、鉴权、限流以及管理接口已经实现。
 
 ## 配置约定
 
@@ -163,7 +166,7 @@ models:
 - 流式输出无法在已经发送内容后进行无损结构化纠错；严格业务协议建议使用非流式接口。
 - 用量记录只保存 API Key 的不可逆短指纹，不保存原密钥、Prompt 正文或用户消息正文。
 - 进程内熔断器和限流器需保持独立接口；多副本部署时应替换为 Redis 等共享存储。
-- SQLite 路径由配置决定，启动时自动创建父目录和表结构。当前 `PromptRepository.initialize()` 会创建 `prompts` 表；阶段 7 的用量账本表尚未创建。
+- SQLite 路径由配置决定，启动时自动创建父目录和表结构。`PromptRepository.initialize()` 创建 `prompts` 表；`UsageRepository.initialize()` 创建 `usage_events` 表。
 
 ## 安全要求
 
@@ -193,7 +196,7 @@ docker compose up --build
 - 用量记录中的 Token、成本、重试次数和 fallback 次数。
 - 结构化输出本地校验与自动修复。
 - Prompt 版本创建、激活版本、变量渲染和渲染错误。
-- SSE 流式转发、TTFT、断开取消和检查点。
+- SSE 流式转发、TTFT、断开取消。
 - Chat Completions、Responses 和 Messages 三种协议路由。
 - API Key 鉴权与限流错误语义。
 
@@ -206,5 +209,5 @@ docker compose up --build
 5. 实现三种协议的 SSE 流式转发与客户端断开处理。
 6. 实现结构化输出校验与修复重试。
 7. 实现 Prompt 模板版本管理与安全渲染。
-8. 实现 SQLite 用量与成本账本。
-9. 补齐限流、管理接口、Docker 和完整测试。
+8. 实现 SQLite 用量与成本账本（已完成）。
+9. 补齐限流、管理接口、Docker 和完整测试（限流与管理接口已完成，Docker 和部署验证按需继续完善）。

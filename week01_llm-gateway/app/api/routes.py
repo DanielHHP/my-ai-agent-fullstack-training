@@ -1,9 +1,12 @@
 import json as json_lib
+import time
+from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.errors import GatewayError, error_payload
+from app.core.security import authenticate
 from app.schemas import (
     PromptCreate,
     PromptReference,
@@ -14,6 +17,18 @@ from app.schemas import (
 )
 
 router = APIRouter()
+
+
+async def limited_identity(
+    request: Request,
+    identity: Annotated[str, Depends(authenticate)],
+) -> str:
+    await request.app.state.rate_limiter.check(identity)
+    return identity
+
+
+Identity = Annotated[str, Depends(authenticate)]
+LimitedIdentity = Annotated[str, Depends(limited_identity)]
 
 
 def _gateway_error_response(exc: GatewayError) -> JSONResponse:
@@ -68,7 +83,11 @@ def _unified_messages_from_openai(payload: dict) -> list[UnifiedMessage]:
             code="missing_required_parameter",
             param="messages",
         )
-    return [UnifiedMessage.model_validate(item) for item in messages if isinstance(item, dict)]
+    return [
+        UnifiedMessage.model_validate(item)
+        for item in messages
+        if isinstance(item, dict)
+    ]
 
 
 def _structured_spec_from_payload(payload: dict) -> StructuredOutputSpec | None:
@@ -98,7 +117,10 @@ def _structured_spec_from_payload(payload: dict) -> StructuredOutputSpec | None:
         text_value = payload.get("text")
         if isinstance(text_value, dict):
             text_format = text_value.get("format")
-            if isinstance(text_format, dict) and text_format.get("type") == "json_schema":
+            if (
+                isinstance(text_format, dict)
+                and text_format.get("type") == "json_schema"
+            ):
                 declared = True
                 value = text_format
 
@@ -266,12 +288,16 @@ def _messages_request(payload: dict) -> UnifiedRequest:
     )
 
 
-async def _model_call(request: Request, unified: UnifiedRequest):
+async def _model_call(
+    request: Request, unified: UnifiedRequest, identity: str | None = None
+):
     gateway = request.app.state.gateway
     if unified.stream:
         result = await gateway.stream(
             unified,
             is_disconnected=request.is_disconnected,
+            api_key_hash=identity,
+            endpoint=request.url.path,
         )
         return StreamingResponse(
             result.stream,
@@ -283,7 +309,11 @@ async def _model_call(request: Request, unified: UnifiedRequest):
             },
         )
 
-    result = await gateway.complete(unified)
+    result = await gateway.complete(
+        unified,
+        api_key_hash=identity,
+        endpoint=request.url.path,
+    )
     return JSONResponse(result.raw, headers={"X-Request-ID": result.request_id})
 
 
@@ -293,37 +323,37 @@ async def healthz() -> dict[str, str]:
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+async def chat_completions(request: Request, identity: LimitedIdentity):
     try:
         payload = await _json_payload(request)
         unified = _chat_request(payload)
-        return await _model_call(request, unified)
+        return await _model_call(request, unified, identity)
     except GatewayError as exc:
         return _gateway_error_response(exc)
 
 
 @router.post("/v1/responses")
-async def responses(request: Request):
+async def responses(request: Request, identity: LimitedIdentity):
     try:
         payload = await _json_payload(request)
         unified = _responses_request(payload)
-        return await _model_call(request, unified)
+        return await _model_call(request, unified, identity)
     except GatewayError as exc:
         return _gateway_error_response(exc)
 
 
 @router.post("/v1/messages")
-async def messages(request: Request):
+async def messages(request: Request, identity: LimitedIdentity):
     try:
         payload = await _json_payload(request)
         unified = _messages_request(payload)
-        return await _model_call(request, unified)
+        return await _model_call(request, unified, identity)
     except GatewayError as exc:
         return _gateway_error_response(exc)
 
 
 @router.post("/v1/prompts", status_code=201)
-async def create_prompt(request: Request):
+async def create_prompt(request: Request, _: Identity):
     try:
         payload = await _json_payload(request)
         prompt = PromptCreate.model_validate(payload)
@@ -334,7 +364,7 @@ async def create_prompt(request: Request):
 
 
 @router.get("/v1/prompts")
-async def list_prompts(request: Request):
+async def list_prompts(request: Request, _: Identity):
     try:
         records = await request.app.state.prompts.list()
         return JSONResponse([record.model_dump(mode="json") for record in records])
@@ -346,6 +376,7 @@ async def list_prompts(request: Request):
 async def get_prompt(
     prompt_id: str,
     request: Request,
+    _: Identity,
     version: int | None = Query(default=None, ge=1),
 ):
     try:
@@ -356,7 +387,7 @@ async def get_prompt(
 
 
 @router.post("/v1/prompts/{prompt_id}/render")
-async def render_prompt(prompt_id: str, request: Request):
+async def render_prompt(prompt_id: str, request: Request, _: Identity):
     try:
         payload = await _json_payload(request)
         render = PromptRender.model_validate(payload)
@@ -375,6 +406,46 @@ async def render_prompt(prompt_id: str, request: Request):
         )
     except GatewayError as exc:
         return _gateway_error_response(exc)
+
+
+@router.get("/v1/models")
+async def list_models(request: Request, _: Identity):
+    now = int(time.time())
+    data = []
+    for alias, model in sorted(request.app.state.config.models.items()):
+        protocols = sorted(
+            {protocol for route in model.routes for protocol in route.protocols}
+        )
+        data.append(
+            {
+                "id": alias,
+                "object": "model",
+                "created": now,
+                "owned_by": "llm-gateway",
+                "supported_protocols": protocols,
+            }
+        )
+    return {"object": "list", "data": data}
+
+
+@router.get("/admin/usage")
+async def usage(
+    request: Request,
+    _: Identity,
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    return {"data": await request.app.state.usage.recent(limit)}
+
+
+@router.get("/admin/routes")
+async def route_status(request: Request, _: Identity):
+    return {
+        "models": {
+            alias: model.model_dump(mode="json")
+            for alias, model in request.app.state.config.models.items()
+        },
+        "circuits": request.app.state.router.status(),
+    }
 
 
 @router.get("/readyz")
