@@ -41,11 +41,27 @@ def test_parse_protocols_rejects_all_combination() -> None:
         parse_protocols("all,messages")
 
 
+def test_parse_protocols_rejects_unknown_protocol() -> None:
+    with pytest.raises(ValueError, match="both"):
+        parse_protocols("chat,both")
+
+
 def test_config_rejects_unknown_provider() -> None:
     raw = _minimal_raw()
     raw["models"]["smart"]["routes"][0]["provider"] = "missing"
     with pytest.raises(ValidationError):
         GatewayConfig.model_validate(raw)
+
+
+def test_config_defaults_match_acceptance_expectations() -> None:
+    config = GatewayConfig.model_validate(_minimal_raw())
+
+    assert config.retry.max_retries_per_route == 3
+    assert config.rate_limit.enabled is True
+    assert config.rate_limit.requests_per_minute == 60
+    assert config.rate_limit.burst == 10
+    assert config.circuit_breaker.failure_threshold == 5
+    assert config.circuit_breaker.cooldown_seconds == 30
 
 
 def test_load_config_expands_env_and_resolves_db_path(

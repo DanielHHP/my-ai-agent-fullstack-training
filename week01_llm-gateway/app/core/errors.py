@@ -50,7 +50,7 @@ class StructuredOutputError(GatewayError):
             message,
             status_code=422,
             error_type="structured_output_error",
-            code="invalid_model_output",
+            code="structured_output_error",
             details=details,
         )
 

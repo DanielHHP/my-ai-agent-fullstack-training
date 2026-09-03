@@ -57,6 +57,7 @@
 | L2 服务测试 | `ModelRouter`、`UpstreamClient`、`GatewayService.complete/stream` | `httpx.MockTransport` + 临时 SQLite |
 | L3 API 集成测试 | FastAPI 各端点、鉴权限流、异常响应、管理接口 | `TestClient` 或 `httpx.AsyncClient(transport=httpx.ASGITransport(app=app))` |
 | L4 端到端冒烟 | 从 HTTP 请求到 mock 上游到用量落库 | `create_app(config, http_client=mock_client)` |
+| L5 HTTP 黑盒验证 | 真实 Uvicorn 进程、外部 HTTP 请求、响应头、SSE 流式传输、进程生命周期 | `curl` 或 `httpx` 访问本地临时端口 |
 
 ## 5. Mock 模型服务侧方案
 
@@ -307,7 +308,7 @@ data: {"type":"message_stop"}
 | ACC-ADMIN-01 | `/admin/routes` | 正常访问 | 返回 `models` 路由配置，`protocols` 已从 `api` 展开；`circuits` 反映熔断状态 |
 | ACC-ADMIN-02 | `/admin/usage` | 正常访问 | 返回用量列表 |
 | ACC-ADMIN-03 | `/v1/models` | 正常访问 | 返回模型别名及 `supported_protocols` |
-| ACC-ADMIN-04 | 未知字段策略 | 模型调用传额外字段 | 允许透传；Prompt 和管理接口严格校验并返回统一错误 |
+| ACC-ADMIN-04 | 未知字段策略 | 模型调用传额外字段 | 模型调用入口允许接收未知字段但不向上游透传；Prompt 和管理接口严格校验并返回统一错误 |
 
 ## 8. 建议测试执行顺序
 
@@ -335,5 +336,213 @@ data: {"type":"message_stop"}
 9. 用量账本能记录 token、延迟、TTFT、重试、fallback、修复和成本，且不保存敏感原文。
 10. 鉴权限流语义符合设计：模型端点限流，其他端点只鉴权，超限返回 429。
 11. 管理接口和健康检查状态正确。
+12. HTTP 黑盒验证场景全部通过。
 
 如果发现实现与文档不一致，先以 `docs/design.md`、`docs/decisions.md` 和 `AGENTS.md` 为基准判定；确有实现偏差的，记录为验收问题项。
+
+## 10. 自动化测试流水线
+
+验收测试通过仓库根目录下的两个脚本分别执行白盒和黑盒流水线：
+
+```bash
+bash scripts/run_acceptance_tests.sh
+bash scripts/run_http_acceptance_tests.sh
+```
+
+白盒流水线 `scripts/run_acceptance_tests.sh` 会依次执行：
+
+1. 输出 Python、pytest、ruff、Git 分支和提交等环境信息。
+2. 使用 `ruff check app tests scripts` 执行静态检查。
+3. 使用 `pytest` 执行 `tests/` 下全部测试。
+4. 生成 JUnit XML 和 Markdown 测试摘要。
+
+生成文件位于 `reports/`：
+
+```text
+reports/
+├── environment.txt
+├── junit.xml
+├── summary.md
+├── blackbox/
+│   ├── uvicorn.log
+│   └── *.body / *.headers
+└── blackbox-summary.md
+```
+
+黑盒流水线 `scripts/run_http_acceptance_tests.sh` 会：
+
+1. 加载 `tests/configs/acceptance.yaml`。
+2. 通过 `scripts/blackbox_app.py` 启动 Uvicorn，并将上游模型服务替换为 `httpx.MockTransport`。
+3. 使用 `curl` 从外部请求本地 `127.0.0.1:18000`。
+4. 验证健康检查、鉴权、模型列表、非流式 Chat、SSE、限流和优雅退出。
+5. 生成 `reports/blackbox-summary.md`。
+
+测试配置独立维护在：
+
+```text
+tests/configs/acceptance.yaml
+```
+
+该文件已纳入 Git 管理，只包含 `.invalid` 域名和测试用假密钥，不包含真实服务商地址或密钥。测试通过 `tests/conftest.py` 加载该配置，并在需要时覆盖 `database_url` 为 `tmp_path` 下的临时 SQLite 文件。
+
+## 11. HTTP 黑盒验证场景（补充）
+
+本节补充 L5 黑盒验证场景，用于覆盖进程内 `TestClient` 无法验证的真实 Uvicorn 服务、TCP/HTTP 网络层、响应头、SSE 流式传输和进程生命周期。
+
+当前 `scripts/run_acceptance_tests.sh` 负责 L1-L4 白盒场景，`scripts/run_http_acceptance_tests.sh` 负责 L5 黑盒冒烟场景。
+
+### 11.1 运行前提
+
+- 被测网关使用 `tests/configs/acceptance.yaml`。
+- 模型上游仍不得调用真实服务商。
+- 当前黑盒流水线通过 `scripts/blackbox_app.py` 启动 Uvicorn，并使用 `httpx.MockTransport` 替换上游模型服务。
+- 网关监听 `127.0.0.1:18000`，不需要额外启动独立 mock 上游进程。
+- 使用 `curl` 或 `httpx` 从外部发起 HTTP 请求。
+
+### 11.2 黑盒冒烟场景清单
+
+为避免与白盒测试重复，黑盒只保留无法通过进程内测试覆盖的高价值部署/网络冒烟场景：
+
+| 用例 ID | 场景 | 请求方式与输入 | 预期验证点 |
+| --- | --- | --- | --- |
+| BH-01 | 服务启动与存活 | `GET /healthz` | 返回 200，`{"status":"ok"}`，无需鉴权 |
+| BH-02 | 就绪检查 | `GET /readyz` | 返回 200，`{"status":"ok"}`，无需鉴权 |
+| BH-03 | 未鉴权业务接口 | 无 Authorization 请求 `/v1/models` | 返回 401，统一 OpenAI 风格错误对象 |
+| BH-04 | 模型列表 | `GET /v1/models`，携带 `Authorization: Bearer test-key` | 返回 200，`object=list`，包含 `smart`、`claude-fast`，`supported_protocols` 正确 |
+| BH-05 | Chat Completions 非流式 | `POST /v1/chat/completions`，模型 `smart` | 返回 200，响应为 OpenAI Chat Completions 原生结构；响应包含 `X-Request-ID` |
+| BH-06 | Chat SSE 流式 | `curl -N` 请求 `stream=true` | 响应 `Content-Type` 为 `text/event-stream`；收到原始 SSE chunk；包含 `X-Request-ID`、`Cache-Control: no-cache, no-transform`、`X-Accel-Buffering: no` |
+| BH-07 | 限流黑盒行为 | 使用独立测试密钥 `rate-limit-key` 连续发送三个模型请求 | 前两次 200，第三次 429，响应包含 `Retry-After` |
+| BH-08 | 服务关闭行为 | 向 Uvicorn 发送 SIGTERM | Uvicorn 日志包含 `Shutting down` 和 `Application shutdown complete`，临时 SQLite 和报告文件不损坏 |
+
+### 11.3 建议的黑盒命令示例
+
+存活检查：
+
+```bash
+curl -i http://127.0.0.1:18000/healthz
+```
+
+未鉴权模型列表：
+
+```bash
+curl -i http://127.0.0.1:18000/v1/models
+```
+
+鉴权模型列表：
+
+```bash
+curl -i \
+  -H "Authorization: Bearer test-key" \
+  http://127.0.0.1:18000/v1/models
+```
+
+Chat Completions 非流式：
+
+```bash
+curl -i \
+  -X POST http://127.0.0.1:18000/v1/chat/completions \
+  -H "Authorization: Bearer test-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart","messages":[{"role":"user","content":"hello"}]}'
+```
+
+Chat Completions SSE：
+
+```bash
+curl -N \
+  -X POST http://127.0.0.1:18000/v1/chat/completions \
+  -H "Authorization: Bearer test-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart","stream":true,"messages":[{"role":"user","content":"hello"}]}'
+```
+
+### 11.4 黑盒验收通过标准
+
+- 所有 BH 冒烟场景均返回预期状态码、响应头和响应体。
+- 黑盒测试过程中所有上游请求均发往本地 mock 上游，不访问真实服务商。
+- SSE 场景能通过网络层正常逐块返回，响应头包含必要的防缓冲头。
+- 限流和鉴权在真实 HTTP 服务下行为与设计一致。
+- 服务进程能正常启动和优雅退出。
+
+## 12. 用例追踪表
+
+下表用于把第 7 节和第 11 节的验收用例映射到当前自动化测试，便于后续评审快速判断覆盖情况。
+
+| 用例 ID | 覆盖测试 |
+| --- | --- |
+| ACC-CFG-01 | `tests/test_config.py::test_load_config_expands_env_and_resolves_db_path` |
+| ACC-CFG-02 | `tests/test_config.py::test_config_rejects_unknown_provider` |
+| ACC-CFG-03 | `tests/test_config.py::test_parse_protocols_supports_all` |
+| ACC-CFG-04 | `tests/test_config.py::test_parse_protocols_rejects_all_combination` |
+| ACC-CFG-05 | `tests/test_config.py::test_parse_protocols_rejects_unknown_protocol` |
+| ACC-CFG-06 | `tests/test_config.py::test_config_defaults_match_acceptance_expectations` |
+| ACC-ADP-01 | `tests/test_adapters.py::test_adapter_registry_selects_correct_adapter` |
+| ACC-ADP-02 | `tests/test_adapters.py::test_openai_chat_adapter_builds_expected_upstream_request` |
+| ACC-ADP-03 | `tests/test_adapters.py::test_openai_responses_adapter_converts_input`、`tests/test_adapters.py::test_openai_responses_adapter_keeps_instructions` |
+| ACC-ADP-04 | `tests/test_adapters.py::test_anthropic_adapter_uses_x_api_key_and_requires_max_tokens` |
+| ACC-ADP-05 | `tests/test_adapters.py::test_anthropic_adapter_sums_cache_tokens` |
+| ACC-ADP-06 | `tests/test_adapters.py::test_anthropic_adapter_injects_structured_schema_into_system`、`tests/test_structured.py::test_complete_validates_anthropic_structured_output_end_to_end` |
+| ACC-RTR-01 | `tests/test_router_upstream.py::test_model_router_filters_routes_by_protocol_and_returns_adapter` |
+| ACC-RTR-02 | 同上 |
+| ACC-RTR-03 | 同上 |
+| ACC-RTR-04 | `tests/test_router_upstream.py::test_router_preserves_priority_order` |
+| ACC-RTR-05 | `tests/test_router_upstream.py::test_router_weighted_round_robin_uses_model_alias_counter` |
+| ACC-RTR-06 | `tests/test_router_upstream.py::test_router_skips_disabled_provider` |
+| ACC-RTR-07 | `tests/test_router_upstream.py::test_router_opens_and_recovers_circuit` |
+| ACC-RTR-08 | `tests/test_admin_routes.py::test_models_admin_usage_and_routes_are_available_with_key` |
+| ACC-GW-01 | `tests/test_gateway.py::test_complete_routes_to_adapter_and_returns_raw_response` |
+| ACC-GW-02 | `tests/test_gateway.py::test_complete_exhausts_three_retries_per_route` |
+| ACC-GW-03 | `tests/test_gateway.py::test_complete_retries_then_falls_back_to_next_route` |
+| ACC-GW-04 | `tests/test_gateway.py::test_complete_retries_configured_retry_statuses` |
+| ACC-GW-05 | `tests/test_gateway.py::test_complete_retries_network_errors` |
+| ACC-GW-06 | `tests/test_gateway.py::test_complete_non_retryable_4xx_still_falls_back` |
+| ACC-GW-07 | `tests/test_gateway.py::test_complete_raises_unified_error_when_all_routes_fail`、`tests/test_usage.py::test_gateway_records_error_usage_when_all_routes_fail` |
+| ACC-GW-08 | `tests/test_acceptance_pipeline.py::test_chat_completions_end_to_end_uses_shared_acceptance_config`、`tests/test_acceptance_pipeline.py::test_responses_and_messages_endpoints_use_shared_acceptance_config` |
+| ACC-STREAM-01 | `tests/test_gateway.py::test_stream_forwards_sse_and_records_first_token` |
+| ACC-STREAM-02 | `tests/test_gateway.py::test_stream_supports_openai_responses_native_events`、`tests/test_usage.py::test_gateway_records_responses_stream_raw_usage_metadata` |
+| ACC-STREAM-03 | `tests/test_gateway.py::test_stream_supports_anthropic_native_events`、`tests/test_usage.py::test_gateway_records_anthropic_stream_raw_usage_metadata` |
+| ACC-STREAM-04 | `tests/test_gateway.py::test_stream_forwards_sse_and_records_first_token`、`tests/test_usage.py::test_gateway_records_stream_usage_and_ttft` |
+| ACC-STREAM-05 | `tests/test_gateway.py::test_stream_retries_before_first_byte_and_falls_back` |
+| ACC-STREAM-06 | `tests/test_gateway.py::test_stream_emits_error_after_content_without_fallback` |
+| ACC-STREAM-07 | `tests/test_gateway.py::test_stream_cancels_upstream_on_client_disconnect` |
+| ACC-SCHEMA-01 | `tests/test_structured.py::test_complete_accepts_valid_structured_output_without_repair` |
+| ACC-SCHEMA-02 | `tests/test_structured.py::test_validate_structured_content_accepts_markdown_fenced_json`、`tests/test_structured.py::test_validate_structured_content_extracts_fenced_json_with_surrounding_text` |
+| ACC-SCHEMA-03 | `tests/test_structured.py::test_complete_repairs_invalid_structured_output_once` |
+| ACC-SCHEMA-04 | `tests/test_structured.py::test_complete_raises_structured_error_when_repair_budget_exhausted` |
+| ACC-SCHEMA-05 | `tests/test_structured.py::test_complete_validates_anthropic_structured_output_end_to_end`、`tests/test_adapters.py::test_anthropic_adapter_injects_structured_schema_into_system` |
+| ACC-SCHEMA-06 | `tests/test_routes.py::test_structured_spec_parses_openai_chat_json_schema`、`tests/test_routes.py::test_structured_spec_parses_responses_text_format` |
+| ACC-PRM-01 | `tests/test_prompts.py::test_prompt_repository_creates_and_resolves_versions` |
+| ACC-PRM-02 | 同上 |
+| ACC-PRM-03 | 同上 |
+| ACC-PRM-04 | `tests/test_prompts.py::test_prompt_repository_reports_missing_variable` |
+| ACC-PRM-05 | `tests/test_prompts.py::test_prompt_repository_reports_invalid_template` |
+| ACC-PRM-06 | `tests/test_prompts.py::test_prompt_ref_injects_into_all_three_protocols`、`tests/test_prompts.py::test_apply_prompt_prepends_chat_message`、`tests/test_prompts.py::test_apply_prompt_writes_responses_instructions_before_existing`、`tests/test_prompts.py::test_apply_prompt_prepends_anthropic_system_text_block` |
+| ACC-PRM-07 | `tests/test_prompts.py::test_prompt_repository_reports_unknown_prompt_id` |
+| ACC-USAGE-01 | `tests/test_usage.py::test_gateway_records_success_usage_and_prompt_metadata` |
+| ACC-USAGE-02 | `tests/test_usage.py::test_usage_repository_round_trip_and_cost` |
+| ACC-USAGE-03 | `tests/test_usage.py::test_gateway_records_stream_usage_and_ttft` |
+| ACC-USAGE-04 | `tests/test_usage.py::test_gateway_records_retry_and_fallback_usage`、`tests/test_usage.py::test_gateway_records_attempted_routes_when_all_routes_fail` |
+| ACC-USAGE-05 | `tests/test_usage.py::test_gateway_records_structured_repair_usage`、`tests/test_usage.py::test_gateway_structured_repair_cost_uses_each_upstream_model` |
+| ACC-USAGE-06 | `tests/test_usage.py::test_gateway_records_error_usage_when_all_routes_fail` |
+| ACC-USAGE-07 | `tests/test_usage.py::test_gateway_usage_does_not_persist_sensitive_payloads`、`tests/test_security_rate_limit.py::test_key_fingerprint_is_short_and_stable` |
+| ACC-USAGE-08 | `tests/test_admin_routes.py::test_admin_usage_limit_parameter` |
+| ACC-SEC-01 | `tests/test_admin_routes.py::test_healthz_and_readyz_do_not_require_auth` |
+| ACC-SEC-02 | `tests/test_admin_routes.py::test_protected_routes_require_bearer_key` |
+| ACC-SEC-03 | `tests/test_security_rate_limit.py::test_authenticate_accepts_bearer_key`、`tests/test_security_rate_limit.py::test_authenticate_rejects_invalid_key` |
+| ACC-SEC-04 | `tests/test_security_rate_limit.py::test_authenticate_accepts_x_api_key`、`tests/test_admin_routes.py::test_protected_routes_accept_x_api_key` |
+| ACC-SEC-05 | `tests/test_security_rate_limit.py::test_authenticate_uses_client_fingerprint_in_dev_mode` |
+| ACC-SEC-06 | `tests/test_admin_routes.py::test_model_endpoint_rate_limits_after_burst`、`tests/test_acceptance_pipeline.py::test_rate_limit_uses_burst_from_acceptance_config` |
+| ACC-SEC-07 | `tests/test_admin_routes.py::test_non_model_endpoints_do_not_rate_limit` |
+| ACC-SEC-08 | 各错误路径测试中的 `error` 对象断言，如 `tests/test_routes.py::test_json_payload_rejects_invalid_json` |
+| ACC-ADMIN-01 | `tests/test_admin_routes.py::test_models_admin_usage_and_routes_are_available_with_key` |
+| ACC-ADMIN-02 | 同上 |
+| ACC-ADMIN-03 | 同上 |
+| ACC-ADMIN-04 | `tests/test_admin_routes.py::test_model_call_does_not_forward_unknown_fields`、`tests/test_admin_routes.py::test_prompt_creation_rejects_unknown_fields`、`tests/test_admin_routes.py::test_prompt_render_rejects_unknown_fields` |
+| BH-01 | `scripts/run_http_acceptance_tests.sh` |
+| BH-02 | 同上 |
+| BH-03 | 同上 |
+| BH-04 | 同上 |
+| BH-05 | 同上 |
+| BH-06 | 同上 |
+| BH-07 | 同上 |
+| BH-08 | 同上 |

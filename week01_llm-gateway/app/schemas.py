@@ -31,6 +31,8 @@ class PromptReference(BaseModel):
 
 
 class PromptCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
     name: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1)
@@ -40,6 +42,8 @@ class PromptCreate(BaseModel):
 
 
 class PromptRender(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     version: int | None = Field(default=None, ge=1)
     variables: dict[str, Any] = Field(default_factory=dict)
 

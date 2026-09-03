@@ -74,7 +74,142 @@ def test_model_router_filters_routes_by_protocol_and_returns_adapter() -> None:
 
     with pytest.raises(GatewayError) as exc_info:
         router.candidates("missing", "chat")
-    assert exc_info.value.code == "model_not_found"
+        assert exc_info.value.code == "model_not_found"
+
+
+def _weighted_config() -> GatewayConfig:
+    return GatewayConfig.model_validate(
+        {
+            "providers": {
+                "openai-a": {
+                    "base_url": "https://a.test",
+                    "api_key": "key-a",
+                },
+                "openai-b": {
+                    "base_url": "https://b.test",
+                    "api_key": "key-b",
+                },
+            },
+            "models": {
+                "smart": {
+                    "strategy": "weighted_round_robin",
+                    "routes": [
+                        {
+                            "provider": "openai-a",
+                            "model": "gpt-a",
+                            "weight": 3,
+                            "api": "chat",
+                        },
+                        {
+                            "provider": "openai-b",
+                            "model": "gpt-b",
+                            "weight": 1,
+                            "api": "chat",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+
+
+def test_router_preserves_priority_order() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "providers": {
+                "openai-a": {"base_url": "https://a.test", "api_key": "key-a"},
+                "openai-b": {"base_url": "https://b.test", "api_key": "key-b"},
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {"provider": "openai-a", "model": "gpt-a", "api": "chat"},
+                        {"provider": "openai-b", "model": "gpt-b", "api": "chat"},
+                    ],
+                }
+            },
+        }
+    )
+
+    targets = ModelRouter(config).candidates("smart", "chat")
+
+    assert [target.provider for target in targets] == ["openai-a", "openai-b"]
+
+
+def test_router_weighted_round_robin_uses_model_alias_counter() -> None:
+    router = ModelRouter(_weighted_config())
+
+    providers = [
+        router.candidates("smart", "chat")[0].provider for _ in range(4)
+    ]
+
+    assert providers == ["openai-a", "openai-a", "openai-a", "openai-b"]
+
+
+def test_router_skips_disabled_provider() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "providers": {
+                "openai-a": {
+                    "base_url": "https://a.test",
+                    "api_key": "key-a",
+                    "enabled": False,
+                },
+                "openai-b": {"base_url": "https://b.test", "api_key": "key-b"},
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {"provider": "openai-a", "model": "gpt-a", "api": "chat"},
+                        {"provider": "openai-b", "model": "gpt-b", "api": "chat"},
+                    ],
+                }
+            },
+        }
+    )
+
+    targets = ModelRouter(config).candidates("smart", "chat")
+
+    assert [target.provider for target in targets] == ["openai-b"]
+
+
+def test_router_opens_and_recovers_circuit(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "circuit_breaker": {
+                "failure_threshold": 2,
+                "cooldown_seconds": 10,
+            },
+            "providers": {
+                "openai": {"base_url": "https://a.test", "api_key": "key-a"}
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {"provider": "openai", "model": "gpt-a", "api": "chat"}
+                    ],
+                }
+            },
+        }
+    )
+    router = ModelRouter(config)
+    now = 1000.0
+    monkeypatch.setattr("app.services.router.time.monotonic", lambda: now)
+
+    assert router.candidates("smart", "chat")[0].provider == "openai"
+
+    router.record_failure("openai")
+    router.record_failure("openai")
+
+    with pytest.raises(GatewayError) as exc_info:
+        router.candidates("smart", "chat")
+    assert exc_info.value.code == "no_healthy_route"
+
+    now = 1011.0
+    assert router.candidates("smart", "chat")[0].provider == "openai"
 
 
 @pytest.mark.asyncio

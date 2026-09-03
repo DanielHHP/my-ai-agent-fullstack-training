@@ -36,6 +36,9 @@ __pycache__/
 /.coverage.*
 /htmlcov/
 
+# Automated test pipeline reports.
+/reports/
+
 # Packaging artifacts.
 /build/
 /dist/

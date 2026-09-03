@@ -164,7 +164,7 @@ tool schema 仅作为后续可选扩展，不在本次实现范围内。
 | TTFT | 首个内容增量事件 |
 | Anthropic `system` | 支持字符串和文本块数组；Prompt 渲染结果放在开头 |
 | OpenAI Responses `input` | 支持字符串和消息数组，其他结构透传 |
-| 未知字段 | 模型调用入口允许透传；Prompt 和管理接口严格校验 |
+| 未知字段 | 模型调用入口允许接收但不向上游透传；Prompt 和管理接口严格校验 |
 | 失败调用记录 | 所有路由失败时仍记录 `status=error` |
 | 用量字段 | `cost_usd` 只含成功响应；失败 Token/成本用 `retry_*` |
 | `retries`/`fallbacks`/`repair_retries` | `retries` 只记录普通重试，`fallbacks` 记录跳过路由数，`repair_retries` 单独记录结构化修复 |

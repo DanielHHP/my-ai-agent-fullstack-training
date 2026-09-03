@@ -45,7 +45,7 @@ def test_validate_structured_content_rejects_invalid_json() -> None:
         validate_structured_content("not-json", schema)
 
     assert exc_info.value.status_code == 422
-    assert exc_info.value.code == "invalid_model_output"
+    assert exc_info.value.code == "structured_output_error"
 
 
 def test_validate_structured_content_rejects_schema_mismatch() -> None:
@@ -111,6 +111,119 @@ def _chat_response(content: str) -> dict[str, Any]:
         "choices": [{"message": {"role": "assistant", "content": content}}],
         "usage": {"prompt_tokens": 4, "completion_tokens": 2},
     }
+
+
+@pytest.mark.asyncio
+async def test_complete_accepts_valid_structured_output_without_repair() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_chat_response('{"name":"Alice"}'))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config = _config()
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+        request = UnifiedRequest(
+            model="smart",
+            protocol="chat_completions",
+            messages=[UnifiedMessage(role="user", content="return a person")],
+            response_format=StructuredOutputSpec(
+                schema={
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+                name="person",
+            ),
+        )
+
+        result = await service.complete(request)
+
+        assert result.metrics.repair_retries == 0
+        assert result.raw["choices"][0]["message"]["content"] == '{"name":"Alice"}'
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_validates_anthropic_structured_output_end_to_end() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "structured_output_retries": 0,
+            "retry": {
+                "max_retries_per_route": 0,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+            },
+            "providers": {
+                "anthropic": {
+                    "base_url": "https://anthropic.test",
+                    "api_key": "anthropic-key",
+                }
+            },
+            "models": {
+                "claude-fast": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "anthropic",
+                            "model": "claude-acceptance",
+                            "api": "messages",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    captured_body: dict[str, Any] = {}
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-acceptance",
+                "content": [{"type": "text", "text": '{"name":"Alice"}'}],
+                "usage": {"input_tokens": 3, "output_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+        request = UnifiedRequest(
+            model="claude-fast",
+            protocol="anthropic_messages",
+            messages=[UnifiedMessage(role="user", content="return a person")],
+            max_tokens=32,
+            response_format=StructuredOutputSpec(schema=schema, name="person"),
+        )
+
+        result = await service.complete(request)
+
+        system = captured_body["system"]
+        assert isinstance(system, str)
+        assert "Return only valid JSON" in system
+        assert json.dumps(schema) in system
+        assert result.metrics.repair_retries == 0
+        assert result.raw["content"][0]["text"] == '{"name":"Alice"}'
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio
@@ -184,6 +297,6 @@ async def test_complete_raises_structured_error_when_repair_budget_exhausted() -
             await service.complete(request)
 
         assert exc_info.value.status_code == 422
-        assert exc_info.value.code == "invalid_model_output"
+        assert exc_info.value.code == "structured_output_error"
     finally:
         await client.aclose()

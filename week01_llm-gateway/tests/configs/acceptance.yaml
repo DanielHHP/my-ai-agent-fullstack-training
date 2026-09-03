@@ -1,0 +1,62 @@
+service_name: llm-gateway-acceptance
+
+api_keys:
+  - test-key
+  - rate-limit-key
+
+# 该路径在测试 fixture 中会被替换为 tmp_path 下的独立 SQLite 文件。
+database_url: data/acceptance.db
+
+structured_output_retries: 1
+
+retry:
+  max_retries_per_route: 2
+  base_delay_seconds: 0
+  max_delay_seconds: 0
+  retry_statuses:
+    - 500
+    - 502
+    - 503
+
+circuit_breaker:
+  failure_threshold: 3
+  cooldown_seconds: 30
+
+rate_limit:
+  enabled: true
+  requests_per_minute: 60
+  burst: 2
+
+pricing:
+  gpt-acceptance:
+    input_per_million: 1.0
+    output_per_million: 2.0
+    cached_input_per_million: 0.5
+
+providers:
+  openai-primary:
+    base_url: https://openai-primary.invalid
+    api_key: test-openai-primary-key
+  openai-backup:
+    base_url: https://openai-backup.invalid
+    api_key: test-openai-backup-key
+  anthropic:
+    base_url: https://anthropic.invalid
+    api_key: test-anthropic-key
+
+models:
+  smart:
+    strategy: priority
+    routes:
+      - provider: openai-primary
+        model: gpt-acceptance
+        api: "chat,responses"
+      - provider: openai-backup
+        model: gpt-acceptance-backup
+        api: "chat,responses"
+  claude-fast:
+    strategy: priority
+    routes:
+      - provider: anthropic
+        model: claude-acceptance
+        api: "messages"

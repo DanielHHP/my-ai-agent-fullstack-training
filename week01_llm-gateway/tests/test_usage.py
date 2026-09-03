@@ -761,3 +761,143 @@ async def test_gateway_records_attempted_routes_when_all_routes_fail(tmp_path) -
         ]
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_records_retry_and_fallback_usage(tmp_path) -> None:
+    database_path = str(tmp_path / "gateway.db")
+    config = GatewayConfig.model_validate(
+        {
+            "database_url": database_path,
+            "retry": {
+                "max_retries_per_route": 1,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+                "retry_statuses": [500],
+            },
+            "providers": {
+                "openai": {
+                    "base_url": "https://primary.test",
+                    "api_key": "primary-key",
+                },
+                "openai-backup": {
+                    "base_url": "https://backup.test",
+                    "api_key": "backup-key",
+                },
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-primary",
+                            "api": "chat",
+                        },
+                        {
+                            "provider": "openai-backup",
+                            "model": "gpt-backup",
+                            "api": "chat",
+                        },
+                    ],
+                }
+            },
+        }
+    )
+    repo = UsageRepository(database_path, config)
+    await repo.initialize()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "primary.test" in str(request.url):
+            return httpx.Response(500, json={"error": {"message": "down"}})
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_1",
+                "object": "chat.completion",
+                "model": "gpt-backup",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 3,
+                    "prompt_tokens_details": {"cached_tokens": 2},
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+            usage=repo,
+        )
+
+        await service.complete(
+            UnifiedRequest(
+                model="smart",
+                protocol="chat_completions",
+                messages=[UnifiedMessage(role="user", content="hello")],
+            )
+        )
+
+        rows = await repo.recent()
+        assert len(rows) == 1
+        assert rows[0]["retries"] == 1
+        assert rows[0]["fallbacks"] == 1
+        assert rows[0]["status"] == "success"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gateway_usage_does_not_persist_sensitive_payloads(tmp_path) -> None:
+    database_path = str(tmp_path / "gateway.db")
+    config = _config(database_path)
+    repo = UsageRepository(database_path, config)
+    prompts = PromptRepository(database_path)
+    await repo.initialize()
+    await prompts.initialize()
+    await prompts.create_version(
+        PromptCreate(
+            id="reviewer",
+            name="Reviewer",
+            content="Review {{language}} code.",
+            role="system",
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=_chat_response("ok"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+            prompts=prompts,
+            usage=repo,
+        )
+
+        await service.complete(
+            _chat_request(
+                prompt_ref=PromptReference(
+                    id="reviewer",
+                    variables={"language": "Python"},
+                )
+            ),
+            api_key_hash="caller-fingerprint",
+        )
+
+        rows = await repo.recent()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["api_key_hash"] == "caller-fingerprint"
+        assert "Review Python code." not in json.dumps(row)
+        assert "hello" not in json.dumps(row)
+        assert "caller-fingerprint" in json.dumps(row)
+    finally:
+        await client.aclose()

@@ -75,6 +75,19 @@ async def test_authenticate_accepts_bearer_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_authenticate_accepts_x_api_key() -> None:
+    request = _request(_config(["secret-key"]))
+
+    identity = await authenticate(
+        request,
+        authorization=None,
+        x_api_key="secret-key",
+    )
+
+    assert identity == key_fingerprint("secret-key")
+
+
+@pytest.mark.asyncio
 async def test_authenticate_rejects_invalid_key() -> None:
     request = _request(_config(["secret-key"]))
 

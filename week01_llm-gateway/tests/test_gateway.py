@@ -406,3 +406,165 @@ async def test_stream_supports_openai_responses_native_events() -> None:
         assert stream_result.metrics.output_tokens == 2
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_exhausts_three_retries_per_route() -> None:
+    primary_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal primary_calls
+        if "primary.test" in str(request.url):
+            primary_calls += 1
+        return httpx.Response(500, json={"error": {"message": "down"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config = _config(retries=3)
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+
+        with pytest.raises(GatewayError):
+            await service.complete(_chat_request())
+
+        assert primary_calls == 4
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [408, 409, 429, 500, 502, 503, 504])
+async def test_complete_retries_configured_retry_statuses(
+    status_code: int,
+) -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "retry": {
+                "max_retries_per_route": 1,
+                "base_delay_seconds": 0,
+                "max_delay_seconds": 0,
+                "retry_statuses": [status_code],
+            },
+            "providers": {
+                "openai": {
+                    "base_url": "https://primary.test",
+                    "api_key": "primary-key",
+                }
+            },
+            "models": {
+                "smart": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-primary",
+                            "api": "chat",
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                status_code,
+                json={"error": {"message": "retry me"}},
+            )
+        return httpx.Response(200, json=_chat_response("ok"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+
+        result = await service.complete(_chat_request())
+
+        assert calls == 2
+        assert result.metrics.retries == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_retries_network_errors() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("connect failed", request=request)
+        return httpx.Response(200, json=_chat_response("ok"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config = _config(retries=1)
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+
+        result = await service.complete(_chat_request())
+
+        assert calls == 2
+        assert result.metrics.retries == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_error_after_content_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    try:
+        config = _config(retries=0)
+        upstream = UpstreamClient(
+            client=client,
+            retry_statuses=config.retry.retry_statuses,
+        )
+
+        class FakeResponse:
+            async def aiter_bytes(self):
+                yield b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+                raise httpx.ReadTimeout(
+                    "stream broke",
+                    request=httpx.Request("POST", "https://primary.test"),
+                )
+
+            async def aclose(self) -> None:
+                return None
+
+        class FakeOpen:
+            response = FakeResponse()
+            provider_name = "openai"
+
+        async def fake_open_stream(request):
+            del request
+            return FakeOpen()
+
+        monkeypatch.setattr(upstream, "open_stream", fake_open_stream)
+        service = GatewayService(config, ModelRouter(config), upstream)
+
+        result = await service.stream(_chat_request(stream=True))
+        chunks = [chunk async for chunk in result.stream]
+
+        joined = b"".join(chunks)
+        assert b"first" in joined
+        assert b'"type": "stream_error"' in joined or b'"type": "upstream_error"' in joined
+        assert joined.endswith(b"data: [DONE]\n\n")
+        assert result.metrics.status == "error"
+    finally:
+        await client.aclose()

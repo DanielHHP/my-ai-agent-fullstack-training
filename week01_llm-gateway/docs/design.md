@@ -553,7 +553,7 @@ rate_limit:
 
 ## 15. 请求校验
 
-- 模型调用入口允许未知字段并透传。
+- 模型调用入口允许未知字段出现在请求体中，但当前实现不向上游透传未知字段；网关只保留显式支持的字段和 `metadata`。后续如需透传，应通过显式白名单扩展，避免覆盖协议必需字段。
 - Prompt 和管理接口严格校验。
 - Anthropic `messages` 必须非空；缺失时返回 `422`。
 - Anthropic `max_tokens` 必填；缺失时返回 `422`，`param="max_tokens"`，`code="missing_required_parameter"`。
