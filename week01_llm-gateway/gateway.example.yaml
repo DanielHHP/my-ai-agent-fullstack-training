@@ -29,6 +29,16 @@ stream_checkpoint:
   max_chars: 200000
 
 providers:
+  deepseek-v4-pro:
+    base_url: https://api.deepseek.com
+    api_key: ${DEEPSEEK_API_KEY}
+    timeout_seconds: 120
+    connect_timeout_seconds: 10
+  deepseek-v4-flash:
+    base_url: https://api.deepseek.com/anthropic
+    api_key: ${DEEPSEEK_API_KEY}
+    timeout_seconds: 120
+    connect_timeout_seconds: 10
   openai:
     base_url: https://api.openai.com
     api_key: ${OPENAI_API_KEY}
@@ -43,6 +53,19 @@ providers:
     timeout_seconds: 120
 
 models:
+  deepseek-v4-pro:
+    strategy: priority
+    routes:
+      - provider: deepseek-v4-pro
+        model: deepseek-v4-pro
+        api: "chat,responses"
+
+  deepseek-v4-flash:
+    strategy: priority
+    routes:
+      - provider: deepseek-v4-flash
+        model: deepseek-v4-flash
+        api: "messages"
   smart:
     strategy: priority
     routes:
@@ -80,6 +103,7 @@ models:
         api: all
 
 # 单位：美元 / 1M tokens。请按供应商当前价格自行维护。
+# deepseek取高峰期定价
 pricing:
   gpt-5.2:
     input_per_million: 1.75
@@ -93,3 +117,11 @@ pricing:
     input_per_million: 3
     output_per_million: 15
     cached_input_per_million: 0.30
+  deepseek-v4-pro:
+    input_per_million: 1.35
+    output_per_million: 4.05
+    cached_input_per_million: 0.045
+  deepseek-v4-flash:
+    input_per_million: 0.45
+    output_per_million: 1.35
+    cached_input_per_million: 0.015
