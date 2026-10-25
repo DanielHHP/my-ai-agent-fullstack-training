@@ -201,7 +201,7 @@ data: {"type":"message_stop"}
 | ACC-CFG-03 | 协议能力解析 | `api` 为 `chat,responses`、`messages`、`all` | 正确解析为协议集合 |
 | ACC-CFG-04 | `all` 保留字约束 | `api` 为 `all,chat` | 解析失败，提示 `all` 不能与其他协议组合 |
 | ACC-CFG-05 | 未知协议值 | `api` 为 `chat,both` | 解析失败，`both` 不允许 |
-| ACC-CFG-06 | 默认配置值 | 缺省 `retry`、`rate_limit`、`circuit_breaker` | 使用默认值：每路由最多 3 次重试、限流 60/min、burst 10、熔断阈值 5、冷却 30s |
+| ACC-CFG-06 | 默认配置值 | 缺省 `retry`、`rate_limit`、`circuit_breaker` | 使用默认值：请求最多 3 次重试、单路由最多 1 次重试、限流 60/min、burst 10、熔断阈值 5、冷却 30s |
 
 ### B. 协议适配器与请求构造
 
@@ -232,13 +232,14 @@ data: {"type":"message_stop"}
 | 用例 ID | 场景 | Mock 行为 | 预期验证点 |
 | --- | --- | --- | --- |
 | ACC-GW-01 | 单路由成功 | 200 + 协议原生 JSON | 返回上游 `raw` 结构不变；`metrics.status=success`；`retries=0`、`fallbacks=0` |
-| ACC-GW-02 | 每条路由最多 3 次重试 | 首选路由连续返回 500 | 首选路由总计请求 4 次；重试计数为 3 |
-| ACC-GW-03 | fallback 后重试计数重置 | 首选失败 4 次，次选第一次成功 | `retries` 等于首选路由重试次数，`fallbacks=1`；次选不继承首选重试计数 |
+| ACC-GW-02 | 请求级最多 3 次重试 | 多路由连续返回 500 | 上游请求总计最多 4 次；预算耗尽后不再尝试 fallback |
+| ACC-GW-03 | fallback 消耗请求级预算 | 首选重试后切换次选并成功 | 初次请求不计预算；所有普通重试与 fallback 调用合计不超过 3 次额外调用 |
 | ACC-GW-04 | 可重试状态码 | 返回 408、429、500、502、503、504 | 触发指数退避重试 |
 | ACC-GW-05 | 网络异常可重试 | `httpx.ConnectError` 或 `ReadTimeout` | 捕获为 `UpstreamError` 并重试 |
 | ACC-GW-06 | 普通 4xx 不重试但 fallback | 首选返回 400，次选成功 | 首选只调用 1 次，`retries=0`，`fallbacks=1` |
 | ACC-GW-07 | 所有候选路由失败 | 所有路由返回 500 | 抛统一 `GatewayError`，HTTP 502 `upstream_error`；用量仍记录 `status=error` |
 | ACC-GW-08 | 三协议端到端非流式 | 分别走 chat/responses/messages 模型 | 各入口响应为对应协议原生结构，上游 URL、鉴权、请求体正确 |
+| ACC-GW-09 | 重试、fallback、修复共享预算 | 首选普通重试、次选返回非法结构化输出 | 预算耗尽后不再发起结构化修复；总上游调用不超过 4 次 |
 
 ### E. SSE 流式输出
 
@@ -251,6 +252,7 @@ data: {"type":"message_stop"}
 | ACC-STREAM-05 | 首字节前重试/fallback | 首选流式连接返回 500 | 在下游未收到字节前可重试和 fallback；已收到内容后不再切换模型 |
 | ACC-STREAM-06 | 已发送内容后上游错误 | 先发送若干 chunk，再发送错误 | 停止续传，发送 SSE 错误事件和结束标记 |
 | ACC-STREAM-07 | 客户端断开取消上游 | 通过 `is_disconnected` 模拟断开 | 上游流被关闭，指标记录 `status=cancelled`、`status_code=499` |
+| ACC-STREAM-08 | 流式请求级重试预算 | 首选流连续返回 500 | 首字节前普通重试和 fallback 合计不超过请求预算，随后发送 SSE 错误与 `data: [DONE]` |
 
 ### F. 结构化输出
 
@@ -287,6 +289,7 @@ data: {"type":"message_stop"}
 | ACC-USAGE-06 | 失败调用记录 | 所有路由失败 | 仍写入一条 `status=error`，包含 `error_type`、`error_message` |
 | ACC-USAGE-07 | 敏感信息脱敏 | 有 Prompt 正文、用户消息、API Key | SQLite 中不保存 API Key 原文、Prompt 正文、用户消息正文；只保存 API Key 指纹 |
 | ACC-USAGE-08 | `/admin/usage` 查询 | 多次调用后查询 | 返回 `{"data":[...]}`，按时间倒序；`limit` 参数生效，范围为 1..1000 |
+| ACC-USAGE-09 | 重试预算观测 | 发生普通重试与 fallback | `metadata.retry_budget.limit/used/upstream_attempts` 与实际上游调用一致 |
 
 ### I. 统一错误、鉴权与限流
 
@@ -300,6 +303,10 @@ data: {"type":"message_stop"}
 | ACC-SEC-06 | 模型端点限流 | `burst=1`，连续请求 2 次 | 第二次返回 429，`code=rate_limit_exceeded`，响应含 `Retry-After` |
 | ACC-SEC-07 | 非模型端点不限流 | 连续访问 `/v1/prompts`、`/admin/routes` | 不触发限流 |
 | ACC-SEC-08 | 统一错误格式 | 各类错误 | 响应均为 `{"error":{"message","type","param","code",...}}` |
+| ACC-SEC-09 | 同一调用方模型隔离 | 同一 API Key，`burst=1`，分别调用两个模型 | 两个模型首次请求均成功；重复调用第一个模型返回 429 |
+| ACC-SEC-10 | 不同调用方模型隔离 | 两个调用方调用同一模型 | 各自拥有独立令牌桶 |
+| ACC-SEC-11 | 同模型跨协议共享额度 | 同一模型分别通过 Chat 和 Responses 调用 | 两次调用共享同一模型桶，第二次在 `burst=1` 时返回 429 |
+| ACC-SEC-12 | 未知模型桶数量有界 | 连续提交不同未知模型名 | 首次返回 404；后续未知模型共享固定桶并返回 429 |
 
 ### J. 管理接口与健康检查
 
@@ -330,11 +337,11 @@ data: {"type":"message_stop"}
 3. 所有验收用例均不访问真实模型服务商，`httpx.MockTransport` 覆盖全部上游调用路径。
 4. 三种协议非流式入口都能返回协议原生结构。
 5. 三种协议流式入口都能以 SSE 透明转发，并正确记录 TTFT。
-6. 重试语义满足：每路由最多 3 次重试、fallback 后重新计数、普通 4xx 不重试但允许同协议 fallback。
+6. 重试语义满足：每个请求最多 3 次重试；普通重试、fallback、结构化修复共享预算；普通 4xx 不重试但允许同协议 fallback。
 7. 结构化输出非法结果能自动修复，超过次数返回统一错误。
 8. Prompt 能创建、查询、按版本引用和渲染。
 9. 用量账本能记录 token、延迟、TTFT、重试、fallback、修复和成本，且不保存敏感原文。
-10. 鉴权限流语义符合设计：模型端点限流，其他端点只鉴权，超限返回 429。
+10. 鉴权限流语义符合设计：模型端点按调用方和模型组合限流，不同模型额度隔离，其他端点只鉴权，超限返回 429。
 11. 管理接口和健康检查状态正确。
 12. HTTP 黑盒验证场景全部通过。
 
@@ -491,13 +498,14 @@ curl -N \
 | ACC-RTR-07 | `tests/test_router_upstream.py::test_router_opens_and_recovers_circuit` |
 | ACC-RTR-08 | `tests/test_admin_routes.py::test_models_admin_usage_and_routes_are_available_with_key` |
 | ACC-GW-01 | `tests/test_gateway.py::test_complete_routes_to_adapter_and_returns_raw_response` |
-| ACC-GW-02 | `tests/test_gateway.py::test_complete_exhausts_three_retries_per_route` |
+| ACC-GW-02 | `tests/test_gateway.py::test_complete_caps_total_request_retries_before_fallback` |
 | ACC-GW-03 | `tests/test_gateway.py::test_complete_retries_then_falls_back_to_next_route` |
 | ACC-GW-04 | `tests/test_gateway.py::test_complete_retries_configured_retry_statuses` |
 | ACC-GW-05 | `tests/test_gateway.py::test_complete_retries_network_errors` |
 | ACC-GW-06 | `tests/test_gateway.py::test_complete_non_retryable_4xx_still_falls_back` |
 | ACC-GW-07 | `tests/test_gateway.py::test_complete_raises_unified_error_when_all_routes_fail`、`tests/test_usage.py::test_gateway_records_error_usage_when_all_routes_fail` |
 | ACC-GW-08 | `tests/test_acceptance_pipeline.py::test_chat_completions_end_to_end_uses_shared_acceptance_config`、`tests/test_acceptance_pipeline.py::test_responses_and_messages_endpoints_use_shared_acceptance_config` |
+| ACC-GW-09 | `tests/test_gateway.py::test_complete_shared_budget_prevents_repair_after_retry_and_fallback` |
 | ACC-STREAM-01 | `tests/test_gateway.py::test_stream_forwards_sse_and_records_first_token` |
 | ACC-STREAM-02 | `tests/test_gateway.py::test_stream_supports_openai_responses_native_events`、`tests/test_usage.py::test_gateway_records_responses_stream_raw_usage_metadata` |
 | ACC-STREAM-03 | `tests/test_gateway.py::test_stream_supports_anthropic_native_events`、`tests/test_usage.py::test_gateway_records_anthropic_stream_raw_usage_metadata` |
@@ -505,6 +513,7 @@ curl -N \
 | ACC-STREAM-05 | `tests/test_gateway.py::test_stream_retries_before_first_byte_and_falls_back` |
 | ACC-STREAM-06 | `tests/test_gateway.py::test_stream_emits_error_after_content_without_fallback` |
 | ACC-STREAM-07 | `tests/test_gateway.py::test_stream_cancels_upstream_on_client_disconnect` |
+| ACC-STREAM-08 | `tests/test_gateway.py::test_stream_caps_total_request_retries_before_fallback` |
 | ACC-SCHEMA-01 | `tests/test_structured.py::test_complete_accepts_valid_structured_output_without_repair` |
 | ACC-SCHEMA-02 | `tests/test_structured.py::test_validate_structured_content_accepts_markdown_fenced_json`、`tests/test_structured.py::test_validate_structured_content_extracts_fenced_json_with_surrounding_text` |
 | ACC-SCHEMA-03 | `tests/test_structured.py::test_complete_repairs_invalid_structured_output_once` |
@@ -526,6 +535,7 @@ curl -N \
 | ACC-USAGE-06 | `tests/test_usage.py::test_gateway_records_error_usage_when_all_routes_fail` |
 | ACC-USAGE-07 | `tests/test_usage.py::test_gateway_usage_does_not_persist_sensitive_payloads`、`tests/test_security_rate_limit.py::test_key_fingerprint_is_short_and_stable` |
 | ACC-USAGE-08 | `tests/test_admin_routes.py::test_admin_usage_limit_parameter` |
+| ACC-USAGE-09 | `tests/test_usage.py::test_gateway_records_retry_and_fallback_usage`、`tests/test_usage.py::test_gateway_records_attempted_routes_when_all_routes_fail` |
 | ACC-SEC-01 | `tests/test_admin_routes.py::test_healthz_and_readyz_do_not_require_auth` |
 | ACC-SEC-02 | `tests/test_admin_routes.py::test_protected_routes_require_bearer_key` |
 | ACC-SEC-03 | `tests/test_security_rate_limit.py::test_authenticate_accepts_bearer_key`、`tests/test_security_rate_limit.py::test_authenticate_rejects_invalid_key` |
@@ -534,6 +544,10 @@ curl -N \
 | ACC-SEC-06 | `tests/test_admin_routes.py::test_model_endpoint_rate_limits_after_burst`、`tests/test_acceptance_pipeline.py::test_rate_limit_uses_burst_from_acceptance_config` |
 | ACC-SEC-07 | `tests/test_admin_routes.py::test_non_model_endpoints_do_not_rate_limit` |
 | ACC-SEC-08 | 各错误路径测试中的 `error` 对象断言，如 `tests/test_routes.py::test_json_payload_rejects_invalid_json` |
+| ACC-SEC-09 | `tests/test_admin_routes.py::test_rate_limit_isolated_by_model_for_same_api_key` |
+| ACC-SEC-10 | `tests/test_security_rate_limit.py::test_rate_limiter_isolates_callers_and_models` |
+| ACC-SEC-11 | `tests/test_admin_routes.py::test_rate_limit_shared_across_protocols_for_same_model` |
+| ACC-SEC-12 | `tests/test_admin_routes.py::test_unknown_models_share_a_bounded_rate_limit_bucket` |
 | ACC-ADMIN-01 | `tests/test_admin_routes.py::test_models_admin_usage_and_routes_are_available_with_key` |
 | ACC-ADMIN-02 | 同上 |
 | ACC-ADMIN-03 | 同上 |

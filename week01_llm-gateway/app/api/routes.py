@@ -20,20 +20,17 @@ from app.schemas import (
 router = APIRouter()
 
 
-async def limited_identity(
-    request: Request,
-    identity: Annotated[str, Depends(authenticate)],
-) -> str:
-    await request.app.state.rate_limiter.check(identity)
-    return identity
-
-
 Identity = Annotated[str, Depends(authenticate)]
-LimitedIdentity = Annotated[str, Depends(limited_identity)]
 
 
 def _gateway_error_response(exc: GatewayError) -> JSONResponse:
-    return JSONResponse(error_payload(exc), status_code=exc.status_code)
+    headers: dict[str, str] | None = None
+    if exc.status_code == 429:
+        retry_after = "1"
+        if isinstance(exc.details, dict) and exc.details.get("retry_after") is not None:
+            retry_after = str(exc.details["retry_after"])
+        headers = {"Retry-After": retry_after}
+    return JSONResponse(error_payload(exc), status_code=exc.status_code, headers=headers)
 
 
 async def _json_payload(request: Request) -> dict:
@@ -292,6 +289,14 @@ def _messages_request(payload: dict) -> UnifiedRequest:
 async def _model_call(
     request: Request, unified: UnifiedRequest, identity: str | None = None
 ):
+    if identity is not None:
+        model_key = (
+            unified.model
+            if unified.model in request.app.state.config.models
+            else "__invalid__"
+        )
+        await request.app.state.rate_limiter.check(identity, model_key)
+
     gateway = request.app.state.gateway
     if unified.stream:
         result = await gateway.stream(
@@ -324,7 +329,7 @@ async def healthz() -> dict[str, str]:
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: Request, identity: LimitedIdentity):
+async def chat_completions(request: Request, identity: Identity):
     try:
         payload = await _json_payload(request)
         unified = _chat_request(payload)
@@ -334,7 +339,7 @@ async def chat_completions(request: Request, identity: LimitedIdentity):
 
 
 @router.post("/v1/responses")
-async def responses(request: Request, identity: LimitedIdentity):
+async def responses(request: Request, identity: Identity):
     try:
         payload = await _json_payload(request)
         unified = _responses_request(payload)
@@ -344,7 +349,7 @@ async def responses(request: Request, identity: LimitedIdentity):
 
 
 @router.post("/v1/messages")
-async def messages(request: Request, identity: LimitedIdentity):
+async def messages(request: Request, identity: Identity):
     try:
         payload = await _json_payload(request)
         unified = _messages_request(payload)

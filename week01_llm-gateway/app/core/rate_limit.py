@@ -23,19 +23,20 @@ class InMemoryRateLimiter:
 
     def __init__(self, config: RateLimitConfig) -> None:
         self.config = config
-        self._buckets: dict[str, Bucket] = {}
+        self._buckets: dict[tuple[str, str], Bucket] = {}
         self._lock = asyncio.Lock()
 
-    async def check(self, identity: str) -> None:
+    async def check(self, identity: str, model: str) -> None:
         if not self.config.enabled:
             return
 
         now = time.monotonic()
         refill_per_second = self.config.requests_per_minute / 60
         capacity = float(self.config.burst)
+        key = (identity, model)
 
         async with self._lock:
-            bucket = self._buckets.setdefault(identity, Bucket(capacity, now))
+            bucket = self._buckets.setdefault(key, Bucket(capacity, now))
             bucket.tokens = min(
                 capacity,
                 bucket.tokens + (now - bucket.updated_at) * refill_per_second,

@@ -49,7 +49,8 @@ def parse_protocols(value: str) -> set[str]:
 
 
 class RetryConfig(BaseModel):
-    max_retries_per_route: int = Field(default=3, ge=0, le=5)
+    max_retries_per_request: int = Field(default=3, ge=0, le=5)
+    max_retries_per_route: int = Field(default=1, ge=0, le=5)
     base_delay_seconds: float = Field(default=0.25, ge=0, le=10)
     max_delay_seconds: float = Field(default=4, ge=0, le=60)
     retry_statuses: set[int] = Field(default_factory=lambda: {408, 409, 429, 500, 502, 503, 504})

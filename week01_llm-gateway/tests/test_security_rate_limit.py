@@ -104,12 +104,31 @@ async def test_rate_limiter_rejects_after_burst_exhausted() -> None:
         RateLimitConfig(enabled=True, requests_per_minute=60, burst=2)
     )
 
-    await limiter.check("caller-1")
-    await limiter.check("caller-1")
+    await limiter.check("caller-1", "smart")
+    await limiter.check("caller-1", "smart")
 
     with pytest.raises(GatewayError) as exc_info:
-        await limiter.check("caller-1")
+        await limiter.check("caller-1", "smart")
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.code == "rate_limit_exceeded"
     assert exc_info.value.details["retry_after"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_isolates_callers_and_models() -> None:
+    limiter = InMemoryRateLimiter(
+        RateLimitConfig(enabled=True, requests_per_minute=60, burst=1)
+    )
+
+    await limiter.check("caller-1", "smart")
+    await limiter.check("caller-1", "fast")
+    await limiter.check("caller-2", "smart")
+
+    with pytest.raises(GatewayError) as caller_model_exc:
+        await limiter.check("caller-1", "smart")
+    with pytest.raises(GatewayError) as other_caller_exc:
+        await limiter.check("caller-2", "smart")
+
+    assert caller_model_exc.value.code == "rate_limit_exceeded"
+    assert other_caller_exc.value.code == "rate_limit_exceeded"

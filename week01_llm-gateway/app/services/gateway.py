@@ -87,6 +87,26 @@ class CompletionResult:
 
 
 @dataclass
+class RetryBudget:
+    max_retries: int
+    attempts: int = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.attempts >= self.max_retries + 1
+
+    @property
+    def retries_used(self) -> int:
+        return max(0, self.attempts - 1)
+
+    def consume_attempt(self) -> bool:
+        if self.exhausted:
+            return False
+        self.attempts += 1
+        return True
+
+
+@dataclass
 class StreamResult:
     stream: AsyncIterator[bytes]
     request_id: str
@@ -141,6 +161,7 @@ class GatewayService:
         started = time.perf_counter()
         last_error: UpstreamError | None = None
         structured_attempt = 0
+        retry_budget = RetryBudget(self.config.retry.max_retries_per_request)
 
         try:
             protocol = self._route_protocol(request)
@@ -158,6 +179,8 @@ class GatewayService:
                 selected_target: RouteTarget | None = None
 
                 for route_index, target in enumerate(candidates):
+                    if retry_budget.exhausted:
+                        break
                     self._record_attempted_route(metrics, target)
                     upstream_request = adapter.build_request(
                         target=target,
@@ -167,6 +190,8 @@ class GatewayService:
                     )
                     attempts = 0
                     while True:
+                        if not retry_budget.consume_attempt():
+                            break
                         try:
                             raw = await self.upstream.request_json(upstream_request)
                         except UpstreamError as exc:
@@ -175,6 +200,7 @@ class GatewayService:
                             if (
                                 exc.retryable
                                 and attempts < self.config.retry.max_retries_per_route
+                                and not retry_budget.exhausted
                             ):
                                 metrics.retries += 1
                                 await self._backoff(attempts)
@@ -218,7 +244,10 @@ class GatewayService:
                     self._capture_retry_usage(
                         adapter, raw, metrics, selected_target.model
                     )
-                    if structured_attempt >= self.config.structured_output_retries:
+                    if (
+                        structured_attempt >= self.config.structured_output_retries
+                        or retry_budget.exhausted
+                    ):
                         self._apply_error_metrics(metrics, exc)
                         raise
                     structured_attempt += 1
@@ -245,6 +274,11 @@ class GatewayService:
             raise
         finally:
             metrics.latency_ms = round((time.perf_counter() - started) * 1000, 3)
+            metrics.metadata["retry_budget"] = {
+                "limit": retry_budget.max_retries,
+                "used": retry_budget.retries_used,
+                "upstream_attempts": retry_budget.attempts,
+            }
             await self._record_usage_safely(call_id, metrics)
 
     async def stream(
@@ -266,6 +300,7 @@ class GatewayService:
             stream=True,
         )
         started_sync = time.perf_counter()
+        retry_budget = RetryBudget(self.config.retry.max_retries_per_request)
 
         try:
             protocol = self._route_protocol(request)
@@ -301,6 +336,8 @@ class GatewayService:
 
             try:
                 for route_index, target in enumerate(candidates):
+                    if retry_budget.exhausted:
+                        break
                     self._record_attempted_route(metrics, target)
                     upstream_request = adapter.build_request(
                         target=target,
@@ -310,6 +347,8 @@ class GatewayService:
                     )
                     attempts = 0
                     while True:
+                        if not retry_budget.consume_attempt():
+                            break
                         opened = None
                         try:
                             opened = await self.upstream.open_stream(upstream_request)
@@ -319,6 +358,7 @@ class GatewayService:
                             if (
                                 exc.retryable
                                 and attempts < self.config.retry.max_retries_per_route
+                                and not retry_budget.exhausted
                             ):
                                 metrics.retries += 1
                                 await self._backoff(attempts)
@@ -374,6 +414,7 @@ class GatewayService:
                             if (
                                 upstream_error.retryable
                                 and attempts < self.config.retry.max_retries_per_route
+                                and not retry_budget.exhausted
                             ):
                                 metrics.retries += 1
                                 await self._backoff(attempts)
@@ -399,6 +440,11 @@ class GatewayService:
                 yield b"data: [DONE]\n\n"
             finally:
                 metrics.latency_ms = round((time.perf_counter() - started) * 1000, 3)
+                metrics.metadata["retry_budget"] = {
+                    "limit": retry_budget.max_retries,
+                    "used": retry_budget.retries_used,
+                    "upstream_attempts": retry_budget.attempts,
+                }
                 await self._record_usage_safely(call_id, metrics)
 
         return StreamResult(stream=generate(), request_id=call_id, metrics=metrics)

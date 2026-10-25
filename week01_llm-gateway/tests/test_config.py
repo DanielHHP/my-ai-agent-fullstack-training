@@ -56,7 +56,8 @@ def test_config_rejects_unknown_provider() -> None:
 def test_config_defaults_match_acceptance_expectations() -> None:
     config = GatewayConfig.model_validate(_minimal_raw())
 
-    assert config.retry.max_retries_per_route == 3
+    assert config.retry.max_retries_per_request == 3
+    assert config.retry.max_retries_per_route == 1
     assert config.rate_limit.enabled is True
     assert config.rate_limit.requests_per_minute == 60
     assert config.rate_limit.burst == 10

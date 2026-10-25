@@ -49,6 +49,7 @@
 - 多供应商、模型别名、优先级路由与加权轮询。
 - 通过适配器统一封装 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
 - 首选供应商失败后的自动重试与 fallback。
+- 普通重试、fallback 与结构化修复共享请求级重试预算。
 - 轻量级进程内熔断器。
 - SSE 流式响应透明转发；客户端断开时取消上游请求。
 - 非流式结构化输出校验失败后的本地修复重试。
@@ -150,6 +151,9 @@ docs/
 - 仓库只提交 `gateway.example.yaml`，不提交真实 `gateway.yaml`、`.env` 或任何真实密钥。
 - 模型路由引用的 `provider` 必须已经在 `providers` 中声明，启动或加载配置时应校验。
 - 每个路由需声明协议能力：`chat`、`responses`、`messages`；`all` 是保留字，只能单独出现，表示三种协议都支持，不再使用 `both`。
+- 重试使用 `retry.max_retries_per_request` 作为请求级硬上限，初次请求不计入 3 次重试预算；普通重试、fallback 和结构化修复都消耗同一预算。
+- `retry.max_retries_per_route` 是单路由局部上限，默认 1，避免首选路由耗尽全部预算而跳过 fallback。
+- 模型调用限流 key 为 `(调用方身份, 公开模型别名)`；不同模型独立，不同调用方独立。
 
 配置示例：
 
@@ -196,7 +200,8 @@ models:
 - Pydantic 模型用于请求、响应和配置校验。
 - 上游 HTTP 调用统一收口在 `UpstreamClient`，不要在路由函数中直接创建 httpx 请求。
 - 路由、重试、fallback 和熔断逻辑放在 `ModelRouter` 与 `GatewayService`，保持接口边界清晰。
-- 重试只覆盖网络错误、超时和配置中的可重试状态码；普通 4xx 不重试。
+- 重试只覆盖网络错误、超时和配置中的可重试状态码；普通 4xx 不重试，但 fallback 仍消耗请求级重试预算。
+- 请求级重试预算必须在 `complete()` 与 `stream()` 的完整生命周期内复用，不得因路由切换或结构化修复重置。
 - 流式响应一旦已向下游发送内容，不切换到另一模型续写；失败时发送 SSE 错误事件并结束。
 - 流式输出无法在已经发送内容后进行无损结构化纠错；严格业务协议建议使用非流式接口。
 - 用量记录只保存 API Key 的不可逆短指纹，不保存原密钥、Prompt 正文或用户消息正文。
@@ -227,13 +232,13 @@ docker compose up --build
 
 测试应使用 httpx 的 `MockTransport` 模拟上游，不消耗真实模型额度，并覆盖以下场景：
 
-- 模型别名路由、重试和 fallback。
+- 模型别名路由、重试、fallback 和请求级重试预算上限。
 - 用量记录中的 Token、成本、重试次数和 fallback 次数。
 - 结构化输出本地校验与自动修复。
 - Prompt 版本创建、激活版本、变量渲染和渲染错误。
 - SSE 流式转发、TTFT、断开取消。
 - Chat Completions、Responses 和 Messages 三种协议路由。
-- API Key 鉴权与限流错误语义。
+- API Key 鉴权、调用方与模型组合限流隔离和限流错误语义。
 
 ## 建议实现顺序
 

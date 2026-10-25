@@ -8,16 +8,17 @@ import pytest
 
 from app.config import GatewayConfig
 from app.core.errors import GatewayError
-from app.schemas import UnifiedMessage, UnifiedRequest
-from app.services.gateway import GatewayService
+from app.schemas import StructuredOutputSpec, UnifiedMessage, UnifiedRequest
+from app.services.gateway import GatewayService, RetryBudget
 from app.services.router import ModelRouter
 from app.services.upstream import UpstreamClient
 
 
-def _config(*, retries: int = 2) -> GatewayConfig:
+def _config(*, retries: int = 2, request_retries: int = 3) -> GatewayConfig:
     return GatewayConfig.model_validate(
         {
             "retry": {
+                "max_retries_per_request": request_retries,
                 "max_retries_per_route": retries,
                 "base_delay_seconds": 0,
                 "max_delay_seconds": 0,
@@ -66,6 +67,15 @@ def _config(*, retries: int = 2) -> GatewayConfig:
             },
         }
     )
+
+
+def test_retry_budget_allows_initial_attempt_plus_configured_retries() -> None:
+    budget = RetryBudget(max_retries=3)
+
+    assert [budget.consume_attempt() for _ in range(4)] == [True, True, True, True]
+    assert budget.exhausted is True
+    assert budget.consume_attempt() is False
+    assert budget.retries_used == 3
 
 
 def _chat_request(*, stream: bool = False) -> UnifiedRequest:
@@ -409,13 +419,14 @@ async def test_stream_supports_openai_responses_native_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_exhausts_three_retries_per_route() -> None:
-    primary_calls = 0
+async def test_complete_caps_total_request_retries_before_fallback() -> None:
+    calls = {"primary": 0, "backup": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal primary_calls
         if "primary.test" in str(request.url):
-            primary_calls += 1
+            calls["primary"] += 1
+        else:
+            calls["backup"] += 1
         return httpx.Response(500, json={"error": {"message": "down"}})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -430,7 +441,78 @@ async def test_complete_exhausts_three_retries_per_route() -> None:
         with pytest.raises(GatewayError):
             await service.complete(_chat_request())
 
-        assert primary_calls == 4
+        assert calls == {"primary": 4, "backup": 0}
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_shared_budget_prevents_repair_after_retry_and_fallback() -> None:
+    calls = {"primary": 0, "backup": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "primary.test" in str(request.url):
+            calls["primary"] += 1
+            return httpx.Response(500, json={"error": {"message": "down"}})
+        calls["backup"] += 1
+        return httpx.Response(200, json=_chat_response("not-json"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config = _config(retries=1, request_retries=2)
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+        request = _chat_request().model_copy(
+            update={
+                "response_format": StructuredOutputSpec(
+                    schema={"type": "object"},
+                )
+            }
+        )
+
+        with pytest.raises(GatewayError) as exc_info:
+            await service.complete(request)
+
+        assert calls == {"primary": 2, "backup": 1}
+        assert exc_info.value.code == "structured_output_error"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_caps_total_request_retries_before_fallback() -> None:
+    calls = {"primary": 0, "backup": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "primary.test" in str(request.url):
+            calls["primary"] += 1
+        else:
+            calls["backup"] += 1
+        return httpx.Response(500, json={"error": {"message": "down"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        config = _config(retries=3, request_retries=2)
+        service = GatewayService(
+            config,
+            ModelRouter(config),
+            UpstreamClient(client=client, retry_statuses=config.retry.retry_statuses),
+        )
+
+        result = await service.stream(_chat_request(stream=True))
+        chunks = [chunk async for chunk in result.stream]
+
+        assert calls == {"primary": 3, "backup": 0}
+        assert sum(calls.values()) == 3
+        assert result.metrics.metadata["retry_budget"] == {
+            "limit": 2,
+            "used": 2,
+            "upstream_attempts": 3,
+        }
+        assert b"rate_limit_exceeded" not in b"".join(chunks)
     finally:
         await client.aclose()
 

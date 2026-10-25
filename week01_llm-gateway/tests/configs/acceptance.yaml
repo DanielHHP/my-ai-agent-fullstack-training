@@ -10,7 +10,8 @@ database_url: data/acceptance.db
 structured_output_retries: 1
 
 retry:
-  max_retries_per_route: 2
+  max_retries_per_request: 3
+  max_retries_per_route: 1
   base_delay_seconds: 0
   max_delay_seconds: 0
   retry_statuses:

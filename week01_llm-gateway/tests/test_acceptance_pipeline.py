@@ -61,6 +61,8 @@ def test_acceptance_config_file_is_tracked_and_mock_only(
         "responses",
     }
     assert acceptance_config.models["claude-fast"].routes[0].protocols == {"messages"}
+    assert acceptance_config.retry.max_retries_per_request == 3
+    assert acceptance_config.retry.max_retries_per_route == 1
     assert acceptance_config.rate_limit.burst == 2
 
 

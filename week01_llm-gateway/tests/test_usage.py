@@ -755,6 +755,11 @@ async def test_gateway_records_attempted_routes_when_all_routes_fail(tmp_path) -
         rows = await repo.recent()
         assert len(rows) == 1
         assert rows[0]["fallbacks"] == 1
+        assert rows[0]["metadata"]["retry_budget"] == {
+            "limit": 3,
+            "used": 1,
+            "upstream_attempts": 2,
+        }
         assert rows[0]["metadata"]["attempted_routes"] == [
             {"provider": "openai", "upstream_model": "gpt-primary"},
             {"provider": "openai-backup", "upstream_model": "gpt-backup"},
@@ -846,6 +851,11 @@ async def test_gateway_records_retry_and_fallback_usage(tmp_path) -> None:
         assert len(rows) == 1
         assert rows[0]["retries"] == 1
         assert rows[0]["fallbacks"] == 1
+        assert rows[0]["metadata"]["retry_budget"] == {
+            "limit": 3,
+            "used": 2,
+            "upstream_attempts": 3,
+        }
         assert rows[0]["status"] == "success"
     finally:
         await client.aclose()

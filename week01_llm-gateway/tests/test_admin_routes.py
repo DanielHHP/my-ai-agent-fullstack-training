@@ -134,7 +134,7 @@ def test_model_endpoint_rate_limits_after_burst(tmp_path) -> None:
                             "api": "chat",
                         }
                     ],
-                }
+                },
             },
         }
     )
@@ -195,10 +195,20 @@ def _rate_limited_chat_config(database_url: str) -> GatewayConfig:
                         {
                             "provider": "openai",
                             "model": "gpt-primary",
+                            "api": "chat,responses",
+                        }
+                    ],
+                },
+                "fast": {
+                    "strategy": "priority",
+                    "routes": [
+                        {
+                            "provider": "openai",
+                            "model": "gpt-fast",
                             "api": "chat",
                         }
                     ],
-                }
+                },
             },
         }
     )
@@ -239,6 +249,84 @@ def test_non_model_endpoints_do_not_rate_limit(tmp_path) -> None:
         for _ in range(3):
             assert client.get("/v1/prompts", headers=headers).status_code == 200
             assert client.get("/admin/routes", headers=headers).status_code == 200
+
+
+def test_rate_limit_isolated_by_model_for_same_api_key(tmp_path) -> None:
+    app = create_app(
+        _rate_limited_chat_config(str(tmp_path / "gateway.db")),
+        http_client=_chat_mock(),
+    )
+    headers = {"Authorization": "Bearer test-key"}
+    smart_body = {"model": "smart", "messages": [{"role": "user", "content": "hi"}]}
+    fast_body = {"model": "fast", "messages": [{"role": "user", "content": "hi"}]}
+
+    with TestClient(app) as client:
+        assert (
+            client.post("/v1/chat/completions", headers=headers, json=smart_body).status_code
+            == 200
+        )
+        assert (
+            client.post("/v1/chat/completions", headers=headers, json=fast_body).status_code
+            == 200
+        )
+
+        smart_again = client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json=smart_body,
+        )
+
+    assert smart_again.status_code == 429
+    assert smart_again.json()["error"]["code"] == "rate_limit_exceeded"
+
+
+def test_rate_limit_shared_across_protocols_for_same_model(tmp_path) -> None:
+    app = create_app(
+        _rate_limited_chat_config(str(tmp_path / "gateway.db")),
+        http_client=_chat_mock(),
+    )
+    headers = {"Authorization": "Bearer test-key"}
+
+    with TestClient(app) as client:
+        chat = client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={"model": "smart", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        responses = client.post(
+            "/v1/responses",
+            headers=headers,
+            json={"model": "smart", "input": "hi"},
+        )
+
+    assert chat.status_code == 200
+    assert responses.status_code == 429
+    assert responses.json()["error"]["code"] == "rate_limit_exceeded"
+
+
+def test_unknown_models_share_a_bounded_rate_limit_bucket(tmp_path) -> None:
+    app = create_app(
+        _rate_limited_chat_config(str(tmp_path / "gateway.db")),
+        http_client=_chat_mock(),
+    )
+    headers = {"Authorization": "Bearer test-key"}
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={"model": "unknown-a", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        second = client.post(
+            "/v1/chat/completions",
+            headers=headers,
+            json={"model": "unknown-b", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert first.status_code == 404
+    assert first.json()["error"]["code"] == "model_not_found"
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "rate_limit_exceeded"
 
 
 def test_admin_usage_limit_parameter(tmp_path) -> None:

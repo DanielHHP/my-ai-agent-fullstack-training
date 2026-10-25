@@ -14,6 +14,7 @@
   - `priority` 优先级路由
   - `weighted_round_robin` 加权轮询路由
   - 首选路由失败后的自动重试与 fallback
+  - 普通重试、fallback 与结构化修复共享请求级重试预算
   - 轻量级进程内熔断器
 - **协议适配器**
   - 统一封装 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种协议
@@ -38,7 +39,7 @@
 - **安全与限制**
   - Bearer API Key 或 `x-api-key` 鉴权
   - 使用不可逆短指纹记录调用方，不保存原始密钥
-  - 进程内令牌桶限流
+  - 按调用方和模型组合隔离额度的进程内令牌桶限流
   - 不保存 Prompt 正文或用户消息正文
 
 ## 环境准备
@@ -256,8 +257,8 @@ Client
   v
 FastAPI routes
   |-- 1. 鉴权：Bearer Token / x-api-key
-  |-- 2. 限流：进程内令牌桶
-  |-- 3. 解析并归一化为 UnifiedRequest
+  |-- 2. 解析并归一化为 UnifiedRequest
+  |-- 3. 按 (调用方, 模型别名) 执行进程内令牌桶限流
   |-- 4. 若带 prompt_ref，则 PromptRepository.render 渲染模板
   v
 GatewayService.complete
@@ -301,7 +302,7 @@ Client
   |
   v
 FastAPI routes
-  |-- 鉴权、限流、UnifiedRequest 归一化
+  |-- 鉴权、UnifiedRequest 归一化、按 (调用方, 模型别名) 限流
   v
 GatewayService.stream
   |-- ModelRouter 选择路由
@@ -357,7 +358,7 @@ pytest.ini
 
 - `providers`：上游供应商的 `base_url`、`api_key`、超时时间
 - `models`：对外模型别名、路由策略、协议能力
-- `retry`：每个路由的最大重试次数、退避时间、可重试状态码
+- `retry`：请求级最大重试次数、单路由局部重试次数、退避时间、可重试状态码
 - `circuit_breaker`：失败阈值与冷却时间
 - `rate_limit`：是否启用、每分钟请求数与突发容量
 - `structured_output_retries`：结构化输出本地校验失败后的修复重试次数

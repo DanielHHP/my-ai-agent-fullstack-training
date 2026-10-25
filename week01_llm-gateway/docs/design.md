@@ -283,16 +283,18 @@ HTTP 状态码为 `422`。
 
 重试语义：
 
-- 每条路由最多重试 3 次，即每路由最多 4 次上游请求。
-- fallback 到下一路由后，重试计数重新计算。
-- 结构化修复沿用参考项目行为，重新进入候选路由循环。
-- 不设置单次网关请求的全局总尝试上限。
+- 每个逻辑网关请求最多重试 3 次，即最多 4 次上游请求。
+- 初次上游请求不消耗预算；之后每次普通重试、fallback 调用和结构化修复调用都消耗 1 次预算。
+- 预算在整个 `complete()` 或 `stream()` 调用期间共享，不随路由切换或结构化修复重置。
+- `max_retries_per_route` 是单路由局部上限，默认 1，避免首选路由耗尽预算后没有机会 fallback。
+- 预算耗尽时立即返回当前最后错误，不再尝试其他路由或结构化修复。
 
 配置字段：
 
 ```yaml
 retry:
-  max_retries_per_route: 3
+  max_retries_per_request: 3
+  max_retries_per_route: 1
   base_delay_seconds: 0.25
   max_delay_seconds: 4
   retry_statuses: [408, 409, 429, 500, 502, 503, 504]
@@ -341,7 +343,7 @@ class StructuredOutputSpec(BaseModel):
 - 当前阶段不升级 Anthropic tool schema。
 - 所有模型输出都不可信，必须本地解析和校验。
 - 支持提取 Markdown code fence 中的 JSON。
-- 结构化修复重试轮数由 `structured_output_retries` 控制，默认值为 1。
+- 结构化修复重试轮数由 `structured_output_retries` 控制，默认值为 1，同时受请求级重试预算约束。
 - 流式输出一旦开始，不进行无损结构化修复。
 
 入口字段解析：
@@ -456,6 +458,7 @@ metadata
 - `retries` 只记录普通重试。
 - `fallbacks` 记录跳过的候选路由数量。
 - `repair_retries` 单独记录结构化修复次数。
+- `metadata.retry_budget` 记录请求级预算上限、已用重试次数和总上游请求次数。
 - 供应商原始 usage 细节放入 `metadata`。
 - 所有路由都失败时，仍记录一条 `status=error` 的用量事件。
 - 用量记录只保存 API Key 的不可逆短指纹，不保存密钥原文、Prompt 正文或用户消息正文。
@@ -527,7 +530,8 @@ Anthropic 错误类型在 adapter 内映射为上述统一类型。
 
 限流：
 
-- 按调用方身份限流。
+- 按 `(调用方身份, 公开模型别名)` 组合限流。
+- 同一调用方调用不同模型时使用独立令牌桶；同一模型通过不同协议入口调用时共享额度。
 - 只对 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 进行限流。
 - Prompt、模型列表和管理接口不限流。
 - 配置使用单层结构：
@@ -541,15 +545,17 @@ rate_limit:
 
 - 配置了 API Key 时，身份使用 API Key 指纹。
 - 未配置 API Key 的开发模式，使用客户端 IP 指纹。
+- 只有配置中存在的公开模型别名进入对应模型桶；未知别名统一进入固定 `__invalid__` 桶，避免随机模型名制造无界桶。
+- 该策略按模型隔离额度，不保留调用方全模型总配额；如需总配额，应增加调用方级第二层令牌桶。
 - 超限返回 `429`、`type="rate_limit_error"`、`code="rate_limit_exceeded"` 和 `Retry-After`。
 
 当前实现：
 
 - 鉴权位于 `app/core/security.py`，限流位于 `app/core/rate_limit.py`。
-- 路由层使用 FastAPI 依赖注入 `Identity` 与 `LimitedIdentity`；前者只鉴权，后者鉴权后执行令牌桶检查。
+- 路由层通过 `Identity` 依赖完成鉴权；请求解析为 `UnifiedRequest` 后，在 `_model_call()` 中按 `(identity, model)` 执行令牌桶检查。
 - `authenticate()` 优先接受 `Authorization: Bearer <key>`，同时兼容 `x-api-key`。
 - `InMemoryRateLimiter` 使用进程内 `asyncio.Lock` 保护令牌桶；多副本部署时应替换为 Redis 等共享实现。
-- 限流超限由全局 `GatewayError` handler 返回 `Retry-After`，错误详情中包含 `retry_after`。
+- 限流超限由统一错误响应返回 `Retry-After`，错误详情中包含 `retry_after`。
 
 ## 15. 请求校验
 
@@ -710,14 +716,16 @@ GatewayService.complete() / GatewayService.stream()
 阶段 3 非流式行为：
 
 - `complete()` 返回 `CompletionResult(raw, request_id, metrics)`，对外仍序列化 `raw`，保持协议原生响应。
-- 每个候选路由最多执行 `retry.max_retries_per_route` 次普通重试。
+- 请求内所有上游调用共享 `retry.max_retries_per_request` 预算；每条路由另受 `max_retries_per_route` 局部限制。
 - 仅网络错误、超时和 `retry.retry_statuses` 中的状态码重试；普通 4xx 不重试，但允许同协议 fallback。
+- fallback 和结构化修复调用同样消耗请求级预算。
 - 成功时 `metrics.fallbacks` 等于跳过的候选路由数，`metrics.retries` 等于普通重试次数。
 - 所有候选路由失败时通过当前 adapter 的 `map_error()` 返回统一 `GatewayError`。
 
 阶段 4 流式行为：
 
 - `stream()` 返回 `StreamResult(stream, request_id, metrics)`，`stream` 逐块透明转发上游原始 SSE。
+- 首字节发送前的普通重试和 fallback 使用与 `complete()` 相同的请求级预算规则。
 - 内部通过 `parse_stream_line()` / `parse_stream_event()` 提取首个内容增量，记录 `first_token_ms`。
 - 任一字节已向下游发送后，不再切换路由；失败时发送 SSE 错误事件和 `data: [DONE]`。
 - 客户端断开时通过 `request.is_disconnected()` 检测，关闭上游并记录 `status="cancelled"`、`status_code=499`。
@@ -732,9 +740,6 @@ Request
   │     ├─ 配置了 api_keys：Bearer Key 鉴权，返回密钥指纹
   │     └─ 未配置 api_keys：开发模式，返回客户端 IP 指纹
   │
-  ├─> FastAPI 依赖 LimitedIdentity = Depends(limited_identity)
-  │     └─ 仅模型调用端点使用，执行 InMemoryRateLimiter.check()
-  │
   v
 路由层 routes.py
   │
@@ -746,14 +751,18 @@ Request
   ├─> /admin/usage
   └─> /admin/routes
         │
-        v
-GatewayService.complete() / stream()
-        │ 汇总 CallMetrics
-        v
-UsageRepository.record()
+        ├─ 模型调用端点：解析为 UnifiedRequest
+        │    └─> InMemoryRateLimiter.check(identity, model)
+        │          ├─ 已知公开模型别名：以 (identity, model) 为桶 key
+        │          └─ 未知模型别名：使用固定 __invalid__ 桶
         │
-        v
-SQLite usage_events
+        └─> GatewayService.complete() / stream()
+              │ 汇总 CallMetrics
+              v
+            UsageRepository.record()
+              │
+              v
+            SQLite usage_events
 ```
 
 管理接口的返回结构：

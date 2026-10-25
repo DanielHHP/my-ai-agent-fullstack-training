@@ -14,9 +14,9 @@
 | --- | --- | --- |
 | D1 | 是否保留 Chat Completions | 保留，并支持 `chat`、`responses`、`messages`、`all` 协议能力 |
 | D2 | SSE 对外格式 | 沿用参考项目的原始 SSE 透明转发 |
-| D3 | 重试次数语义 | 每条路由最多 3 次重试，fallback 后重新计数 |
+| D3 | 重试次数语义 | 每个请求最多 3 次重试，普通重试、fallback、结构化修复共享预算 |
 | D4 | 跨协议 fallback | 不允许 |
-| D5 | 限流维度 | 按调用方限流，仅模型调用端点参与 |
+| D5 | 限流维度 | 按调用方和模型别名限流，仅模型调用端点参与 |
 | D6 | Anthropic 结构化输出 | 系统提示注入 Schema + 本地校验修复 |
 | D7 | Anthropic Prompt 位置 | 渲染后写入 `system` 字段 |
 | D8 | `/v1/models` 鉴权 | 沿用参考项目，要求 Bearer Key 鉴权 |
@@ -65,11 +65,13 @@
 
 结论：
 
-- “最多 3 次重试”表示每条路由最多重试 3 次。
-- 每路由最多发生 4 次上游请求。
-- fallback 到下一候选路由后，重试计数重新计算。
-- 不设置单次网关请求的全局总尝试上限。
-- 配置字段使用 `retry.max_retries_per_route: 3`。
+- 项目评审后调整原“无请求级总上限”的决策，避免多路由重试与结构化修复叠加放大上游调用。
+- “最多 3 次重试”表示每个逻辑网关请求最多发生 4 次上游请求。
+- 初次上游请求不消耗重试预算；后续普通重试、fallback 和结构化修复每次上游调用消耗 1 次预算。
+- 预算在 `complete()` 或 `stream()` 的整个调用生命周期内共享，不随路由切换或结构化修复重置。
+- 配置字段使用 `retry.max_retries_per_request: 3`。
+- `retry.max_retries_per_route` 继续作为单路由局部上限，默认值为 1，防止首选路由一次耗尽全部预算而导致 fallback 无法执行。
+- 预算使用情况写入用量记录的 `metadata.retry_budget`。
 - 重试间隔采用指数退避，并保留随机抖动。
 
 ## 5. D4：不允许跨协议 fallback
@@ -81,15 +83,18 @@
 - 不在 Chat Completions、Responses 和 Messages 之间跨协议切换模型。
 - 首选供应商失败后，只允许在同协议的供应商之间 fallback。
 
-## 6. D5：按调用方限流
+## 6. D5：按调用方和模型限流
 
 结论：
 
-- 限流器以调用方身份为 key。
+- 限流器以 `(调用方身份, 公开模型别名)` 为 key。
+- 同一调用方访问不同模型时使用独立令牌桶；同一模型通过不同协议入口调用时共享额度。
+- 只使用配置中存在的公开模型别名作为模型维度，未知别名归入固定 `__invalid__` 桶，避免调用方通过随机模型名制造无界桶。
 - 只对 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 进行限流。
 - Prompt、模型列表和管理接口不限流。
 - 配置了 API Key 时使用 API Key 指纹，未配置 API Key 的开发模式使用客户端 IP 指纹。
 - 配置使用单层 `rate_limit: {enabled, requests_per_minute, burst}`。
+- 该语义按模型隔离额度，不再提供调用方全模型总配额；如后续需要同时限制总配额，应增加调用方级第二层令牌桶。
 - 超限返回 HTTP `429`、`rate_limit_exceeded` 和 `Retry-After`。
 
 ## 7. D6：Anthropic 结构化输出
@@ -99,7 +104,7 @@
 - Anthropic Messages API 无与 OpenAI 完全一致的 `response_format` 语义。
 - 初始实现通过系统提示注入 JSON Schema 和“仅返回合法 JSON”约束。
 - 模型返回后仍使用本地 `jsonschema` 二次校验。
-- 校验失败时构造修复消息并重试，重试次数由 `structured_output_retries` 控制。
+- 校验失败时构造修复消息并重试，重试次数由 `structured_output_retries` 控制，且消耗请求级重试预算。
 - 当前阶段明确采用上述简化方案，不升级为 Anthropic tool schema。
 
 tool schema 仅作为后续可选扩展，不在本次实现范围内。
@@ -168,13 +173,15 @@ tool schema 仅作为后续可选扩展，不在本次实现范围内。
 | 失败调用记录 | 所有路由失败时仍记录 `status=error` |
 | 用量字段 | `cost_usd` 只含成功响应；失败 Token/成本用 `retry_*` |
 | `retries`/`fallbacks`/`repair_retries` | `retries` 只记录普通重试，`fallbacks` 记录跳过路由数，`repair_retries` 单独记录结构化修复 |
+| 请求级重试预算 | 默认 3 次，普通重试、fallback、结构化修复共享；最多 4 次上游请求 |
+| 重试预算观测 | `metadata.retry_budget` 记录上限、已用重试次数和总上游请求次数 |
 | 原始 usage 细节 | 放入 `metadata`，不进入顶层账本字段 |
 | `/admin/usage` | 保持 `{"data": [...]}` 结构 |
 | 非模型端点限流 | 不限流，只鉴权 |
-| 限流身份 | API Key 指纹；开发模式未配置密钥时使用客户端 IP 指纹 |
+| 限流维度 | `(API Key 或客户端 IP 指纹, 公开模型别名)` |
 | 限流配置 | 单层 `enabled`、`requests_per_minute`、`burst`，默认 `true/60/10` |
 | Prompt 激活 | 新版本默认 `activate=true` |
-| 结构化修复 | `structured_output_retries` 默认 1，沿用参考项目重启路由循环 |
+| 结构化修复 | `structured_output_retries` 默认 1，且受请求级重试预算约束 |
 | Anthropic `max_tokens` | 必填，缺失返回 `422` |
 | Anthropic `messages` | 必须非空 |
 | 上游鉴权头 | OpenAI 使用 Bearer，Anthropic 使用 `x-api-key` |
