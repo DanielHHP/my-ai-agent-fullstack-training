@@ -1,0 +1,16 @@
+# Python 3.10+
+#
+# Agent runtime. The core API is kept on a tested minor release because the
+# harness integrates with ToolCallingAgent through smolagents public seams.
+smolagents==1.26.0
+
+# Schema validation for tool arguments, task configuration, and persisted state.
+pydantic>=2.9.0,<3.0.0
+
+# Declarative task and harness configuration.
+PyYAML>=6.0.0,<7.0.0
+
+# Test and lint tooling. The default test suite must remain offline and use a
+# Fake Model rather than a real model provider.
+pytest>=8.3.0,<10.0.0
+ruff>=0.9.0,<1.0.0
