@@ -169,7 +169,7 @@ class HarnessConfig(_ConfigModel):
     """Top-level versioned YAML configuration."""
 
     version: Literal[1]
-    state_dir: str = Field(default=".guarded-harness", min_length=1, max_length=4096)
+    state_dir: str = Field(min_length=1, max_length=4096)
     workspace: WorkspaceConfig
     budget: BudgetConfig
     task: TaskConfig
@@ -434,7 +434,7 @@ def _resolve_workspace_root(raw: str, base_dir: Path) -> Path:
     return resolved
 
 
-def _resolve_state_dir(raw: str, base_dir: Path) -> Path:
+def _resolve_state_dir(raw: str, base_dir: Path, workspace_root: Path) -> Path:
     if "\x00" in raw:
         raise _issue(ErrorCode.CONFIG_PATH_INVALID, "state_dir", "path contains NUL")
     candidate = Path(raw)
@@ -461,6 +461,16 @@ def _resolve_state_dir(raw: str, base_dir: Path) -> Path:
             ErrorCode.CONFIG_PATH_INVALID,
             "state_dir",
             "state_dir cannot be inside a protected dependency or Git directory",
+        )
+    try:
+        resolved.relative_to(workspace_root)
+    except ValueError:
+        pass
+    else:
+        raise _issue(
+            ErrorCode.CONFIG_PATH_INVALID,
+            "state_dir",
+            "state_dir must be outside workspace_root",
         )
     return resolved
 
@@ -720,7 +730,7 @@ def _validate_semantics(config: HarnessConfig) -> None:
 
 def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessConfig:
     workspace_root = _resolve_workspace_root(config.workspace.root, base_dir)
-    state_dir = _resolve_state_dir(config.state_dir, base_dir)
+    state_dir = _resolve_state_dir(config.state_dir, base_dir, workspace_root)
     deny_read = _normalize_patterns(config.task.paths.deny_read, field_path="task.paths.deny_read")
     deny_write = _normalize_patterns(
         config.task.paths.deny_write,

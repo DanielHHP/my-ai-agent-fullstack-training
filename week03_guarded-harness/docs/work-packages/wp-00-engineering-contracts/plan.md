@@ -6,13 +6,13 @@
 | --- | --- |
 | 工作包 | WP-00 工程与契约内核 |
 | 文档状态 | done |
-| 计划版本 | 1.0.2 |
-| 对应规格 | `spec.md` v1.0.2 / frozen |
+| 计划版本 | 1.1.0 |
+| 对应规格 | `spec.md` v1.1.0 / frozen |
 | 依赖 | 无 |
-| 当前准入结论 | accepted：T01 至 T08 已完成并通过 WP-00 验收 |
+| 当前准入结论 | T01 至 T08 已实现，v1.1.0 amendment 等待稳定提交基线后复核 accepted |
 | 下游影响 | WP-01 至 WP-12 的公共模型、配置和测试 Fixture |
 
-本计划对应已冻结的 `spec.md` v1.0.2。当前已完成施工；若后续发现规格冲突，
+本计划对应已冻结的 `spec.md` v1.1.0。当前已完成施工；若后续发现规格冲突，
 必须先停止并更新规格，不能在计划中临时改变行为。
 
 ## 2. 计划目标与完成定义
@@ -247,7 +247,7 @@ TestRepairAcceptance
 - `allow_write` 与 `deny_write` 不产生隐式安全放宽；
 - 交付物不能落在 `deny_write`，除非被任务文档规则显式允许；
 - 测试命令 argv 不能为空，`kind=test_repair` 时必须有基线要求；
-- `state_dir` 不得指向 `.git/` 或工作区内依赖目录；
+- `state_dir` 必填，不得指向 `.git/`、依赖目录、文件系统根目录或 `workspace_root` 内的路径；
 - 首期 `channel` 为 `local_cli`。
 
 ### 4.7 路径归一化与逃逸判定
@@ -485,7 +485,7 @@ docs(wp-00): freeze engineering contract baseline
 | yaml_strictness | 空、多文档、重复 key、非 mapping、未知字段、超大文件 |
 | task_fixtures | 代码理解、测试修复两份合法配置 |
 | semantic_validation | kind/strategy、工具、预算、审批通道、命令 |
-| paths | 相对基准、绝对交付物、`..`、symlink、最近存在祖先、重复别名 |
+| paths | 相对基准、绝对交付物、`..`、symlink、最近存在祖先、重复别名、state_dir 工作区隔离 |
 | fingerprint | 排版等价、集合等价、敏感字段变化、哈希格式 |
 | side_effects | 拒绝后目标目录/state 目录无新增，不创建 SQLite |
 
@@ -515,6 +515,7 @@ docs(wp-00): freeze engineering contract baseline
 | WP00-AC-011 | `test_config.py::test_fixtures_are_deterministic` | 固定时钟/ID 和离线命令 |
 | WP00-AC-012 | `test_config.py::test_rejection_has_no_side_effect` | 目录快照前后一致 |
 | WP00-AC-013 | `test_domain.py::test_public_contract_snapshot` | 导出集合/枚举/schema 快照 |
+| WP00-AC-014 | `test_config.py::test_state_dir_is_required_and_outside_workspace`、`test_state_dir_symlink_into_workspace_is_rejected` | 缺字段、工作区内路径和软链接真实落点拒绝 |
 
 飞书 G1/S1/S2/S3 的 WP-00 部分分别由 schema 错误、路径归一化、软链接和配置 argv 测试覆盖；
 真正的 handler、Sandbox 和进程测试由 WP-03/WP-04/WP-06 补齐。H3 的 WP-00 部分只验证模型边界，
@@ -582,18 +583,18 @@ WP-00 封版后必须交付：
 
 ## 13. 实际完成情况
 
-当前状态：**已完成 WP-00 验收**。完成日期：2026-11-03。
+当前状态：**v1.1.0 amendment 已实现，验收报告为 review**。修订日期：2026-11-03。
 
 | 项目 | 状态 |
 | --- | --- |
-| `spec.md` | frozen，v1.0.2 |
-| `plan.md` | done，v1.0.2 |
+| `spec.md` | frozen，v1.1.0 |
+| `plan.md` | done，v1.1.0 |
 | 工程文件 | `.gitignore`、`.python-version`、`pyproject.toml`、包入口和构建配置已完成 |
 | 公共模型 | 严格枚举、错误码、ID/时间、Run/Step/Tool/Approval/Evidence/Completion 契约已完成 |
-| 配置加载与指纹 | 严格 YAML、重复键/复杂度检查、路径归一化、绝对 `workspace.root`/`state_dir` 和 SHA-256 指纹已完成 |
+| 配置加载与指纹 | 严格 YAML、重复键/复杂度检查、路径归一化、绝对 `workspace.root`/`state_dir`、工作区外状态目录和 SHA-256 指纹已完成 |
 | Fixture 与测试 | 临时 Git/SQLite、固定 Clock/ID、FaultInjector 和两类任务配置已完成 |
 | 验收命令 | 安装、目标测试、全量测试、Ruff lint、格式检查和 `pip check` 全部通过 |
-| 开放决策 | OD-01 至 OD-06 已关闭 |
+| 开放决策 | OD-01 至 OD-07 已关闭 |
 
 ### 13.1 任务完成记录
 
@@ -603,9 +604,9 @@ WP-00 封版后必须交付：
 | WP00-T02 领域标量、枚举和错误 | DONE | `tests/test_domain.py` 覆盖严格枚举、ID、时间和稳定错误码 |
 | WP00-T03 公共领域模型 | DONE | 公共模型、schema version、稳定序列化和导出契约测试通过 |
 | WP00-T04 严格配置 schema | DONE | 两类任务配置加载，跨字段语义和未知字段拒绝通过 |
-| WP00-T05 YAML、路径和指纹 | DONE | 重复键、复杂度、穿越、软链接、敏感路径和指纹测试通过 |
+| WP00-T05 YAML、路径和指纹 | DONE | 重复键、复杂度、穿越、软链接、敏感路径、state_dir 隔离和指纹测试通过 |
 | WP00-T06 Fixture 与任务样例 | DONE | `tests/conftest.py` 与 `tests/fixtures/config/` 已落地 |
-| WP00-T07 契约与安全测试 | DONE | 目标测试和全量测试均为 29 passed |
+| WP00-T07 契约与安全测试 | DONE | 目标测试和全量测试均通过 |
 | WP00-T08 文档与封版 | DONE | spec/plan、决策、索引、验收报告和 WP-00 总计划入口已同步 |
 
 ### 13.2 验收证据
@@ -615,10 +616,10 @@ WP-00 封版后必须交付：
 | 命令 | 结果 |
 | --- | --- |
 | `python -m pip install -e '.[dev]'` | 成功安装项目和 dev 依赖 |
-| `python -m pytest tests/test_domain.py tests/test_config.py -q` | `29 passed in 0.79s` |
-| `python -m pytest -q` | `29 passed in 1.06s` |
+| `python -m pytest tests/test_domain.py tests/test_config.py -q` | `31 passed in 0.62s` |
+| `python -m pytest -q` | `31 passed in 0.58s` |
 | `python -m ruff check .` | `All checks passed!` |
-| `python -m ruff format --check .` | `17 files already formatted` |
+| `python -m ruff format --check .` | `20 files already formatted` |
 | `python -m pip check` | `No broken requirements found.` |
 
 ### 13.3 剩余风险

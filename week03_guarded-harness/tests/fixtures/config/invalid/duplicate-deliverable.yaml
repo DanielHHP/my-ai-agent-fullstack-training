@@ -1,4 +1,5 @@
 version: 1
+state_dir: ../state
 workspace:
   root: .
 budget:
@@ -20,4 +21,3 @@ task:
     deliverables:
       - artifacts/report.md
       - ./artifacts/report.md
-

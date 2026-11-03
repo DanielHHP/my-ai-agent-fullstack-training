@@ -12,5 +12,7 @@
 | [task-breakdown.md](task-breakdown.md) | 按里程碑和能力工作包组织的 P0 开发计划、执行规程、`spec.md`/`plan.md`/`acceptance-report.md` 包内文档模式、依赖、验收条件与文件任务追溯 |
 | [work-packages/index.md](work-packages/index.md) | 已进入详细设计的工作包规格、计划、当前状态和冻结版本索引 |
 | [WP-00 验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md) | WP-00 工程与契约内核的实测证据、场景覆盖、限制和验收结论 |
+| [WP-01 规格](work-packages/wp-01-persistence-audit/spec.md) | 持久化与审计底座已冻结的行为、接口、状态机、飞书验收映射和决策追溯 |
+| [WP-01 计划](work-packages/wp-01-persistence-audit/plan.md) | WP-01 已批准的 schema、事务设计、任务卡、测试矩阵、风险和回滚计划 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

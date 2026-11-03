@@ -403,9 +403,9 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 
 **依赖**：无。
 
-**包内文档**：[冻结规格](work-packages/wp-00-engineering-contracts/spec.md)（v1.0.2 / frozen）、
-[实施计划](work-packages/wp-00-engineering-contracts/plan.md)（v1.0.2 / done）、
-[验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md)（accepted）。
+**包内文档**：[冻结规格](work-packages/wp-00-engineering-contracts/spec.md)（v1.1.0 / frozen）、
+[实施计划](work-packages/wp-00-engineering-contracts/plan.md)（v1.1.0 / done）、
+[验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md)（v1.1.0 / review）。
 
 **主要范围**：
 
@@ -440,6 +440,9 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 **目标**：建立 StateStore、Audit 和共享事务边界的可信持久化底座。
 
 **依赖**：WP-00。
+
+**包内文档**：[冻结规格](work-packages/wp-01-persistence-audit/spec.md)（v0.2.0 / frozen）、
+[实施计划](work-packages/wp-01-persistence-audit/plan.md)（v0.2.0 / approved）。
 
 **主要范围**：
 
@@ -1168,6 +1171,12 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | D-07 Fake Model | WP-10、WP-12 |
 | D-08 恢复上下文 | WP-07、WP-10、WP-11 |
 | D-09 预算终态 | WP-01、WP-04、WP-10、WP-11 |
+| D-16 状态目录隔离 | WP-00、WP-01、WP-03、WP-04、WP-07 |
+| D-17 预算幂等 ledger | WP-01、WP-04、WP-06、WP-10 |
+| D-18 当前计划建模 | WP-01、WP-07、WP-10 |
+| D-19 Run 租约与心跳 | WP-01、WP-07、WP-10、WP-11 |
+| D-20 状态变更强制审计 | WP-01、WP-04、WP-07、WP-08 |
+| D-21 状态文件权限 | WP-01、WP-03、WP-11 |
 
 ## 14. 全局完成定义
 

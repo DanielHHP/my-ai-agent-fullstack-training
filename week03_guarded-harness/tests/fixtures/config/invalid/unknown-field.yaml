@@ -1,4 +1,5 @@
 version: 1
+state_dir: ../state
 workspace:
   root: .
   unlisted_option: true
@@ -19,4 +20,3 @@ task:
       - python
       - -m
       - pytest
-

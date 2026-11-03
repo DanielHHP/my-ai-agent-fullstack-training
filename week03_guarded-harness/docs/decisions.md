@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-15 |
+| 决策范围 | 已确认的 D-01 至 D-21 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -31,3 +31,9 @@
 | D-13 | 测试修复配置深度 | WP-00 冻结测试命令 argv、基线要求和路径/预算/审批字段；测试报告格式及节点证据由 WP-09 冻结，不在 WP-00 提前实现。 |
 | D-14 | 公共契约扩展与命名 | 公共模型字段只能通过 schema 版本升级或兼容评审扩展，枚举只允许追加并补契约测试；保留 `CompletionCheck`、`RunStatus` 等冻结名称。 |
 | D-15 | Python 依赖清单组织 | `pyproject.toml` 是运行时依赖和开发依赖的唯一来源；不再维护 `requirements.txt`。开发、CI 和验收统一执行 `python -m pip install -e '.[dev]'`，普通安装使用 `python -m pip install .`。 |
+| D-16 | State 数据库隔离与配置契约 | `state_dir` 必填且必须位于规范化 `workspace_root` 外；配置加载和 WP-01 打开数据库时分别校验。配置 `version` 保持 `1`，作为 P0 发布前的兼容修订同步提升 WP-00 规格和计划版本。若状态目录仍位于同一 `git_root`，WP-03 只排除该精确目录，不使用宽松前缀。 |
+| D-17 | 预算增量幂等账本 | 使用 `budget_ledger`，操作键由 `run_id`、`source_kind`、`source_id` 和 `category` 确定性生成；category 为 `STEPS`、`TOOL_CALLS`、`TOKEN_COST`、`WALL_TIME`。同一 key 和相同增量返回原结果，载荷变化返回冲突。Run usage 是物化总量，必须与 ledger 汇总一致。 |
+| D-18 | 当前计划建模 | 使用独立 `RunPlan`、`PlanItem` 和 `run_plans` 表。首次设置前允许 `null`，设置后非空；ordinal 从 0 连续递增；最多 50 项、单项 1,000 字符、整计划 32 KiB。相同内容重复提交为幂等 no-op；PlanItem 不保存隐藏推理或 Step 执行状态。 |
+| D-19 | Run 租约与心跳 | Run 创建和租约获取原子完成。默认 TTL 30 秒、允许 10 至 300 秒；Harness 以 `min(10, TTL/3)` 秒独立心跳，WP-01 不启动隐藏线程。连续两次续租失败进入危险状态并请求取消 handler；普通续租不写业务审计，获取、接管和释放写审计。token fencing、revision 和 `STARTED` 记录共同防止旧进程提交或新进程重放副作用。 |
+| D-20 | 状态变更强制审计 | StateStore 公共业务写操作自动追加固定领域审计事件，禁止状态-only 成功；审计失败则整个事务回滚。`status` 必填，`code` 仅在拒绝、失败、超时和未知结果时必填；`actor` 来自可信 UnitOfWork 上下文，模型不能覆盖。 |
+| D-21 | 状态文件权限 | POSIX 要求状态目录、数据库、WAL/SHM 由当前有效用户拥有，文件类型安全；新建目录使用 `0700`，数据库及 WAL/SHM 使用 `0600`。已有路径权限不安全或无法收紧时失败关闭，不提供生产旁路。Windows ACL 不作为本包强隔离能力宣称。 |

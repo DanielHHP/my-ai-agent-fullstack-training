@@ -1,5 +1,5 @@
 version: 1
-state_dir: .guarded-harness
+state_dir: ../state
 workspace:
   root: .
   require_clean_workspace: true
@@ -38,4 +38,3 @@ task:
     required_tools:
       - write_file
     channel: local_cli
-

@@ -1,5 +1,5 @@
 version: 1
-state_dir: .guarded-harness
+state_dir: ../state
 workspace:
   root: .
   require_clean_workspace: true
@@ -41,4 +41,3 @@ task:
       - apply_patch
       - run_test
     channel: local_cli
-

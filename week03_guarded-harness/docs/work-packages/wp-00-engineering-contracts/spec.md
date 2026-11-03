@@ -6,13 +6,13 @@
 | --- | --- |
 | 工作包 | WP-00 工程与契约内核 |
 | 文档状态 | frozen |
-| 规格版本 | 1.0.2 |
-| 冻结日期 | 2026-11-03（依赖入口修订） |
+| 规格版本 | 1.1.0 |
+| 冻结日期 | 2026-11-03（state_dir 隔离修订） |
 | 依赖 | 无 |
 | 下游工作包 | WP-01、WP-03、WP-04、WP-07、WP-08、WP-09、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-HARNESS-001`、`REQ-HARNESS-004`、`REQ-GATE-002`、`REQ-GATE-003`、`REQ-SANDBOX-001`、`REQ-TASK-001`、`REQ-TASK-002`、`REQ-COMPLETE-002` |
 | 对应设计 | `design.md` 第 4、5、7.2、11.1、13、14 节 |
-| 已确认决策 | D-02 至 D-09、D-10 至 D-15 |
+| 已确认决策 | D-02 至 D-09、D-10 至 D-16、D-21 |
 | 飞书输入 | 作业文档 revision 14；“核心验收”内嵌表 revision 11 |
 
 本文是 WP-00 已冻结的行为与验收契约。状态为 `frozen` 表示规格评审完成，不表示相关工程能力
@@ -391,7 +391,7 @@ WP-00 的模型必须允许其他层表达 `REJECTED`、`UNVERIFIABLE` 和 `NOT_
 
 ```yaml
 version: 1
-state_dir: .guarded-harness
+state_dir: ../harness-state
 workspace:
   root: .
   require_clean_workspace: true
@@ -427,6 +427,10 @@ task:
 ### 8.3 字段约束
 
 - `version` 只接受整数 `1`；
+- `state_dir` 必填，相对路径以配置文件目录为基准，解析后必须位于规范化的
+  `workspace_root` 外；
+- `state_dir` 不得是文件系统根目录、现有非目录、`.git/` 或依赖目录，也不得通过符号链接
+  指向工作区内；
 - `task.id` 是稳定、非空、不含路径分隔符的标识符；
 - `allowed_tools` 非空、无重复，并做集合语义规范化；
 - `deny_read`、`deny_write`、`allow_write` 是无重复的 POSIX glob 列表，只允许工作区内相对模式；
@@ -443,10 +447,12 @@ task:
 
 - `workspace.root` 和 `state_dir` 中的相对路径以**配置文件所在目录**为基准；
 - `deliverables` 的相对路径以规范化后的 `workspace.root` 为基准；
-- `workspace.root` 必须已存在且为目录；`state_dir` 可以尚不存在；
+- `workspace.root` 必须已存在且为目录；`state_dir` 可以尚不存在，但其最近存在祖先必须可解析；
 - 输入路径使用 POSIX 风格写入配置，然后在当前平台转换为 `Path`；
 - 对已存在路径执行真实路径解析；对不存在的尾部路径，先解析最近已存在祖先，再拼接剩余组件；
 - 使用路径包含关系判断，禁止用字符串前缀；
+- `state_dir` 解析后必须通过 `relative_to(workspace_root)` 判定位于工作区外；等于或位于工作区
+  内时返回 `CONFIG_PATH_INVALID`；
 - 拒绝绝对交付物、`..` 逃逸、符号链接逃逸、空路径和不稳定别名；
 - 交付物规范化后统一保存为相对工作区的 POSIX 字符串；
 - 配置加载阶段只做静态路径安全校验；真实操作前仍必须由 Sandbox 重新校验。
@@ -530,6 +536,7 @@ handler，因此不直接执行仓库副作用；下游必须把“配置未成�
 | WP00-INV-007 | 任务类型与验收策略匹配，未知组合失败关闭。 |
 | WP00-INV-008 | WP-00 不执行 Gate、Sandbox、真实工具或 Agent 决策。 |
 | WP00-INV-009 | 测试默认离线，不使用真实模型、网络、用户凭据或真实项目配置。 |
+| WP00-INV-010 | `state_dir` 必填，规范化后位于 `workspace_root` 外；配置加载阶段检查，真实打开前由 WP-01 复验。 |
 
 ## 12. 验收场景
 
@@ -550,6 +557,7 @@ handler，因此不直接执行仓库副作用；下游必须把“配置未成�
 | WP00-AC-011 | 测试确定性 | 固定 Clock/IdFactory 输出固定；测试无网络、真实模型和睡眠依赖 |
 | WP00-AC-012 | 失败不产生副作用 | 配置和模型拒绝路径不创建目标文件、目录、数据库或 handler 调用记录 |
 | WP00-AC-013 | 公共导出与契约冻结 | 导入集合、枚举值、错误码和模型规范 JSON 与契约测试一致 |
+| WP00-AC-014 | 状态目录隔离 | 缺失 `state_dir` 拒绝；工作区内路径和指向工作区的符号链接返回 `CONFIG_PATH_INVALID` |
 
 ## 13. 飞书“核心验收”吸收
 
@@ -589,12 +597,15 @@ WP-00 不把 G2、G3、C2 等下游行为写成已实现。下游工作包必须
   开发与验收统一执行 `python -m pip install -e '.[dev]'`；
 - 公共模型 JSON 契约使用 `schema_version=1`；不兼容变化必须提升版本并提供显式拒绝或迁移；
 - 不得静默改变枚举值、默认值、时间格式、指纹 schema 或 ID 格式；
+- 配置 `version` 保持 `1`；v1.1.0 取消 `state_dir` 隐式默认值并增加工作区外约束，属于 P0
+  发布前兼容修订，不承诺接受旧默认配置；
 - 依赖升级必须运行 WP-00 契约测试，并记录 `smolagents` 公开 API 兼容风险；
 - WP-00 不创建数据库 migration；WP-01 必须把模型 schema 与数据库 schema 分开管理。
 
 ## 15. 已冻结决策
 
-以下原开放决策已于 2026-11-03 按推荐方案确认，并记录为 `decisions.md` 的 D-10 至 D-14。
+以下原开放决策已于 2026-11-03 按推荐方案确认，并记录为 `decisions.md` 的 D-10 至 D-16
+和 D-21。
 
 ### OD-01 Python 支持矩阵
 
@@ -630,6 +641,12 @@ WP-00 的字段集合是 P0 冻结基线，下游不得用裸字典自行扩展�
 保留本规格中的公共类名，包括 `CompletionCheck` 和 `RunStatus`。下游不得在 WP-08/WP-09 中
 无兼容迁移地改为 `CompletionResult`、`CompletionConclusion` 或其他别名。
 
+### OD-07 状态目录隔离
+
+`state_dir` 必填且必须位于规范化 `workspace_root` 外。配置加载阶段执行静态真实路径检查，
+WP-01 在打开数据库前重新验证。配置 `version` 保持 `1`，本次变更作为 P0 发布前的 v1.1.0
+兼容修订；旧配置若依赖隐式默认值必须显式迁移。
+
 ## 16. 完成定义
 
 WP-00 只有在以下条件全部满足时才能标记 `DONE`：
@@ -638,7 +655,7 @@ WP-00 只有在以下条件全部满足时才能标记 `DONE`：
 2. `plan.md` 对应本规格版本并完成批准；
 3. 工程可安装、导入，公开契约测试通过；
 4. 配置 Fixture 可加载，非法配置全部失败关闭；
-5. 路径逃逸、软链接、重复交付物、预算和指纹测试通过；
+5. 路径逃逸、软链接、重复交付物、`state_dir` 工作区外约束、预算和指纹测试通过；
 6. 测试默认离线且不依赖真实模型、网络或用户凭据；
 7. Ruff lint、Ruff format check 和相关 pytest 可复现通过；
 8. 文档索引和 `task-breakdown.md` 的工作包链接已同步；

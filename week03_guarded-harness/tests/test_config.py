@@ -237,6 +237,46 @@ def test_state_dir_rejects_existing_file(tmp_path: Path) -> None:
     assert error.value.code == ErrorCode.CONFIG_PATH_INVALID
 
 
+def test_state_dir_is_required_and_outside_workspace(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+
+    missing_payload = _payload(str(workspace))
+    missing_payload.pop("state_dir")
+    missing_config = _write_yaml(tmp_path / "missing-state.yaml", missing_payload)
+    with pytest.raises(ConfigurationError) as missing_error:
+        load_config(missing_config)
+    assert missing_error.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+    inside_workspace = workspace / "state"
+    inside_config = _write_yaml(
+        tmp_path / "inside-workspace.yaml",
+        _payload(str(workspace), state_dir=str(inside_workspace)),
+    )
+    with pytest.raises(ConfigurationError) as inside_error:
+        load_config(inside_config)
+    assert inside_error.value.code == ErrorCode.CONFIG_PATH_INVALID
+    assert not inside_workspace.exists()
+
+
+def test_state_dir_symlink_into_workspace_is_rejected(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace_state = workspace / "state"
+    workspace_state.mkdir()
+    link = tmp_path / "state-link"
+    try:
+        link.symlink_to(workspace_state, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    config = _write_yaml(
+        tmp_path / "state-link.yaml",
+        _payload(str(workspace), state_dir=str(link)),
+    )
+    with pytest.raises(ConfigurationError) as error:
+        load_config(config)
+    assert error.value.code == ErrorCode.CONFIG_PATH_INVALID
+
+
 def test_absolute_deliverable_and_pattern_are_rejected(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     absolute = str((workspace / "artifacts" / "report.md").resolve(strict=False))
@@ -353,15 +393,6 @@ def test_equivalent_configs_share_fingerprint(tmp_path: Path) -> None:
     second_resolved = load_config(second)
     assert first_resolved.fingerprint == second_resolved.fingerprint
     assert first_resolved.config.task.allowed_tools == ("read_file", "write_file")
-
-    default_state_payload = _payload("workspace")
-    default_state_payload.pop("state_dir")
-    default_state = _write_yaml(tmp_path / "default-state.yaml", default_state_payload)
-    explicit_state = _write_yaml(
-        tmp_path / "explicit-default-state.yaml",
-        _payload("workspace", state_dir=".guarded-harness"),
-    )
-    assert load_config(default_state).fingerprint == load_config(explicit_state).fingerprint
 
 
 def test_order_and_semantic_changes_affect_fingerprint(tmp_path: Path) -> None:

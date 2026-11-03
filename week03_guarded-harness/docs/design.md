@@ -574,16 +574,20 @@ paths:
 ### 9.1 单一 SQLite 持久化边界
 
 StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基础设施，避免三个独立存储之间
-出现“状态已成功、审计没写入”的不可判定窗口。建议配置项把数据库放在目标仓库之外，例如
-可配置的 `state_dir/harness.sqlite3`。
+出现“状态已成功、审计没写入”的不可判定窗口。`state_dir` 必填且必须位于规范化
+`workspace_root` 外；数据库固定为 `state_dir/harness.sqlite3`。如果它仍位于同一 `git_root`，
+工作区外围保护只能排除该精确目录，不允许使用宽松前缀。
 
 数据库启用 WAL、外键、忙等待和迁移版本。主要表：
 
 | 表 | 作用 |
 | --- | --- |
 | `runs` | Run 当前业务状态、配置/工作区指纹、预算和最终结论 |
-| `steps` | 模型步骤、计划、stop reason 和安全边界序号 |
+| `run_plans` | 当前计划、plan revision 和有序公开计划项 |
+| `steps` | 模型步骤、stop reason 和安全边界序号 |
 | `tool_calls` | 每次候选调用、规范参数摘要、状态、结果和证据 |
+| `evidence` | 可关联读取、命令、diff、测试和验收事实 |
+| `budget_ledger` | 按来源和预算维度幂等记录增量 |
 | `approvals` | 审批对象、摘要、有效期、决定和消费状态 |
 | `checkpoints` | 快照、快照哈希、安全边界和 schema 版本 |
 | `completion_results` | 验收项和证据关联 |
@@ -594,6 +598,10 @@ StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基�
 `(run_id, sequence)`、前一事件哈希和当前事件哈希。业务数据不通过修改审计事件“回写”，
 只能追加新事实。
 
+POSIX 新建状态目录使用 `0700`，数据库及 WAL/SHM 使用 `0600`；状态目录和文件必须由当前有效
+用户拥有且类型安全。已有权限不安全或无法收紧时失败关闭，不静默继续。Windows ACL 的强隔离
+不作为 P0 能力宣称。
+
 ### 9.2 事务与崩溃窗口
 
 关键状态转换使用 `BEGIN IMMEDIATE` 或等价写事务。一个安全边界内可同时提交：
@@ -603,6 +611,10 @@ StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基�
 - 预算增量；
 - 审计事件；
 - Checkpoint 索引或快照。
+
+Run 状态写入、预算 ledger、对应审计和必要关联行必须在同一 `BEGIN IMMEDIATE` 事务中提交。
+StateStore 公共业务写操作自动产生固定领域审计；调用方不能通过只写业务状态完成成功提交。
+租约普通续期只更新租约行，不生成高频业务审计。
 
 崩溃窗口处理如下：
 
@@ -630,6 +642,11 @@ Checkpoint 至少保存 Run、当前步骤、计划、工具调用结果、预�
 - 审批仍处于有效状态且绑定摘要匹配；
 - 没有 `UNKNOWN_RESULT`；
 - Run 租约可安全获取。
+
+Run 创建与租约获取原子完成。租约默认 TTL 30 秒、允许 10 至 300 秒；Harness 在 handler 执行
+期间以约 `min(10, TTL/3)` 秒间隔独立心跳。第一次续租失败进入风险状态并立即重试，连续第二次
+失败请求取消 handler。旧 token 在接管后不能续租或提交 Run 状态；如果已有工具调用进入
+`STARTED`，新进程只能按结果不确定处理，不能自动重放。
 
 恢复不依赖旧模型对象、线程上下文或仅存于内存的重复调用缓存。
 
@@ -662,12 +679,19 @@ Continuation prompt 使用固定字段顺序和稳定文本格式；历史 obser
 
 ```text
 event_id, run_id, sequence, occurred_at
-event_type, phase, status, code
+event_type, phase, status, code, decision
 step_id, tool_call_id, approval_id
-actor, tool_name, workspace_fingerprint
+actor, tool_name, rule_id, workspace_fingerprint
 input_summary, output_summary, evidence_ref
 prev_hash, event_hash
 ```
+
+`status` 必填，取值为 `PENDING`、`ALLOWED`、`DENIED`、`STARTED`、`SUCCEEDED`、`FAILED`、
+`TIMED_OUT`、`UNKNOWN_RESULT` 等稳定状态；`code` 仅在拒绝、失败、超时和未知结果时必填；
+`decision` 取值为
+`ALLOW/DENY/NOT_APPLICABLE`。StateStore 自动追加固定领域事件，例如 `RUN_CREATED`、
+`RUN_STARTED`、`STEP_COMPLETED`、`TOOL_SUCCEEDED`、`BUDGET_UPDATED`，调用方不能改写自动
+事件类型。`actor` 来自可信 UnitOfWork 上下文。
 
 必须记录的事件类别：
 
@@ -694,7 +718,7 @@ prev_hash, event_hash
 
 ```yaml
 version: 1
-state_dir: .guarded-harness
+state_dir: /path/to/harness-state
 workspace:
   root: /path/to/repo/task-workspace
   require_clean_workspace: true
@@ -721,6 +745,10 @@ task:
 
 Gate、Sandbox 和 Harness 不包含 `understand`、`fix_tests` 等任务名分支。配置通过
 `task.kind` 选择验收策略和权限集，新增任务类型应主要新增配置和策略插件。
+
+`state_dir` 是必填字段，不再提供隐式默认值。配置加载阶段按配置文件目录解析为规范绝对路径，
+并拒绝工作区内、根目录、受保护依赖目录和 `.git/` 路径；环境运行前 WP-01 仍须重新验证真实
+路径和文件类型。
 
 代码理解任务的 `acceptance.deliverables` 必须是非空、无重复的相对路径列表。配置加载时逐项
 相对 `workspace_root` 规范化，拒绝绝对路径、`..` 逃逸、符号链接逃逸和重复路径；数组顺序

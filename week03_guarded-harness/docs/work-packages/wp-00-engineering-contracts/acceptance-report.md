@@ -5,14 +5,14 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-00 工程与契约内核 |
-| 报告状态 | accepted |
-| 报告版本 | 1.0.0 |
+| 报告状态 | review |
+| 报告版本 | 1.1.0 |
 | 验收日期 | 2026-11-03 |
-| 验收结论 | WP-00 通过验收；项目整体仍在后续工作包中 |
-| 对应规格 | [spec.md](spec.md) v1.0.2 / frozen |
-| 对应计划 | [plan.md](plan.md) v1.0.2 / done |
-| 代码基线 | `4b3b6e433bc1a13f837dea7d56eff5d88c9e901c` |
-| 基线工作区 | 生成本报告前干净，无未提交修改 |
+| 验收结论 | v1.1.0 compatibility amendment 的自动化检查通过，等待提交后复核为 accepted |
+| 对应规格 | [spec.md](spec.md) v1.1.0 / frozen |
+| 对应计划 | [plan.md](plan.md) v1.1.0 / done |
+| 代码基线 | `7db1467`；其上包含尚未提交的 v1.1.0 compatibility amendment |
+| 基线工作区 | 存在本报告对应的未提交代码、Fixture、测试和文档修改 |
 | 验收环境 | macOS Darwin x86_64；Python 3.13.5；pip 25.1.1 |
 
 本报告是 WP-00 的程序证据汇总，不把模型自述或“文件存在”作为验收依据。验收结论只覆盖
@@ -26,7 +26,7 @@ Completion 或 Agent 端到端运行。
 - 可复现的 src-layout Python 工程、editable 安装和统一开发依赖入口；
 - 严格、可版本化、可稳定序列化的公共领域模型；
 - 稳定枚举、错误码、ID、UTC 时间和 JSON 序列化规则；
-- 严格 YAML 加载、跨字段语义校验、路径归一化和配置指纹；
+- 严格 YAML 加载、跨字段语义校验、路径归一化、`state_dir` 工作区隔离和配置指纹；
 - 代码理解与测试修复两类任务的 Fixture 配置；
 - 临时 Git 工作区、SQLite 路径、固定 Clock/ID 和 FaultInjector 测试设施；
 - 默认离线、确定性测试以及 Ruff lint/格式检查。
@@ -51,7 +51,7 @@ Completion 或 Agent 端到端运行。
 | 公共领域模型 | `src/guarded_harness/domain.py` | PASS |
 | 配置加载与指纹 | `src/guarded_harness/config.py` | PASS |
 | 领域契约测试 | `tests/test_domain.py` | PASS |
-| 配置与路径测试 | `tests/test_config.py` | PASS |
+| 配置与路径测试 | `tests/test_config.py` | PASS；新增 `state_dir` 必填、工作区外和软链接真实落点测试 |
 | 测试 Fixture | `tests/conftest.py`、`tests/fixtures/config/**` | PASS |
 | 包内规格和计划 | `spec.md`、`plan.md` | PASS |
 | 文档索引 | `docs/README.md`、`docs/work-packages/index.md` | PASS |
@@ -67,10 +67,10 @@ Completion 或 Agent 端到端运行。
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | Editable 安装 | `python -m pip install -e '.[dev]'` | PASS；成功构建并安装 `guarded-harness==0.1.0` |
-| WP-00 目标测试 | `python -m pytest tests/test_domain.py tests/test_config.py -q` | PASS；`29 passed in 0.86s` |
-| 全量测试 | `python -m pytest -q` | PASS；`29 passed in 0.69s` |
+| WP-00 目标测试 | `python -m pytest tests/test_domain.py tests/test_config.py -q` | PASS；`31 passed in 0.62s` |
+| 全量测试 | `python -m pytest -q` | PASS；`31 passed in 0.58s` |
 | Lint | `python -m ruff check .` | PASS；`All checks passed!` |
-| 格式 | `python -m ruff format --check .` | PASS；`17 files already formatted` |
+| 格式 | `python -m ruff format --check .` | PASS；`20 files already formatted` |
 | 依赖一致性 | `python -m pip check` | PASS；`No broken requirements found.` |
 | 安装后导入 | 导入 `guarded_harness` 并读取版本、导出数 | PASS；版本 `0.1.0`，包根导出 50 个名称 |
 
@@ -101,6 +101,7 @@ ruff==0.17.3
 | WP00-AC-011 测试确定性 | PASS | 固定 Clock/ID、FaultInjector 测试；默认测试离线 |
 | WP00-AC-012 失败不产生副作用 | PASS | `test_rejection_has_no_side_effects` |
 | WP00-AC-013 公共导出与契约冻结 | PASS | `test_public_api_importable`、`test_pyproject_is_the_single_dependency_source` |
+| WP00-AC-014 状态目录隔离 | PASS | `test_state_dir_is_required_and_outside_workspace`、`test_state_dir_symlink_into_workspace_is_rejected` |
 
 ## 6. 任务卡验收
 
@@ -110,9 +111,9 @@ ruff==0.17.3
 | WP00-T02 领域标量、枚举和错误 | DONE | 严格枚举、ID、UTC 时间、schema version 和稳定错误码测试通过 |
 | WP00-T03 公共领域模型 | DONE | 必填/未知字段、模型 round-trip、权限集合稳定序列化通过 |
 | WP00-T04 严格配置 schema | DONE | 两类 Acceptance、预算、审批、工具和策略匹配拒绝路径通过 |
-| WP00-T05 YAML、路径和指纹 | DONE | 重复 key、多文档、复杂度、穿越、软链接、敏感路径及指纹通过 |
+| WP00-T05 YAML、路径和指纹 | DONE | 重复 key、多文档、复杂度、穿越、软链接、敏感路径、state_dir 隔离及指纹通过 |
 | WP00-T06 Fixture 与任务样例 | DONE | 临时 Git/SQLite、Clock、ID、FaultInjector 和两份配置可复用 |
-| WP00-T07 契约与安全测试 | DONE | 29 项测试全部通过，无失败或 skip |
+| WP00-T07 契约与安全测试 | DONE | 31 项测试全部通过，无失败；当前支持的平台未触发 symlink skip |
 | WP00-T08 文档与封版 | DONE | spec/plan、决策、索引、安装入口和本报告已同步 |
 
 ## 7. 安全与失败关闭检查
@@ -126,6 +127,7 @@ ruff==0.17.3
 | `..` 路径逃逸 | 非法 Fixture | PASS |
 | 符号链接逃逸 | 临时真实 symlink 测试 | PASS |
 | `.env`、私钥、`.git`、状态根目录 | 敏感路径和受保护 state 测试 | PASS |
+| `state_dir` 缺失或进入工作区 | 必填、`relative_to` 和符号链接落点测试 | PASS |
 | 重复工具和重复交付物 | 跨字段/规范化重复测试 | PASS |
 | 指纹环境依赖 | 环境变量与路径等价测试 | PASS |
 | 拒绝产生文件或目录副作用 | 目录快照测试 | PASS |
@@ -164,10 +166,11 @@ WP-00 不包含 handler，因此本报告不宣称已经验证“Gate 拒绝时 
 
 ## 10. 验收结论
 
-**WP-00 工程与契约内核：ACCEPTED。**
+**WP-00 工程与契约内核 v1.1.0 compatibility amendment：自动化检查通过，状态为 REVIEW。**
 
-冻结规格、计划任务、自动化测试、lint、格式检查和依赖一致性均已有可复现证据。该结论允许
-下游工作包依赖 WP-00 的公共模型、配置 schema、路径基准、指纹规则和测试 Fixture。
+冻结规格、计划任务、自动化测试、lint、格式检查和依赖一致性均已有可复现证据。由于代码基线仍是
+未提交工作区，本报告不把结论提升为 `accepted`；提交产生稳定代码基线后，需要复核命令结果并将
+报告状态改为 `accepted`。
 
-项目整体仍处于 P0 开发阶段。下一准入动作是启动 WP-01，并在其施工前冻结 SQLite schema、
-事务组合、状态机、预算持久化和审计 append-only 语义。
+项目整体仍处于 P0 开发阶段。WP-01 的规格和计划已经冻结/批准，但其 T01 施工仍等待 WP-00
+v1.1.0 报告 accepted。
