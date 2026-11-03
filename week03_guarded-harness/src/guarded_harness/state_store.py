@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from .audit import AuditDecision, AuditEventDraft, AuditEventType, AuditStatus
 from .domain import (
     AcceptanceStatus,
     ApprovalId,
@@ -22,6 +23,7 @@ from .domain import (
     ErrorCode,
     Evidence,
     EvidenceKind,
+    GatePhase,
     InvocationStatus,
     LeasePolicy,
     PlanItem,
@@ -174,6 +176,12 @@ class StateStore:
                 "create_run",
                 "run_id or trace_id already exists",
             )
+        self._append_event(
+            run_id=run.run_id,
+            event_type=AuditEventType.RUN_CREATED,
+            input_summary={"task_id": run.task_id, "task_kind": run.task_kind.value},
+            output_summary={"status": run.status.value},
+        )
         return self._acquire_lease(run.run_id, owner_id, lease_policy or LeasePolicy())
 
     def get_run(self, run_id: str) -> Run:
@@ -267,6 +275,11 @@ class StateStore:
             if changed != 1:
                 self._raise(ErrorCode.STATE_CONFLICT, "put_plan", "plan changed concurrently")
         self._touch_run(run_id, expected_revision, now)
+        self._append_event(
+            run_id=run_id,
+            event_type=AuditEventType.RUN_PLAN_UPDATED,
+            input_summary={"revision": stored.revision, "items": len(stored.items)},
+        )
         return stored
 
     def create_step(
@@ -327,6 +340,13 @@ class StateStore:
                 "step identity or ordinal is duplicated",
             )
         self._touch_run(step.run_id, expected_run_revision, now, current_step_id=step.step_id)
+        self._append_event(
+            run_id=step.run_id,
+            event_type=AuditEventType.STEP_PLANNED,
+            status=AuditStatus.PENDING,
+            step_id=step.step_id,
+            input_summary={"ordinal": step.ordinal, "summary": step.summary},
+        )
         return step
 
     def create_invocation(
@@ -419,6 +439,15 @@ class StateStore:
                 "tool_call_id is already used in this run",
             )
         self._touch_run(invocation.run_id, expected_run_revision, now)
+        self._append_event(
+            run_id=invocation.run_id,
+            event_type=AuditEventType.TOOL_PREPARED,
+            status=AuditStatus.PENDING,
+            step_id=invocation.step_id,
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            input_summary={"args": normalized_args},
+        )
         return invocation.model_copy(
             update={"raw_args": raw_args, "normalized_args": normalized_args}
         )
@@ -576,6 +605,34 @@ class StateStore:
             "SELECT * FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
             (run_id, tool_call_id),
         ).fetchone()
+        event_type = {
+            InvocationStatus.STARTED: AuditEventType.TOOL_STARTED,
+            InvocationStatus.SUCCEEDED: AuditEventType.TOOL_SUCCEEDED,
+            InvocationStatus.FAILED: AuditEventType.TOOL_FAILED,
+            InvocationStatus.TIMED_OUT: AuditEventType.TOOL_TIMED_OUT,
+            InvocationStatus.UNKNOWN_RESULT: AuditEventType.TOOL_UNKNOWN_RESULT,
+        }[target]
+        audit_status = {
+            InvocationStatus.STARTED: AuditStatus.STARTED,
+            InvocationStatus.SUCCEEDED: AuditStatus.SUCCEEDED,
+            InvocationStatus.FAILED: AuditStatus.FAILED,
+            InvocationStatus.TIMED_OUT: AuditStatus.TIMED_OUT,
+            InvocationStatus.UNKNOWN_RESULT: AuditStatus.UNKNOWN_RESULT,
+        }[target]
+        self._append_event(
+            run_id=run_id,
+            event_type=event_type,
+            status=audit_status,
+            code=error_code,
+            tool_call_id=tool_call_id,
+            tool_name=current.tool_name,
+            input_summary={"status": current.status.value},
+            output_summary={
+                "status": target.value,
+                "summary": redacted_summary,
+                "evidence_ids": list(evidence_ids),
+            },
+        )
         return _invocation_from_row(self._connection, updated_row)
 
     def add_evidence(self, evidence: Evidence, *, lease_token: str) -> Evidence:
@@ -636,6 +693,13 @@ class StateStore:
             )
         run_revision = self._get_run_revision(evidence.run_id)
         self._touch_run(evidence.run_id, run_revision, now)
+        self._append_event(
+            run_id=evidence.run_id,
+            event_type=AuditEventType.EVIDENCE_RECORDED,
+            tool_call_id=evidence.tool_call_id,
+            input_summary={"kind": evidence.kind.value, "path": redacted_path},
+            evidence_ref=evidence.evidence_id,
+        )
         return evidence.model_copy(update={"path": redacted_path, "command_id": redacted_command})
 
     def record_budget_delta(
@@ -765,6 +829,18 @@ class StateStore:
                 "run usage changed concurrently",
             )
         self._touch_run(command.run_id, run_revision, now)
+        self._append_event(
+            run_id=command.run_id,
+            phase=GatePhase.BUDGET,
+            event_type=AuditEventType.BUDGET_UPDATED,
+            input_summary={
+                "source_kind": command.source_kind.value,
+                "source_id": command.source_id,
+                "category": command.category.value,
+                "delta": stored_delta,
+            },
+            output_summary={"usage": _usage_to_json(candidates)},
+        )
         return BudgetUsage(
             steps=candidates[BudgetCategory.STEPS],
             tool_calls=candidates[BudgetCategory.TOOL_CALLS],
@@ -905,6 +981,15 @@ class StateStore:
                 "record_completion",
                 "run changed concurrently",
             )
+        self._append_event(
+            run_id=stored.run_id,
+            event_type=AuditEventType.COMPLETION_RECORDED,
+            input_summary={
+                "acceptance_status": stored.acceptance_status.value,
+                "items": len(stored.items),
+            },
+            output_summary={"evidence_ids": list(stored.evidence_ids)},
+        )
         return stored
 
     def transition_step(
@@ -916,6 +1001,7 @@ class StateStore:
         target: StepStatus,
         ended_at: datetime | None,
         lease_token: str,
+        error_code: str | None = None,
     ) -> Step:
         """Apply one validated Step status transition."""
 
@@ -945,6 +1031,12 @@ class StateStore:
             )
         if target in {StepStatus.COMPLETED, StepStatus.FAILED} and ended_at is None:
             ended_at = now
+        if target == StepStatus.FAILED and not error_code:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "transition_step",
+                "failed steps require an error code",
+            )
         updated = Step(
             step_id=current.step_id,
             run_id=current.run_id,
@@ -973,6 +1065,23 @@ class StateStore:
         run_revision = self._get_run_revision(run_id)
         current_step_id = step_id if target == StepStatus.RUNNING else None
         self._touch_run(run_id, run_revision, now, current_step_id=current_step_id)
+        event_type = {
+            StepStatus.RUNNING: AuditEventType.STEP_STARTED,
+            StepStatus.COMPLETED: AuditEventType.STEP_COMPLETED,
+            StepStatus.FAILED: AuditEventType.STEP_FAILED,
+        }[target]
+        audit_status = {
+            StepStatus.RUNNING: AuditStatus.STARTED,
+            StepStatus.COMPLETED: AuditStatus.SUCCEEDED,
+            StepStatus.FAILED: AuditStatus.FAILED,
+        }[target]
+        self._append_event(
+            run_id=run_id,
+            event_type=event_type,
+            status=audit_status,
+            code=error_code,
+            step_id=step_id,
+        )
         return updated
 
     def transition_run(
@@ -1075,6 +1184,39 @@ class StateStore:
         ).rowcount
         if changed != 1:
             self._raise(ErrorCode.STATE_CONFLICT, "transition_run", "run changed concurrently")
+        event_type = {
+            RunStatus.RUNNING: AuditEventType.RUN_STARTED,
+            RunStatus.WAITING_APPROVAL: AuditEventType.RUN_WAITING_APPROVAL,
+            RunStatus.VERIFYING: AuditEventType.RUN_VERIFYING,
+            RunStatus.COMPLETED: AuditEventType.RUN_COMPLETED,
+            RunStatus.STOPPED: AuditEventType.RUN_STOPPED,
+            RunStatus.FAILED: AuditEventType.RUN_FAILED,
+            RunStatus.BLOCKED: AuditEventType.RUN_BLOCKED,
+        }[target]
+        audit_status = {
+            RunStatus.RUNNING: AuditStatus.STARTED,
+            RunStatus.WAITING_APPROVAL: AuditStatus.PENDING,
+            RunStatus.VERIFYING: AuditStatus.STARTED,
+            RunStatus.COMPLETED: AuditStatus.SUCCEEDED,
+            RunStatus.STOPPED: AuditStatus.STOPPED,
+            RunStatus.FAILED: AuditStatus.FAILED,
+            RunStatus.BLOCKED: AuditStatus.BLOCKED,
+        }[target]
+        self._append_event(
+            run_id=run_id,
+            event_type=event_type,
+            status=audit_status,
+            code=(
+                stop_reason.value
+                if target in {RunStatus.FAILED, RunStatus.BLOCKED} and stop_reason
+                else None
+            ),
+            input_summary={
+                "from": current.status.value,
+                "stop_reason": stop_reason.value if stop_reason else None,
+            },
+            output_summary={"status": target.value, "acceptance": updated.acceptance_status.value},
+        )
         return updated
 
     def acquire_lease(
@@ -1153,6 +1295,13 @@ class StateStore:
                 "release_lease",
                 "lease token is not current",
             )
+        now = self._now()
+        self._append_event(
+            run_id=lease.run_id,
+            event_type=AuditEventType.RUN_LEASE_RELEASED,
+            input_summary={"owner_id": lease.owner_id},
+            output_summary={"released_at": _serialize_datetime(now)},
+        )
 
     def get_run_snapshot(self, run_id: str) -> RunSnapshot:
         """Read all WP-01-owned state in the current transaction."""
@@ -1318,7 +1467,7 @@ class StateStore:
                     run_id,
                 ),
             )
-        return RunLease(
+        acquired = RunLease(
             run_id=run_id,
             owner_id=normalized_owner,
             token=token,
@@ -1326,6 +1475,17 @@ class StateStore:
             heartbeat_at=now,
             expires_at=expires_at,
         )
+        self._append_event(
+            run_id=run_id,
+            event_type=(
+                AuditEventType.RUN_LEASE_TAKEOVER
+                if row is not None
+                else AuditEventType.RUN_LEASE_ACQUIRED
+            ),
+            input_summary={"owner_id": normalized_owner},
+            output_summary={"expires_at": _serialize_datetime(expires_at)},
+        )
+        return acquired
 
     def _verify_lease(self, run_id: str, token: str, now: datetime) -> None:
         row = self._connection.execute(
@@ -1367,6 +1527,43 @@ class StateStore:
                 "mapping redaction did not produce an object",
             )
         return redacted
+
+    def _append_event(
+        self,
+        *,
+        run_id: str,
+        event_type: AuditEventType,
+        status: AuditStatus = AuditStatus.SUCCEEDED,
+        phase: GatePhase = GatePhase.EXECUTION,
+        code: str | None = None,
+        decision: AuditDecision = AuditDecision.NOT_APPLICABLE,
+        step_id: str | None = None,
+        tool_call_id: str | None = None,
+        approval_id: str | None = None,
+        tool_name: str | None = None,
+        rule_id: str | None = None,
+        input_summary: object = None,
+        output_summary: object = None,
+        evidence_ref: str | None = None,
+    ) -> None:
+        self._unit.audit.append(
+            AuditEventDraft(
+                run_id=run_id,
+                event_type=event_type,
+                phase=phase,
+                status=status,
+                decision=decision,
+                code=code,
+                step_id=step_id,
+                tool_call_id=tool_call_id,
+                approval_id=approval_id,
+                tool_name=tool_name,
+                rule_id=rule_id,
+                input_summary=input_summary,
+                output_summary=output_summary,
+                evidence_ref=evidence_ref,
+            )
+        )
 
     def _ensure_active(self) -> None:
         try:
@@ -1549,6 +1746,15 @@ def _usage_from_row(row: sqlite3.Row) -> BudgetUsage:
         token_cost=Decimal(str(row["used_token_cost"])),
         wall_time_seconds=int(row["used_wall_time_seconds"]),
     )
+
+
+def _usage_to_json(values: dict[BudgetCategory, object]) -> dict[str, object]:
+    return {
+        "steps": values[BudgetCategory.STEPS],
+        "tool_calls": values[BudgetCategory.TOOL_CALLS],
+        "token_cost": _decimal_text(Decimal(values[BudgetCategory.TOKEN_COST])),
+        "wall_time_seconds": values[BudgetCategory.WALL_TIME],
+    }
 
 
 def _decimal_text(value: Decimal) -> str:

@@ -11,7 +11,7 @@
 | 对应规格 | `spec.md` v0.2.2 / frozen |
 | 前置依赖 | WP-00 v1.1.0，已验收 |
 | 施工前置 | 已满足；D-16 至 D-21 已写入决策基线 |
-| 当前结论 | T01 至 T05 已完成并通过目标及全量验证 |
+| 当前结论 | T01 至 T06 已完成并通过目标及全量验证 |
 
 本计划只安排 WP-01 的施工，不重新定义 `spec.md`。规格变化时先更新并评审 `spec.md`，再同步本计划。
 
@@ -475,7 +475,7 @@ WP-01 migration、复制 StateStore 或绕过 UnitOfWork。
 
 ## 12. 实际完成情况
 
-当前状态：规格已冻结、计划已批准，WP01-T01 至 T05 已完成，其余任务尚未实现。
+当前状态：规格已冻结、计划已批准，WP01-T01 至 T06 已完成，T07/T08 尚未实现。
 
 | 项目 | 状态 |
 | --- | --- |
@@ -484,10 +484,10 @@ WP-01 migration、复制 StateStore 或绕过 UnitOfWork。
 | SQLite/migration | T01 已完成；目标测试 `7 passed`，PRAGMA、checksum、回滚、路径隔离和权限通过 |
 | StateStore/租约 | T03 至 T05 已完成业务状态、跨连接租约、过期接管、续租/释放和旧 token fencing |
 | Redaction | T02 已完成；目标测试 `13 passed`，敏感值、凭据形态、循环和有界裁剪通过 |
-| Audit append-only/哈希链 | 未实现 |
+| Audit append-only/哈希链 | T06 已完成；连续序号、哈希校验、触发器、关联查询和自动业务事件通过 |
 | 测试与验收报告 | 未开始 |
 
-当前全量测试：`55 passed in 1.21s`；State 目标测试 `17 passed`；Ruff lint、格式检查和
+当前全量测试：`58 passed in 0.98s`；State 与 Audit 目标测试 `20 passed`；Ruff lint、格式检查和
 `pip check` 均通过。Migration v2 追加了 ToolInvocation 复合外键所需的 Step 唯一索引，v1 未修改。
 
 只有在 T02 至 T08 实现和实测验收完成后，才能更新本节并生成

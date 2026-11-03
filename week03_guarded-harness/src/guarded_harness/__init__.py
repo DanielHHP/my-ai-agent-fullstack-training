@@ -1,6 +1,16 @@
 """Public contracts for the guarded coding harness."""
 
 from ._version import __version__
+from .audit import (
+    AuditChainReport,
+    AuditDecision,
+    AuditEventDraft,
+    AuditEventRecord,
+    AuditEventType,
+    AuditStatus,
+    AuditStore,
+    AuditStoreError,
+)
 from .config import (
     ApprovalConfig,
     BudgetConfig,
@@ -72,6 +82,14 @@ __all__ = [
     "ApprovalConfig",
     "ApprovalRequirement",
     "ApprovalStatus",
+    "AuditChainReport",
+    "AuditDecision",
+    "AuditEventDraft",
+    "AuditEventRecord",
+    "AuditEventType",
+    "AuditStatus",
+    "AuditStore",
+    "AuditStoreError",
     "BudgetUsage",
     "BudgetCategory",
     "BudgetDeltaCommand",

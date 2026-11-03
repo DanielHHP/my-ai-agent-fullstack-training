@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from .domain import Clock, ErrorCode, FaultInjector
 
 if TYPE_CHECKING:
+    from .audit import AuditStore
     from .state_store import StateStore
 
 SCHEMA_VERSION = 2
@@ -365,6 +366,15 @@ class StorageUnitOfWork:
         from .state_store import StateStore
 
         return StateStore(self)
+
+    @property
+    def audit(self) -> AuditStore:
+        """Return the audit repository bound to this unit of work."""
+
+        self.ensure_active()
+        from .audit import AuditStore
+
+        return AuditStore(self)
 
     @property
     def connection(self) -> sqlite3.Connection:
