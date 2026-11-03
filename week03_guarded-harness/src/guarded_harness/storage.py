@@ -18,7 +18,7 @@ from .domain import Clock, ErrorCode, FaultInjector
 if TYPE_CHECKING:
     from .state_store import StateStore
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -270,6 +270,10 @@ BEGIN
 END;
 """
 
+_MIGRATION_V2 = """
+CREATE UNIQUE INDEX idx_steps_run_step ON steps(run_id, step_id);
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -286,7 +290,10 @@ class Migration:
         return f"sha256:{digest}"
 
 
-MIGRATIONS = (Migration(version=1, sql=_MIGRATION_V1),)
+MIGRATIONS = (
+    Migration(version=1, sql=_MIGRATION_V1),
+    Migration(version=2, sql=_MIGRATION_V2),
+)
 
 
 @dataclass(frozen=True)
@@ -299,6 +306,7 @@ class IntegrityReport:
     foreign_keys_enabled: bool
     busy_timeout_ms: int
     required_tables_present: bool
+    budget_ledger_consistent: bool
     quick_check: str
 
     @property
@@ -311,6 +319,7 @@ class IntegrityReport:
             and self.journal_mode.casefold() == "wal"
             and self.foreign_keys_enabled
             and self.required_tables_present
+            and self.budget_ledger_consistent
             and self.quick_check.casefold() == "ok"
         )
 
@@ -545,6 +554,7 @@ class SQLiteStorage:
                 foreign_keys = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
                 busy_timeout = int(connection.execute("PRAGMA busy_timeout").fetchone()[0])
                 quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+                budget_ledger_consistent = _budget_ledger_consistent(connection)
                 return IntegrityReport(
                     schema_version=version,
                     migration_count=len(applied),
@@ -552,6 +562,7 @@ class SQLiteStorage:
                     foreign_keys_enabled=foreign_keys,
                     busy_timeout_ms=busy_timeout,
                     required_tables_present=required.issubset(tables),
+                    budget_ledger_consistent=budget_ledger_consistent,
                     quick_check=quick_check,
                 )
         except StorageError:
@@ -822,3 +833,38 @@ def _split_sql_statements(script: str) -> Iterator[str]:
             operation="migrate",
             message="migration contains an incomplete SQL statement",
         )
+
+
+def _budget_ledger_consistent(connection: sqlite3.Connection) -> bool:
+    from decimal import Decimal
+
+    sums: dict[str, dict[str, Decimal]] = {}
+    for row in connection.execute("SELECT run_id, category, delta FROM budget_ledger").fetchall():
+        run_sums = sums.setdefault(
+            str(row["run_id"]),
+            {
+                "STEPS": Decimal(0),
+                "TOOL_CALLS": Decimal(0),
+                "TOKEN_COST": Decimal(0),
+                "WALL_TIME": Decimal(0),
+            },
+        )
+        run_sums[str(row["category"])] += Decimal(str(row["delta"]))
+    for row in connection.execute("SELECT * FROM runs").fetchall():
+        run_sums = sums.get(
+            str(row["run_id"]),
+            {
+                "STEPS": Decimal(0),
+                "TOOL_CALLS": Decimal(0),
+                "TOKEN_COST": Decimal(0),
+                "WALL_TIME": Decimal(0),
+            },
+        )
+        if (
+            run_sums["STEPS"] != Decimal(int(row["used_steps"]))
+            or run_sums["TOOL_CALLS"] != Decimal(int(row["used_tool_calls"]))
+            or run_sums["TOKEN_COST"] != Decimal(str(row["used_token_cost"]))
+            or run_sums["WALL_TIME"] != Decimal(int(row["used_wall_time_seconds"]))
+        ):
+            return False
+    return True

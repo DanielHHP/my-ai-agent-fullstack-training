@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 from .domain import (
     AcceptanceStatus,
     ApprovalId,
+    BudgetCategory,
+    BudgetDeltaCommand,
     BudgetUsage,
     CompletionCheck,
     CompletionItem,
@@ -39,6 +41,7 @@ from .domain import (
     WorkspaceIdentity,
     canonical_json_dump,
 )
+from .redaction import Redactor
 from .storage import StorageError
 
 if TYPE_CHECKING:
@@ -99,6 +102,7 @@ class StateStore:
         self._unit = unit_of_work
         self._connection = unit_of_work.connection
         self._clock = unit_of_work.storage.clock
+        self._redactor = Redactor()
 
     def create_run(
         self,
@@ -324,6 +328,584 @@ class StateStore:
             )
         self._touch_run(step.run_id, expected_run_revision, now, current_step_id=step.step_id)
         return step
+
+    def create_invocation(
+        self,
+        invocation: ToolInvocation,
+        *,
+        expected_run_revision: int,
+        lease_token: str,
+    ) -> ToolInvocation:
+        """Persist one prepared tool invocation before side effects."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(invocation.run_id, lease_token, now)
+        run = self.get_run(invocation.run_id)
+        if self._get_run_revision(invocation.run_id) != expected_run_revision:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "create_invocation",
+                "run revision does not match",
+            )
+        if run.status in _TERMINAL_RUN_STATUSES:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "create_invocation",
+                "terminal runs cannot add tool calls",
+            )
+        if invocation.status != InvocationStatus.PREPARED or invocation.evidence_ids:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "create_invocation",
+                "new invocations must be PREPARED without evidence",
+            )
+        step_row = self._connection.execute(
+            "SELECT 1 FROM steps WHERE run_id = ? AND step_id = ?",
+            (invocation.run_id, invocation.step_id),
+        ).fetchone()
+        if step_row is None:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "create_invocation",
+                "invocation step does not exist in this run",
+            )
+        raw_args = self._redacted_mapping(invocation.raw_args, "create_invocation")
+        normalized_args = self._redacted_mapping(
+            invocation.normalized_args,
+            "create_invocation",
+        )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO tool_calls(
+                    run_id, tool_call_id, step_id, tool_name, raw_args_json,
+                    normalized_args_json, args_digest, risk,
+                    required_permissions_json, idempotent, status, approval_id,
+                    result_summary, error_code, schema_version, revision,
+                    created_at, updated_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    invocation.run_id,
+                    invocation.tool_call_id,
+                    invocation.step_id,
+                    invocation.tool_name,
+                    _canonical_json(raw_args),
+                    _canonical_json(normalized_args),
+                    invocation.args_digest,
+                    invocation.risk.value,
+                    json.dumps(
+                        sorted(permission.value for permission in invocation.required_permissions),
+                        separators=(",", ":"),
+                    ),
+                    int(invocation.idempotent),
+                    invocation.status.value,
+                    invocation.approval_id,
+                    invocation.result_summary,
+                    invocation.error_code,
+                    invocation.schema_version,
+                    0,
+                    _serialize_datetime(invocation.created_at),
+                    _serialize_datetime(invocation.updated_at),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "create_invocation",
+                "tool_call_id is already used in this run",
+            )
+        self._touch_run(invocation.run_id, expected_run_revision, now)
+        return invocation.model_copy(
+            update={"raw_args": raw_args, "normalized_args": normalized_args}
+        )
+
+    def transition_invocation(
+        self,
+        run_id: str,
+        tool_call_id: str,
+        *,
+        expected_status: InvocationStatus,
+        expected_revision: int,
+        target: InvocationStatus,
+        result_summary: str | None,
+        evidence_ids: tuple[str, ...],
+        error_code: str | None,
+        lease_token: str,
+    ) -> ToolInvocation:
+        """Apply one validated tool invocation state transition."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(run_id, lease_token, now)
+        row = self._connection.execute(
+            "SELECT * FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
+            (run_id, tool_call_id),
+        ).fetchone()
+        if row is None:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "transition_invocation",
+                "tool invocation does not exist",
+            )
+        current = _invocation_from_row(self._connection, row)
+        current_revision = int(row["revision"])
+        if current_revision != expected_revision or current.status != expected_status:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "transition_invocation",
+                "invocation status or revision does not match",
+            )
+        if current.status == InvocationStatus.PREPARED and target != InvocationStatus.STARTED:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "transition_invocation",
+                "prepared invocations can only start",
+            )
+        if current.status == InvocationStatus.STARTED and target not in {
+            InvocationStatus.SUCCEEDED,
+            InvocationStatus.FAILED,
+            InvocationStatus.TIMED_OUT,
+            InvocationStatus.UNKNOWN_RESULT,
+        }:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "transition_invocation",
+                "invalid terminal invocation transition",
+            )
+        if (
+            current.status != InvocationStatus.PREPARED
+            and current.status != InvocationStatus.STARTED
+        ):
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "transition_invocation",
+                "terminal invocations cannot transition",
+            )
+        if target == InvocationStatus.TIMED_OUT and not current.idempotent:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "transition_invocation",
+                "non-idempotent timeouts must be UNKNOWN_RESULT",
+            )
+        if target == InvocationStatus.SUCCEEDED and error_code is not None:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "transition_invocation",
+                "successful invocations cannot carry an error code",
+            )
+        if (
+            target
+            in {
+                InvocationStatus.FAILED,
+                InvocationStatus.TIMED_OUT,
+                InvocationStatus.UNKNOWN_RESULT,
+            }
+            and not error_code
+        ):
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "transition_invocation",
+                "failed or indeterminate invocations require an error code",
+            )
+        if target in {
+            InvocationStatus.SUCCEEDED,
+            InvocationStatus.FAILED,
+            InvocationStatus.TIMED_OUT,
+            InvocationStatus.UNKNOWN_RESULT,
+        } and len(set(evidence_ids)) != len(evidence_ids):
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "transition_invocation",
+                "evidence IDs must be unique",
+            )
+        for evidence_id in evidence_ids:
+            evidence_row = self._connection.execute(
+                "SELECT 1 FROM evidence WHERE run_id = ? AND evidence_id = ?",
+                (run_id, evidence_id),
+            ).fetchone()
+            if evidence_row is None:
+                self._raise(
+                    ErrorCode.STATE_NOT_FOUND,
+                    "transition_invocation",
+                    "referenced evidence does not exist",
+                )
+        redacted_summary = (
+            self._redacted_text(result_summary, "transition_invocation")
+            if result_summary is not None
+            else None
+        )
+        changed = self._connection.execute(
+            """
+            UPDATE tool_calls
+            SET status = ?, result_summary = ?, error_code = ?,
+                revision = revision + 1, updated_at = ?
+            WHERE run_id = ? AND tool_call_id = ? AND status = ? AND revision = ?
+            """,
+            (
+                target.value,
+                redacted_summary,
+                error_code,
+                _serialize_datetime(now),
+                run_id,
+                tool_call_id,
+                current.status.value,
+                current_revision,
+            ),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "transition_invocation",
+                "invocation changed concurrently",
+            )
+        for ordinal, evidence_id in enumerate(evidence_ids):
+            self._connection.execute(
+                """
+                INSERT INTO tool_call_evidence(run_id, tool_call_id, evidence_id, ordinal)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_id, tool_call_id, evidence_id, ordinal),
+            )
+        run_revision = self._get_run_revision(run_id)
+        self._touch_run(run_id, run_revision, now)
+        updated_row = self._connection.execute(
+            "SELECT * FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
+            (run_id, tool_call_id),
+        ).fetchone()
+        return _invocation_from_row(self._connection, updated_row)
+
+    def add_evidence(self, evidence: Evidence, *, lease_token: str) -> Evidence:
+        """Persist immutable evidence associated with an existing run."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(evidence.run_id, lease_token, now)
+        self.get_run(evidence.run_id)
+        if evidence.tool_call_id is not None:
+            row = self._connection.execute(
+                "SELECT 1 FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
+                (evidence.run_id, evidence.tool_call_id),
+            ).fetchone()
+            if row is None:
+                self._raise(
+                    ErrorCode.STATE_NOT_FOUND,
+                    "add_evidence",
+                    "evidence tool call does not exist",
+                )
+        redacted_path = (
+            self._redacted_text(evidence.path, "add_evidence") if evidence.path else None
+        )
+        redacted_command = (
+            self._redacted_text(evidence.command_id, "add_evidence")
+            if evidence.command_id
+            else None
+        )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO evidence(
+                    evidence_id, run_id, tool_call_id, kind, path, command_id,
+                    line_start, line_end, content_digest, schema_version,
+                    created_at, is_valid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence.evidence_id,
+                    evidence.run_id,
+                    evidence.tool_call_id,
+                    evidence.kind.value,
+                    redacted_path,
+                    redacted_command,
+                    evidence.line_start,
+                    evidence.line_end,
+                    evidence.content_digest,
+                    evidence.schema_version,
+                    _serialize_datetime(evidence.created_at),
+                    int(evidence.is_valid),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "add_evidence",
+                "evidence_id already exists",
+            )
+        run_revision = self._get_run_revision(evidence.run_id)
+        self._touch_run(evidence.run_id, run_revision, now)
+        return evidence.model_copy(update={"path": redacted_path, "command_id": redacted_command})
+
+    def record_budget_delta(
+        self,
+        command: BudgetDeltaCommand,
+        *,
+        lease_token: str,
+    ) -> BudgetUsage:
+        """Apply one source/category budget increment exactly once."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(command.run_id, lease_token, now)
+        run = self.get_run(command.run_id)
+        existing = self._connection.execute(
+            """
+            SELECT delta FROM budget_ledger
+            WHERE run_id = ? AND source_kind = ? AND source_id = ? AND category = ?
+            """,
+            (
+                command.run_id,
+                command.source_kind.value,
+                command.source_id,
+                command.category.value,
+            ),
+        ).fetchone()
+        usage = _usage_from_row(
+            self._connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?",
+                (command.run_id,),
+            ).fetchone()
+        )
+        if existing is not None:
+            if Decimal(str(existing["delta"])) != command.delta:
+                self._raise(
+                    ErrorCode.STATE_CONFLICT,
+                    "record_budget_delta",
+                    "budget operation was replayed with a different delta",
+                )
+            return usage
+        run_revision = self._get_run_revision(command.run_id)
+        if run_revision != command.expected_run_revision:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_budget_delta",
+                "run revision does not match",
+            )
+        if run.status in _TERMINAL_RUN_STATUSES:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "record_budget_delta",
+                "terminal runs cannot consume budget",
+            )
+        candidates = {
+            BudgetCategory.STEPS: usage.steps,
+            BudgetCategory.TOOL_CALLS: usage.tool_calls,
+            BudgetCategory.TOKEN_COST: usage.token_cost,
+            BudgetCategory.WALL_TIME: usage.wall_time_seconds,
+        }
+        if command.category == BudgetCategory.TOKEN_COST:
+            candidates[command.category] = usage.token_cost + command.delta
+        else:
+            candidates[command.category] = int(candidates[command.category]) + int(command.delta)
+        delta_value = candidates[command.category]
+        if (
+            (command.category == BudgetCategory.STEPS and delta_value > run.budget.max_steps)
+            or (
+                command.category == BudgetCategory.TOOL_CALLS
+                and delta_value > run.budget.max_tool_calls
+            )
+            or (
+                command.category == BudgetCategory.TOKEN_COST
+                and delta_value > run.budget.max_token_cost
+            )
+            or (
+                command.category == BudgetCategory.WALL_TIME
+                and delta_value > run.budget.max_wall_time_seconds
+            )
+        ):
+            self._raise(
+                ErrorCode.STATE_BUDGET_EXCEEDED,
+                "record_budget_delta",
+                "budget limit would be exceeded",
+            )
+        column = {
+            BudgetCategory.STEPS: "used_steps",
+            BudgetCategory.TOOL_CALLS: "used_tool_calls",
+            BudgetCategory.TOKEN_COST: "used_token_cost",
+            BudgetCategory.WALL_TIME: "used_wall_time_seconds",
+        }[command.category]
+        stored_delta = (
+            _decimal_text(command.delta)
+            if command.category == BudgetCategory.TOKEN_COST
+            else str(int(command.delta))
+        )
+        operation_key = _budget_operation_key(command)
+        self._connection.execute(
+            """
+            INSERT INTO budget_ledger(
+                run_id, source_kind, source_id, category, delta, operation_key, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                command.run_id,
+                command.source_kind.value,
+                command.source_id,
+                command.category.value,
+                stored_delta,
+                operation_key,
+                _serialize_datetime(now),
+            ),
+        )
+        usage_changed = self._connection.execute(
+            f"UPDATE runs SET {column} = ? WHERE run_id = ? AND revision = ?",
+            (
+                _decimal_text(delta_value)
+                if command.category == BudgetCategory.TOKEN_COST
+                else str(delta_value),
+                command.run_id,
+                run_revision,
+            ),
+        ).rowcount
+        if usage_changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_budget_delta",
+                "run usage changed concurrently",
+            )
+        self._touch_run(command.run_id, run_revision, now)
+        return BudgetUsage(
+            steps=candidates[BudgetCategory.STEPS],
+            tool_calls=candidates[BudgetCategory.TOOL_CALLS],
+            token_cost=candidates[BudgetCategory.TOKEN_COST],
+            wall_time_seconds=candidates[BudgetCategory.WALL_TIME],
+        )
+
+    def record_completion(
+        self,
+        check: CompletionCheck,
+        *,
+        expected_run_revision: int,
+        lease_token: str,
+    ) -> CompletionCheck:
+        """Persist one model-independent Completion result."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(check.run_id, lease_token, now)
+        run = self.get_run(check.run_id)
+        run_revision = self._get_run_revision(check.run_id)
+        if check.acceptance_status == AcceptanceStatus.NOT_EVALUATED:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "record_completion",
+                "completion must record an evaluated acceptance status",
+            )
+        item_ids = tuple(item.item_id for item in check.items)
+        if len(set(item_ids)) != len(item_ids):
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "record_completion",
+                "completion item IDs must be unique",
+            )
+        evidence_ids = set(check.evidence_ids)
+        for item in check.items:
+            evidence_ids.update(item.evidence_ids)
+        for evidence_id in evidence_ids:
+            row = self._connection.execute(
+                "SELECT 1 FROM evidence WHERE run_id = ? AND evidence_id = ?",
+                (check.run_id, evidence_id),
+            ).fetchone()
+            if row is None:
+                self._raise(
+                    ErrorCode.STATE_NOT_FOUND,
+                    "record_completion",
+                    "completion references missing evidence",
+                )
+        redacted_items = tuple(
+            item.model_copy(
+                update={"message": self._redacted_text(item.message, "record_completion")}
+            )
+            for item in check.items
+        )
+        stored = CompletionCheck(
+            run_id=check.run_id,
+            acceptance_status=check.acceptance_status,
+            items=redacted_items,
+            failure_summary=(
+                self._redacted_text(check.failure_summary, "record_completion")
+                if check.failure_summary is not None
+                else None
+            ),
+            checked_at=check.checked_at,
+            evidence_ids=check.evidence_ids,
+        )
+        existing = self._get_completion(check.run_id)
+        if existing is not None and existing == stored:
+            return existing
+        if existing is not None:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_completion",
+                "completion already exists with different content",
+            )
+        if run_revision != expected_run_revision:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_completion",
+                "run revision does not match",
+            )
+        if run.status != RunStatus.VERIFYING:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "record_completion",
+                "completion can only be recorded while verifying",
+            )
+        self._connection.execute(
+            """
+            INSERT INTO completion_results(
+                run_id, acceptance_status, failure_summary, evidence_ids_json,
+                schema_version, revision, checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                stored.run_id,
+                stored.acceptance_status.value,
+                stored.failure_summary,
+                json.dumps(list(stored.evidence_ids), separators=(",", ":")),
+                stored.schema_version,
+                0,
+                _serialize_datetime(stored.checked_at),
+            ),
+        )
+        for ordinal, item in enumerate(stored.items):
+            self._connection.execute(
+                """
+                INSERT INTO completion_items(
+                    run_id, item_id, ordinal, passed, code, message, evidence_ids_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.run_id,
+                    item.item_id,
+                    ordinal,
+                    int(item.passed),
+                    item.code,
+                    item.message,
+                    json.dumps(list(item.evidence_ids), separators=(",", ":")),
+                ),
+            )
+        changed = self._connection.execute(
+            """
+            UPDATE runs
+            SET acceptance_status = ?, revision = revision + 1, updated_at = ?
+            WHERE run_id = ? AND revision = ? AND status = 'VERIFYING'
+            """,
+            (
+                stored.acceptance_status.value,
+                _serialize_datetime(now),
+                stored.run_id,
+                run_revision,
+            ),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_completion",
+                "run changed concurrently",
+            )
+        return stored
 
     def transition_step(
         self,
@@ -762,6 +1344,30 @@ class StateStore:
     def _now(self) -> datetime:
         return self._clock.now()
 
+    def _redacted_text(self, value: str, operation: str) -> str:
+        redacted = self._redactor.redact(value).value
+        if not isinstance(redacted, str):
+            self._raise(
+                ErrorCode.REDACTION_FAILED,
+                operation,
+                "text redaction did not produce a string",
+            )
+        return redacted
+
+    def _redacted_mapping(
+        self,
+        value: dict[str, object],
+        operation: str,
+    ) -> dict[str, object]:
+        redacted = self._redactor.redact(value).value
+        if not isinstance(redacted, dict):
+            self._raise(
+                ErrorCode.REDACTION_FAILED,
+                operation,
+                "mapping redaction did not produce an object",
+            )
+        return redacted
+
     def _ensure_active(self) -> None:
         try:
             self._unit.ensure_active()
@@ -911,6 +1517,44 @@ def _serialize_plan_items(items: tuple[PlanItem, ...]) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _budget_operation_key(command: BudgetDeltaCommand) -> str:
+    payload = _canonical_json(
+        {
+            "budget_schema": 1,
+            "category": command.category.value,
+            "run_id": command.run_id,
+            "source_id": command.source_id,
+            "source_kind": command.source_kind.value,
+        }
+    )
+    return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _usage_from_row(row: sqlite3.Row) -> BudgetUsage:
+    return BudgetUsage(
+        steps=int(row["used_steps"]),
+        tool_calls=int(row["used_tool_calls"]),
+        token_cost=Decimal(str(row["used_token_cost"])),
+        wall_time_seconds=int(row["used_wall_time_seconds"]),
+    )
+
+
+def _decimal_text(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    return format(value.normalize(), "f")
 
 
 def _token_digest(token: str) -> str:

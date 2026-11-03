@@ -19,11 +19,13 @@ CYCLE = "[CYCLE]"
 UNSUPPORTED = "[UNSUPPORTED]"
 
 _SENSITIVE_KEY_ROOTS = {
+    "api_key",
     "apikey",
     "authorization",
     "cookie",
     "credential",
     "password",
+    "private_key",
     "privatekey",
     "secret",
     "token",

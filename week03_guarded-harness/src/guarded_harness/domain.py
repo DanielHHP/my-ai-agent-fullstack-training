@@ -178,6 +178,23 @@ class EvidenceKind(str, Enum):
     AUDIT = "AUDIT"
 
 
+class BudgetSourceKind(str, Enum):
+    """Trusted source categories for idempotent budget updates."""
+
+    STEP = "STEP"
+    TOOL_CALL = "TOOL_CALL"
+    HARNESS = "HARNESS"
+
+
+class BudgetCategory(str, Enum):
+    """Budget dimensions tracked by the ledger."""
+
+    STEPS = "STEPS"
+    TOOL_CALLS = "TOOL_CALLS"
+    TOKEN_COST = "TOKEN_COST"
+    WALL_TIME = "WALL_TIME"
+
+
 class ErrorCode(str, Enum):
     """Stable WP-00 error codes."""
 
@@ -302,6 +319,10 @@ ToolCallId = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=256),
     AfterValidator(_validate_tool_call_id),
+]
+BudgetSourceId = Annotated[
+    str,
+    StringConstraints(strict=True, min_length=1, max_length=256),
 ]
 RelativePath = Annotated[
     str,
@@ -745,6 +766,30 @@ class RunSnapshot(StrictDomainModel):
     read_at: UtcDatetime
 
 
+class BudgetDeltaCommand(StrictDomainModel):
+    """One idempotent budget increment from a trusted source."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: RunId
+    source_kind: BudgetSourceKind
+    source_id: BudgetSourceId
+    category: BudgetCategory
+    expected_run_revision: int = Field(ge=0)
+    delta: Decimal = Field(ge=0)
+
+    def model_post_init(self, __context: Any) -> None:
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.source_id):
+            raise ValueError("source_id must not contain control characters")
+        if self.category in {
+            BudgetCategory.STEPS,
+            BudgetCategory.TOOL_CALLS,
+            BudgetCategory.WALL_TIME,
+        }:
+            if self.delta != self.delta.to_integral_value():
+                raise ValueError(f"{self.category.value} delta must be an integer")
+
+
 @runtime_checkable
 class Clock(Protocol):
     """Injectable UTC clock."""
@@ -846,6 +891,7 @@ def _domain_error_code(error: dict[str, Any]) -> ErrorCode:
     enum_fields = {
         "acceptance_status",
         "approval_requirement",
+        "category",
         "concurrency_class",
         "kind",
         "output_kind",
@@ -855,6 +901,7 @@ def _domain_error_code(error: dict[str, Any]) -> ErrorCode:
         "status",
         "stop_reason",
         "strategy",
+        "source_kind",
         "task_kind",
     }
     if "schema_version" in location:
