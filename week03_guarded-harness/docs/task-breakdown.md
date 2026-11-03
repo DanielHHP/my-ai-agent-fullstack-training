@@ -442,7 +442,8 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 **依赖**：WP-00。
 
 **包内文档**：[冻结规格](work-packages/wp-01-persistence-audit/spec.md)（v0.2.3 / frozen）、
-[实施计划](work-packages/wp-01-persistence-audit/plan.md)（v0.2.3 / in-progress）。
+[实施计划](work-packages/wp-01-persistence-audit/plan.md)（v0.2.3 / done）、
+[验收报告](work-packages/wp-01-persistence-audit/acceptance-report.md)（accepted）。
 
 **主要范围**：
 

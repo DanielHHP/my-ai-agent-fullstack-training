@@ -14,5 +14,6 @@
 | [WP-00 验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md) | WP-00 工程与契约内核的实测证据、场景覆盖、限制和验收结论 |
 | [WP-01 规格](work-packages/wp-01-persistence-audit/spec.md) | 持久化与审计底座已冻结的行为、接口、状态机、飞书验收映射和决策追溯 |
 | [WP-01 计划](work-packages/wp-01-persistence-audit/plan.md) | WP-01 已批准的 schema、事务设计、任务卡、测试矩阵、风险和回滚计划 |
+| [WP-01 验收报告](work-packages/wp-01-persistence-audit/acceptance-report.md) | WP-01 的实现、并发/故障证据、场景映射、限制和验收结论 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

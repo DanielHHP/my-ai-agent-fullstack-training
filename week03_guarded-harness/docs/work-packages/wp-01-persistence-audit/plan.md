@@ -5,13 +5,13 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
-| 文档状态 | approved |
+| 文档状态 | done |
 | 计划版本 | 0.2.3 |
 | 修订日期 | 2026-11-04 |
 | 对应规格 | `spec.md` v0.2.3 / frozen |
 | 前置依赖 | WP-00 v1.1.0，已验收 |
 | 施工前置 | 已满足；D-16 至 D-21 已写入决策基线 |
-| 当前结论 | T01 至 T07 已完成并通过目标、并发和故障注入验证；T08 整理验收证据 |
+| 当前结论 | T01 至 T08 已完成，验收报告 accepted |
 
 本计划只安排 WP-01 的施工，不重新定义 `spec.md`。规格变化时先更新并评审 `spec.md`，再同步本计划。
 
@@ -251,7 +251,7 @@ validate draft
 | 项目 | 内容 |
 | --- | --- |
 | 目标 | 建立安全打开、PRAGMA、只追加 migration、checksum 校验和连接生命周期 |
-| 前置 | spec v0.2.1 已冻结；WP-00 v1.1.0 已重新验收 |
+| 前置 | spec v0.2.3 已冻结；WP-00 v1.1.0 已重新验收 |
 | 涉及文件 | `storage.py`、`__init__.py`、`tests/test_state_checkpoint.py` |
 | 公共/schema 变化 | 新增 `SQLiteStorage`、`IntegrityReport`、`STATE_*` 子集；migration v1 bootstrap |
 | 正常路径 | 新目录创建 DB；重复初始化幂等；重开可读 schema version |
@@ -475,21 +475,18 @@ WP-01 migration、复制 StateStore 或绕过 UnitOfWork。
 
 ## 12. 实际完成情况
 
-当前状态：规格已冻结，T01 至 T07 已完成，正在执行 T08 包级验收与封版。
+当前状态：规格、计划、实现和验收证据已封版。
 
 | 项目 | 状态 |
 | --- | --- |
 | `spec.md` | frozen，v0.2.3 |
-| `plan.md` | in-progress，v0.2.3 |
+| `plan.md` | done，v0.2.3 |
 | SQLite/migration | T01 已完成；目标测试 `7 passed`，PRAGMA、checksum、回滚、路径隔离和权限通过 |
 | StateStore/租约 | T03 至 T05 已完成业务状态、跨连接租约、过期接管、续租/释放和旧 token fencing |
 | Redaction | T02 已完成；目标测试 `13 passed`，敏感值、凭据形态、循环和有界裁剪通过 |
 | Audit append-only/哈希链 | T06 已完成；连续序号、哈希校验、触发器、关联查询和自动业务事件通过 |
 | 原子性/故障/并发 | T07 已完成；审计/状态回滚、提交前故障、并发序号和写冲突通过 |
-| 测试与验收报告 | T08 进行中 |
+| 测试与验收报告 | T08 完成；`acceptance-report.md` v1.0.0 / accepted |
 
-当前全量测试：`63 passed in 1.37s`；State 与 Audit 目标测试 `25 passed`；Ruff lint、格式检查和
+当前全量测试：`63 passed in 1.20s`；State 与 Audit 目标测试 `25 passed`；Ruff lint、格式检查和
 `pip check` 均通过。Migration v2 追加了 ToolInvocation 复合外键所需的 Step 唯一索引，v1 未修改。
-
-只有在 T02 至 T08 实现和实测验收完成后，才能更新本节并生成
-`acceptance-report.md`。
