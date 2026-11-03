@@ -275,6 +275,8 @@ class AuditStore:
             prev_hash=prev_hash,
             event_hash=event_hash,
         )
+        if self._unit.storage.fault_injector is not None:
+            self._unit.storage.fault_injector.trigger("audit:before-insert")
         try:
             self._connection.execute(
                 """

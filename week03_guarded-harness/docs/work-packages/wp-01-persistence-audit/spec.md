@@ -6,8 +6,8 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 文档状态 | frozen |
-| 规格版本 | 0.2.2 |
-| 冻结日期 | 2026-11-03（T01 构造器澄清） |
+| 规格版本 | 0.2.3 |
+| 冻结日期 | 2026-11-04（审计状态与并发验证澄清） |
 | 依赖 | WP-00 v1.1.0，已验收 |
 | 下游工作包 | WP-02、WP-04、WP-07、WP-08、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-GATE-002`、`REQ-STATE-001` 至 `REQ-STATE-003`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-CHECKPOINT-003`，以及第 8 节非功能要求 |
@@ -269,7 +269,7 @@ occurred_at
 约束：
 
 - `status` 必填，固定支持 `PENDING`、`ALLOWED`、`DENIED`、`STARTED`、`SUCCEEDED`、
-  `FAILED`、`TIMED_OUT`、`UNKNOWN_RESULT`；
+  `FAILED`、`TIMED_OUT`、`UNKNOWN_RESULT`、`STOPPED`、`BLOCKED`；
 - `code` 在 `DENIED`、`FAILED`、`TIMED_OUT`、`UNKNOWN_RESULT` 时必填，成功事件可为 `null`；
 - `tool_call_id`、`approval_id`、`rule_id` 允许为 `null`，但一旦提供必须保持原始关联值；
 - `decision` 至少支持 `ALLOW`、`DENY`、`NOT_APPLICABLE`；

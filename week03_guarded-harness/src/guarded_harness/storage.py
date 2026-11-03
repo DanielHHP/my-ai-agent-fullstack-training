@@ -506,6 +506,8 @@ class SQLiteStorage:
             )
             try:
                 yield unit
+                if self.fault_injector is not None:
+                    self.fault_injector.trigger("uow:before-commit")
                 if connection.in_transaction:
                     connection.commit()
             except Exception:
