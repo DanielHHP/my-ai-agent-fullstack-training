@@ -405,7 +405,7 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 
 **包内文档**：[冻结规格](work-packages/wp-00-engineering-contracts/spec.md)（v1.1.0 / frozen）、
 [实施计划](work-packages/wp-00-engineering-contracts/plan.md)（v1.1.0 / done）、
-[验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md)（v1.1.0 / review）。
+[验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md)（accepted）。
 
 **主要范围**：
 
