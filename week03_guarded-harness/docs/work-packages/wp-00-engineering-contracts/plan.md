@@ -606,7 +606,7 @@ WP-00 封版后必须交付：
 | WP00-T05 YAML、路径和指纹 | DONE | 重复键、复杂度、穿越、软链接、敏感路径和指纹测试通过 |
 | WP00-T06 Fixture 与任务样例 | DONE | `tests/conftest.py` 与 `tests/fixtures/config/` 已落地 |
 | WP00-T07 契约与安全测试 | DONE | 目标测试和全量测试均为 29 passed |
-| WP00-T08 文档与封版 | DONE | spec/plan、决策、索引和 WP-00 总计划入口已同步 |
+| WP00-T08 文档与封版 | DONE | spec/plan、决策、索引、验收报告和 WP-00 总计划入口已同步 |
 
 ### 13.2 验收证据
 
