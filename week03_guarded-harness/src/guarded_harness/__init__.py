@@ -33,10 +33,15 @@ from .domain import (
     GatePhase,
     IdFactory,
     InvocationStatus,
+    LeasePolicy,
     ObservationStatus,
+    PlanItem,
     RetryPolicy,
     Run,
     RunBudget,
+    RunLease,
+    RunPlan,
+    RunSnapshot,
     RunStatus,
     Step,
     StepStatus,
@@ -55,6 +60,7 @@ from .domain import (
     validate_contract,
 )
 from .redaction import RedactionError, RedactionLimits, RedactionResult, Redactor
+from .state_store import StateStore, StateStoreError
 from .storage import IntegrityReport, SQLiteStorage, StorageError
 
 __all__ = [
@@ -81,8 +87,10 @@ __all__ = [
     "IdFactory",
     "IntegrityReport",
     "InvocationStatus",
+    "LeasePolicy",
     "ObservationStatus",
     "PathPolicyConfig",
+    "PlanItem",
     "ResolvedHarnessConfig",
     "RetryPolicy",
     "RedactionError",
@@ -91,11 +99,16 @@ __all__ = [
     "Redactor",
     "Run",
     "RunBudget",
+    "RunLease",
+    "RunPlan",
+    "RunSnapshot",
     "RunStatus",
     "Step",
     "StepStatus",
     "StopReason",
     "SQLiteStorage",
+    "StateStore",
+    "StateStoreError",
     "StorageError",
     "SystemClock",
     "TaskConfig",

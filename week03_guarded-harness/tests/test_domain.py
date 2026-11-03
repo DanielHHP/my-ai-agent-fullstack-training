@@ -234,6 +234,19 @@ def test_public_domain_models_contain_required_fields() -> None:
     assert '"required_permissions":["READ"]' in serialized_tool
 
 
+def test_run_plan_rejects_non_contiguous_items() -> None:
+    with pytest.raises(ValidationError):
+        gh.RunPlan(
+            run_id=RUN_ID,
+            revision=0,
+            items=(
+                gh.PlanItem(ordinal=0, summary="first"),
+                gh.PlanItem(ordinal=2, summary="third"),
+            ),
+            updated_at=NOW,
+        )
+
+
 def test_enum_id_and_time_boundaries() -> None:
     invalid_enum = _run_payload()
     invalid_enum["task_kind"] = "unknown_task"

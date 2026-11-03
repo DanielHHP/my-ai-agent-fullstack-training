@@ -11,8 +11,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .domain import Clock, ErrorCode, FaultInjector
+
+if TYPE_CHECKING:
+    from .state_store import StateStore
 
 SCHEMA_VERSION = 1
 _GENESIS_HASH = f"sha256:{'0' * 64}"
@@ -329,6 +333,65 @@ class StorageError(RuntimeError):
         super().__init__(f"{code.value}: {self.message}")
 
 
+class StorageUnitOfWork:
+    """One active immediate SQLite write transaction."""
+
+    def __init__(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        storage: SQLiteStorage,
+        actor: str,
+    ) -> None:
+        self._connection = connection
+        self._storage = storage
+        self.actor = actor
+        self._active = True
+
+    @property
+    def state(self) -> StateStore:
+        """Return the state repository bound to this unit of work."""
+
+        self.ensure_active()
+        from .state_store import StateStore
+
+        return StateStore(self)
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Return the transaction connection for WP-01 repositories."""
+
+        self.ensure_active()
+        return self._connection
+
+    @property
+    def storage(self) -> SQLiteStorage:
+        """Return the owning storage facade."""
+
+        return self._storage
+
+    @property
+    def active(self) -> bool:
+        """Return whether this unit of work may still be used."""
+
+        return self._active
+
+    def ensure_active(self) -> None:
+        """Reject use after the transaction context has exited."""
+
+        if not self._active:
+            raise StorageError(
+                ErrorCode.STATE_TRANSACTION_FAILED,
+                operation="unit_of_work",
+                message="unit of work is no longer active",
+            )
+
+    def close(self) -> None:
+        """Mark the unit of work unusable."""
+
+        self._active = False
+
+
 class SQLiteStorage:
     """Own the SQLite schema, connection settings, and migration lifecycle."""
 
@@ -394,6 +457,44 @@ class SQLiteStorage:
                 operation="schema_version",
                 message="database schema version is unavailable",
             ) from exc
+
+    @contextmanager
+    def transaction(self, *, actor: str) -> Iterator[StorageUnitOfWork]:
+        """Open one fail-closed immediate-write unit of work."""
+
+        normalized_actor = actor.strip()
+        if not normalized_actor or len(normalized_actor) > 256:
+            raise StorageError(
+                ErrorCode.STATE_TRANSACTION_FAILED,
+                operation="transaction",
+                message="actor must be non-empty and bounded",
+            )
+        with self._connect() as connection:
+            self._configure_connection(connection)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as exc:
+                raise StorageError(
+                    ErrorCode.STATE_TRANSACTION_FAILED,
+                    operation="transaction",
+                    message="write transaction cannot be started",
+                    retryable=True,
+                ) from exc
+            unit = StorageUnitOfWork(
+                connection=connection,
+                storage=self,
+                actor=normalized_actor,
+            )
+            try:
+                yield unit
+                if connection.in_transaction:
+                    connection.commit()
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                unit.close()
 
     def verify_integrity(self) -> IntegrityReport:
         """Verify pragmas, migration checksums, required tables, and SQLite quick_check."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -125,11 +125,8 @@ def temp_sqlite_path(tmp_path: Path) -> Path:
 def fixed_clock() -> FixedClock:
     """Return a deterministic UTC clock."""
 
-    values = (
-        datetime(2026, 1, 2, 3, 4, 5, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 2, 3, 4, 6, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 2, 3, 4, 7, 0, tzinfo=timezone.utc),
-    )
+    start = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    values = tuple(start + timedelta(seconds=offset) for offset in range(64))
     return FixedClock(values)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
@@ -656,6 +657,92 @@ class CompletionCheck(StrictDomainModel):
                 raise ValueError("ACCEPTED requires at least one passing completion item")
             if self.failure_summary is not None:
                 raise ValueError("ACCEPTED cannot include a failure summary")
+
+
+class PlanItem(StrictDomainModel):
+    """One bounded, publicly visible plan item."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ordinal: int = Field(ge=0)
+    summary: str = Field(min_length=1, max_length=1000)
+
+
+class RunPlan(StrictDomainModel):
+    """The current bounded plan for a run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    revision: int = Field(ge=0)
+    items: tuple[PlanItem, ...] = Field(min_length=1, max_length=50)
+    updated_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        if tuple(item.ordinal for item in self.items) != tuple(range(len(self.items))):
+            raise ValueError("plan item ordinals must be contiguous from zero")
+        encoded = json.dumps(
+            [item.model_dump(mode="json") for item in self.items],
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(encoded) > 32_768:
+            raise ValueError("run plan exceeds 32 KiB")
+
+
+@dataclass(frozen=True)
+class LeasePolicy:
+    """Bounded run-lease ownership policy."""
+
+    ttl_seconds: int = 30
+    heartbeat_interval_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 10 <= self.ttl_seconds <= 300:
+            raise ValueError("lease TTL must be between 10 and 300 seconds")
+        interval = (
+            self.heartbeat_interval_seconds
+            if self.heartbeat_interval_seconds is not None
+            else min(10, self.ttl_seconds // 3)
+        )
+        if not 1 <= interval < self.ttl_seconds:
+            raise ValueError("lease heartbeat interval must be positive and shorter than TTL")
+
+
+class RunLease(StrictDomainModel):
+    """An acquired run-scoped ownership lease."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: RunId
+    owner_id: str = Field(min_length=1, max_length=256)
+    token: str = Field(min_length=32, max_length=256)
+    acquired_at: UtcDatetime
+    heartbeat_at: UtcDatetime
+    expires_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.heartbeat_at < self.acquired_at:
+            raise ValueError("lease heartbeat must not precede acquisition")
+        if self.expires_at <= self.heartbeat_at:
+            raise ValueError("lease expiry must follow heartbeat")
+
+
+class RunSnapshot(StrictDomainModel):
+    """Consistent read of all WP-01-owned state for one run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run: Run
+    plan: RunPlan | None = None
+    steps: tuple[Step, ...] = ()
+    invocations: tuple[ToolInvocation, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+    completion: CompletionCheck | None = None
+    read_at: UtcDatetime
 
 
 @runtime_checkable
