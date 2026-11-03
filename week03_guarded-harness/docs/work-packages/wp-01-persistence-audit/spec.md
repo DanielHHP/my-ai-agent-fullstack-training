@@ -6,9 +6,9 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 文档状态 | frozen |
-| 规格版本 | 0.2.0 |
-| 冻结日期 | 2026-11-03 |
-| 依赖 | WP-00 v1.1.0 已冻结；T01 施工需等待其 compatibility amendment 报告 accepted |
+| 规格版本 | 0.2.1 |
+| 冻结日期 | 2026-11-03（T01 构造器澄清） |
+| 依赖 | WP-00 v1.1.0，已验收 |
 | 下游工作包 | WP-02、WP-04、WP-07、WP-08、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-GATE-002`、`REQ-STATE-001` 至 `REQ-STATE-003`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-CHECKPOINT-003`，以及第 8 节非功能要求 |
 | 对应设计 | `design.md` 第 4、5、9、10、13、14 节 |
@@ -114,6 +114,7 @@ redaction.py      storage.py
 ```text
 SQLiteStorage(
     database_path: Path,
+    workspace_root: Path,
     clock: Clock,
     busy_timeout_ms: int = 5000,
 )

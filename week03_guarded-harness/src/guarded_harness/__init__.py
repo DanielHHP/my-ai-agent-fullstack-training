@@ -54,6 +54,7 @@ from .domain import (
     canonical_json_dump,
     validate_contract,
 )
+from .storage import IntegrityReport, SQLiteStorage, StorageError
 
 __all__ = [
     "AcceptanceStatus",
@@ -77,6 +78,7 @@ __all__ = [
     "GatePhase",
     "HarnessConfig",
     "IdFactory",
+    "IntegrityReport",
     "InvocationStatus",
     "ObservationStatus",
     "PathPolicyConfig",
@@ -88,6 +90,8 @@ __all__ = [
     "Step",
     "StepStatus",
     "StopReason",
+    "SQLiteStorage",
+    "StorageError",
     "SystemClock",
     "TaskConfig",
     "TaskKind",

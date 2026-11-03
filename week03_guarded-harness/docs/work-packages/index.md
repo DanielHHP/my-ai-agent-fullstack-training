@@ -16,4 +16,4 @@
 | 工作包 | 能力目标 | 规格 | 计划 | 验收报告 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
 | [WP-00 工程与契约内核](wp-00-engineering-contracts/spec.md) | 工程可安装，公共模型、配置和测试基础设施可用 | `spec.md` v1.1.0 / frozen | `plan.md` v1.1.0 / done | [acceptance-report.md](wp-00-engineering-contracts/acceptance-report.md) / accepted | DONE |
-| [WP-01 持久化与审计底座](wp-01-persistence-audit/spec.md) | Run 状态、预算、脱敏和 append-only 审计形成事务闭环 | [spec.md](wp-01-persistence-audit/spec.md) v0.2.0 / frozen | [plan.md](wp-01-persistence-audit/plan.md) v0.2.0 / approved | 未创建 | DESIGNED |
+| [WP-01 持久化与审计底座](wp-01-persistence-audit/spec.md) | Run 状态、预算、脱敏和 append-only 审计形成事务闭环 | [spec.md](wp-01-persistence-audit/spec.md) v0.2.1 / frozen | [plan.md](wp-01-persistence-audit/plan.md) v0.2.1 / approved | 未创建 | IN_PROGRESS |

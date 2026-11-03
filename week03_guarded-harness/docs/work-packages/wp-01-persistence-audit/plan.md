@@ -6,12 +6,12 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 文档状态 | approved |
-| 计划版本 | 0.2.0 |
+| 计划版本 | 0.2.1 |
 | 修订日期 | 2026-11-03 |
-| 对应规格 | `spec.md` v0.2.0 / frozen |
-| 前置依赖 | WP-00 v1.1.0 compatibility amendment 已实现，等待稳定提交基线后复核 accepted |
-| 施工前置 | 规格和决策已确认；T01 施工等待 WP-00 v1.1.0 报告 accepted |
-| 当前结论 | 仅完成详细设计与任务拆解，未开始实现 |
+| 对应规格 | `spec.md` v0.2.1 / frozen |
+| 前置依赖 | WP-00 v1.1.0，已验收 |
+| 施工前置 | 已满足；D-16 至 D-21 已写入决策基线 |
+| 当前结论 | T01 SQLite/migration 基线已完成并通过目标及全量验证 |
 
 本计划只安排 WP-01 的施工，不重新定义 `spec.md`。规格变化时先更新并评审 `spec.md`，再同步本计划。
 
@@ -251,7 +251,7 @@ validate draft
 | 项目 | 内容 |
 | --- | --- |
 | 目标 | 建立安全打开、PRAGMA、只追加 migration、checksum 校验和连接生命周期 |
-| 前置 | spec v0.2.0 已冻结；WP-00 v1.1.0 已重新验收 |
+| 前置 | spec v0.2.1 已冻结；WP-00 v1.1.0 已重新验收 |
 | 涉及文件 | `storage.py`、`__init__.py`、`tests/test_state_checkpoint.py` |
 | 公共/schema 变化 | 新增 `SQLiteStorage`、`IntegrityReport`、`STATE_*` 子集；migration v1 bootstrap |
 | 正常路径 | 新目录创建 DB；重复初始化幂等；重开可读 schema version |
@@ -475,17 +475,19 @@ WP-01 migration、复制 StateStore 或绕过 UnitOfWork。
 
 ## 12. 实际完成情况
 
-当前状态：规格已冻结、计划已批准，尚未进入施工。
+当前状态：规格已冻结、计划已批准，WP01-T01 已完成，其余任务尚未实现。
 
 | 项目 | 状态 |
 | --- | --- |
-| `spec.md` | frozen，v0.2.0 |
-| `plan.md` | approved，v0.2.0 |
-| SQLite/migration | 未实现 |
+| `spec.md` | frozen，v0.2.1 |
+| `plan.md` | approved，v0.2.1 |
+| SQLite/migration | T01 已完成；目标测试 `7 passed`，PRAGMA、checksum、回滚、路径隔离和权限通过 |
 | StateStore/租约 | 未实现 |
 | Redaction | 未实现 |
 | Audit append-only/哈希链 | 未实现 |
 | 测试与验收报告 | 未开始 |
 
-只有在 WP-00 v1.1.0 重新验收、任务实现和实测验收完成后，才能更新本节并生成
+当前全量测试：`38 passed in 0.60s`；Ruff lint、格式检查和 `pip check` 均通过。
+
+只有在 T02 至 T08 实现和实测验收完成后，才能更新本节并生成
 `acceptance-report.md`。
