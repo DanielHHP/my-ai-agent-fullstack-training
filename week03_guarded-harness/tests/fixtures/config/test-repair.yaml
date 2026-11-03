@@ -1,0 +1,44 @@
+version: 1
+state_dir: .guarded-harness
+workspace:
+  root: .
+  require_clean_workspace: true
+  protect_other_git_changes: true
+budget:
+  max_steps: 20
+  max_tool_calls: 80
+  max_token_cost: 0.5
+  max_wall_time_seconds: 2400
+task:
+  id: repair_failing_tests
+  kind: test_repair
+  description: Repair a failing test without weakening existing coverage.
+  allowed_tools:
+    - read_file
+    - search_code
+    - write_file
+    - apply_patch
+    - git_status
+    - git_diff
+    - run_test
+  paths:
+    deny_write:
+      - "tests/**"
+    allow_write:
+      - "src/**"
+      - "tests/generated/**"
+  acceptance:
+    strategy: test_repair
+    test_command:
+      - python
+      - -m
+      - pytest
+      - -q
+    baseline_required: true
+  approval:
+    required_tools:
+      - write_file
+      - apply_patch
+      - run_test
+    channel: local_cli
+

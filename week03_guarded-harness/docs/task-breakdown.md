@@ -206,7 +206,7 @@ test(wp-01): cover audit rollback and concurrent writes
 
 **完成演示**：
 
-- 新环境可按 `requirements.txt` 安装并以 editable 模式安装项目；
+- 新环境可通过 `python -m pip install -e '.[dev]'` 一次完成项目、运行时依赖和开发工具安装；
 - 模块可导入，领域对象可稳定 round-trip；
 - 两份任务配置 Fixture 可加载，非法配置全部失败关闭；
 - 配置字段变化会改变指纹，等价配置得到相同指纹；
@@ -396,9 +396,12 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 
 **依赖**：无。
 
+**包内文档**：[冻结规格](work-packages/wp-00-engineering-contracts/spec.md)（v1.0.2 / frozen）、
+[实施计划](work-packages/wp-00-engineering-contracts/plan.md)（v1.0.2 / done）。
+
 **主要范围**：
 
-- `.gitignore`、`requirements.txt`、`pyproject.toml`；
+- `.gitignore`、`.python-version`、`pyproject.toml`；
 - `src/guarded_harness/__init__.py`、`domain.py`、`config.py`；
 - `tests/conftest.py`、`tests/test_domain.py`、`tests/test_config.py`；
 - 详细设计所需的错误码、ID、时间和序列化约束。

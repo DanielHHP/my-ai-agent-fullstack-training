@@ -1,0 +1,22 @@
+version: 1
+workspace:
+  root: .
+  unlisted_option: true
+budget:
+  max_steps: 2
+  max_tool_calls: 2
+  max_token_cost: 0
+  max_wall_time_seconds: 30
+task:
+  id: unknown_field
+  kind: test_repair
+  description: Invalid unknown field.
+  allowed_tools:
+    - run_test
+  acceptance:
+    strategy: test_repair
+    test_command:
+      - python
+      - -m
+      - pytest
+

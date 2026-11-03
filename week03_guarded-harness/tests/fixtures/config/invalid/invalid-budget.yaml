@@ -1,0 +1,21 @@
+version: 1
+workspace:
+  root: .
+budget:
+  max_steps: 0
+  max_tool_calls: -1
+  max_token_cost: -0.1
+  max_wall_time_seconds: 0
+task:
+  id: invalid_budget
+  kind: test_repair
+  description: Invalid budgets.
+  allowed_tools:
+    - run_test
+  acceptance:
+    strategy: test_repair
+    test_command:
+      - python
+      - -m
+      - pytest
+

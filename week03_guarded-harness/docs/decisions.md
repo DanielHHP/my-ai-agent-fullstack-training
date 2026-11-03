@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 概要设计评审阶段确认的 D-01 至 D-09 |
+| 决策范围 | 已确认的 D-01 至 D-15 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -25,3 +25,9 @@
 | D-07 | 真实模型是否纳入 P0 | 不纳入 P0。Harness 保留 `smolagents.Model` 注入缝，但只交付和验收 Fake Model；不实现真实 Provider 工厂、密钥配置或网络 smoke test。真实模型端到端验证属于 P1，不得成为自动化验收前置条件。 |
 | D-08 | 恢复上下文如何重建 | 使用 StateStore 中的结构化状态生成有界、确定性的 continuation prompt，并创建新的 Agent。上下文包含任务、生效配置、计划、步骤摘要、有效证据、待执行调用、审批和预算；不序列化旧 memory、不保存模型隐藏推理、不回放完整 Audit，文件证据在版本变化后失效。 |
 | D-09 | 预算停止的最终状态 | 预算耗尽固定使用 `RunStatus=STOPPED`、`StopReason=BUDGET_EXHAUSTED`、`acceptance_status=NOT_EVALUATED`。CLI 返回非成功状态，不继续模型、工具或最终验收；部分产物只作为诊断证据保留。 |
+| D-10 | Python 运行时边界 | 支持 Python `>=3.10,<3.14`；开发、依赖安装和验收使用仓库现有 `.venv`（Python 3.13），Ruff 以 `py310` 目标检查最低版本语法。当前环境不单独声明 Python 3.10 运行时验证。 |
+| D-11 | ID 与时间格式 | 生成 ID 使用固定类型前缀加 32 位小写十六进制 UUIDv4；`run_id` 与 `trace_id` 必须不同，`trace_id` 使用 32 位小写十六进制。时间统一为 UTC、`Z` 后缀并固定保留微秒。 |
+| D-12 | 配置路径与指纹 | `workspace.root` 和 `state_dir` 支持配置文件目录相对路径或绝对路径，先解析为规范绝对路径；交付物和路径 pattern 只接受工作区相对 POSIX 路径。指纹包含全部有效配置字段和规范化绝对路径；集合语义字段排序，交付物与命令顺序保留。 |
+| D-13 | 测试修复配置深度 | WP-00 冻结测试命令 argv、基线要求和路径/预算/审批字段；测试报告格式及节点证据由 WP-09 冻结，不在 WP-00 提前实现。 |
+| D-14 | 公共契约扩展与命名 | 公共模型字段只能通过 schema 版本升级或兼容评审扩展，枚举只允许追加并补契约测试；保留 `CompletionCheck`、`RunStatus` 等冻结名称。 |
+| D-15 | Python 依赖清单组织 | `pyproject.toml` 是运行时依赖和开发依赖的唯一来源；不再维护 `requirements.txt`。开发、CI 和验收统一执行 `python -m pip install -e '.[dev]'`，普通安装使用 `python -m pip install .`。 |

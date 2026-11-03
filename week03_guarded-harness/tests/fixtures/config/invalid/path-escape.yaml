@@ -1,0 +1,21 @@
+version: 1
+workspace:
+  root: .
+budget:
+  max_steps: 2
+  max_tool_calls: 2
+  max_token_cost: 0
+  max_wall_time_seconds: 30
+task:
+  id: path_escape
+  kind: code_understanding
+  description: Invalid escaping path.
+  allowed_tools:
+    - write_file
+  paths:
+    allow_write:
+      - artifacts/code-understanding.md
+  acceptance:
+    strategy: code_understanding
+    deliverables:
+      - artifacts/../../.env

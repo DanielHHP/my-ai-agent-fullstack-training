@@ -1,0 +1,23 @@
+version: 1
+workspace:
+  root: .
+budget:
+  max_steps: 2
+  max_tool_calls: 2
+  max_token_cost: 0
+  max_wall_time_seconds: 30
+task:
+  id: duplicate_deliverable
+  kind: code_understanding
+  description: Invalid duplicate path.
+  allowed_tools:
+    - write_file
+  paths:
+    allow_write:
+      - artifacts/report.md
+  acceptance:
+    strategy: code_understanding
+    deliverables:
+      - artifacts/report.md
+      - ./artifacts/report.md
+

@@ -6,7 +6,7 @@
 | --- | --- |
 | 文档状态 | 设计输入基线 |
 | 优先级 | 除特别说明外，本文件中的需求均为必须实现（P0） |
-| 技术栈 | Python 3.10+、smolagents、pytest、Ruff、pip + `requirements.txt` |
+| 技术栈 | Python 3.10+、smolagents、pytest、Ruff、pip + `pyproject.toml` |
 | 首期任务范围 | 代码理解、测试修复 |
 | 来源 | 用户作业说明；飞书文档“必须交付”章节及其内嵌交付表；本项目 `AGENTS.md`；参考项目 `course_code/week03/3-7/project3` |
 
@@ -376,7 +376,8 @@ Run 因任何预算耗尽而停止时，执行状态必须为 `STOPPED`、停止
 
 - 遵循 PEP 8 和 PEP 257，公共接口提供类型标注。
 - 使用 Ruff 执行 lint 和格式检查。
-- 依赖通过 pyenv 管理的 Python 环境安装，pip 与 `requirements.txt` 为依赖来源。
+- 运行时依赖和开发依赖在 `pyproject.toml` 中声明，正式依赖来源唯一；开发、测试和 lint
+  统一通过 `python -m pip install -e '.[dev]'` 安装，不维护重复的 `requirements.txt`。
 - 不引入与 smolagents 核心重复的第二套 Agent Loop。
 
 ## 9. 整体验收标准

@@ -1,0 +1,41 @@
+version: 1
+state_dir: .guarded-harness
+workspace:
+  root: .
+  require_clean_workspace: true
+  protect_other_git_changes: true
+budget:
+  max_steps: 12
+  max_tool_calls: 40
+  max_token_cost: 0.25
+  max_wall_time_seconds: 1800
+task:
+  id: understand_login
+  kind: code_understanding
+  description: Explain the login request flow.
+  allowed_tools:
+    - list_files
+    - search_code
+    - read_file
+    - write_file
+    - git_status
+    - git_diff
+  paths:
+    deny_read:
+      - "**/.env"
+      - "**/*.pem"
+      - "**/*.key"
+    deny_write:
+      - "src/**"
+      - "tests/**"
+    allow_write:
+      - artifacts/code-understanding.md
+  acceptance:
+    strategy: code_understanding
+    deliverables:
+      - artifacts/code-understanding.md
+  approval:
+    required_tools:
+      - write_file
+    channel: local_cli
+

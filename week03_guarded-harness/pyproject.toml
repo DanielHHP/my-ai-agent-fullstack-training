@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guarded-harness"
+description = "A deterministic governance layer for smolagents coding tasks"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "Proprietary" }
+authors = [{ name = "Guarded Harness Team" }]
+dynamic = ["version"]
+dependencies = [
+    "smolagents==1.26.0",
+    "pydantic>=2.9.0,<3.0.0",
+    "PyYAML>=6.0.0,<7.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0,<10.0.0",
+    "ruff>=0.9.0,<1.0.0",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "guarded_harness._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+

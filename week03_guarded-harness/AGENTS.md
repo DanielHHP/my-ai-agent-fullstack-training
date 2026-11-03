@@ -29,8 +29,9 @@
 
 ## 技术栈
 
-- Python 3.10+，优先使用 pyenv 管理的环境中开发和验证。
-- 使用 pip 和 `requirements.txt` 管理依赖；如拆分开发依赖，仍需提供明确的统一安装入口。
+- Python 3.10+；使用仓库现有 `.venv`（版本以 `.python-version` 为准）进行开发和验证。
+- 使用 pip 和 `pyproject.toml` 管理依赖；运行时依赖与 `dev` 可选依赖均在 `pyproject.toml`
+  声明，开发和验收统一使用 `python -m pip install -e '.[dev]'`。
 - `smolagents` 是 Agent 执行框架，应使用其公开 API；所依赖版本必须在依赖文件中约束并在文档记录。
 - pytest 用于测试。
 - Ruff 用于 lint 和格式检查。
@@ -143,17 +144,15 @@
 文件落地后使用项目虚拟环境执行：
 
 ```bash
-pyenv local 3.12
-python -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -e '.[dev]'
 python -m pytest -q
 python -m ruff check .
 python -m ruff format --check .
 ```
 
-具体 Python 版本以项目 `.python-version` 和 `requirements.txt` 为准。若 Ruff 尚未安装，
-先加入开发依赖；不要用未经声明的全局工具作为唯一验收环境。
+具体 Python 版本以项目 `.python-version` 为准；依赖和开发工具以 `pyproject.toml` 为唯一来源。
+不要用未经声明的全局工具作为唯一验收环境。
 
 ## 完成标准
 
