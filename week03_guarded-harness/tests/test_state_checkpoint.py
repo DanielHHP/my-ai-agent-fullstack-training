@@ -51,6 +51,21 @@ TOOL_CALL_ID = "provider-call-1"
 DIGEST = f"sha256:{'a' * 64}"
 
 
+class MutableClock:
+    """Advance UTC time without sleeping."""
+
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: int) -> None:
+        from datetime import timedelta
+
+        self._now += timedelta(seconds=seconds)
+
+
 def _storage(
     tmp_path: Path,
     fixed_clock,
@@ -701,3 +716,117 @@ def test_non_idempotent_timeout_must_be_unknown_result(tmp_path: Path, fixed_clo
                 lease_token=lease.token,
             )
         assert error.value.code == ErrorCode.STATE_INVARIANT_VIOLATION
+
+
+def test_lease_renewal_blocks_second_owner(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    storage, _ = _storage(tmp_path, clock)
+    storage.initialize()
+
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        assert LeasePolicy(ttl_seconds=10).heartbeat_interval_seconds == 3
+        assert LeasePolicy(ttl_seconds=60).heartbeat_interval_seconds == 10
+        lease = state.create_run(
+            _run(),
+            owner_id="owner-1",
+            lease_policy=LeasePolicy(ttl_seconds=10),
+        )
+        row = unit.connection.execute(
+            "SELECT token_digest FROM run_leases WHERE run_id = ?",
+            (RUN_ID,),
+        ).fetchone()
+        assert lease.token not in str(row["token_digest"])
+
+    clock.advance(5)
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        renewed = state.renew_lease(lease, ttl_seconds=10)
+        assert renewed.heartbeat_at == clock.now()
+        assert renewed.expires_at > lease.expires_at
+        with pytest.raises(StateStoreError) as held_error:
+            state.acquire_lease(
+                RUN_ID,
+                owner_id="owner-2",
+                lease_policy=LeasePolicy(ttl_seconds=10),
+            )
+        assert held_error.value.code == ErrorCode.STATE_LEASE_HELD
+
+    clock.advance(6)
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        state.put_plan(
+            RUN_ID,
+            expected_revision=0,
+            plan=_plan(),
+            lease_token=renewed.token,
+        )
+
+
+def test_expired_lease_can_be_taken_over_and_old_token_is_fenced(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    storage, _ = _storage(tmp_path, clock)
+    storage.initialize()
+
+    with storage.transaction(actor="test-harness") as unit:
+        old_lease = unit.state.create_run(
+            _run(),
+            owner_id="owner-1",
+            lease_policy=LeasePolicy(ttl_seconds=10),
+        )
+
+    clock.advance(11)
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        with pytest.raises(StateStoreError) as expired_error:
+            state.put_plan(
+                RUN_ID,
+                expected_revision=0,
+                plan=_plan(),
+                lease_token=old_lease.token,
+            )
+        assert expired_error.value.code == ErrorCode.STATE_LEASE_EXPIRED
+        with pytest.raises(StateStoreError) as expired_renew_error:
+            state.renew_lease(old_lease)
+        assert expired_renew_error.value.code == ErrorCode.STATE_LEASE_EXPIRED
+
+        new_lease = state.acquire_lease(
+            RUN_ID,
+            owner_id="owner-2",
+            lease_policy=LeasePolicy(ttl_seconds=20),
+        )
+        assert new_lease.token != old_lease.token
+        assert new_lease.owner_id == "owner-2"
+
+        with pytest.raises(StateStoreError) as renew_error:
+            state.renew_lease(old_lease)
+        assert renew_error.value.code == ErrorCode.STATE_LEASE_INVALID
+
+        with pytest.raises(StateStoreError) as release_error:
+            state.release_lease(old_lease)
+        assert release_error.value.code == ErrorCode.STATE_LEASE_INVALID
+
+        with pytest.raises(StateStoreError) as write_error:
+            state.put_plan(
+                RUN_ID,
+                expected_revision=0,
+                plan=_plan(),
+                lease_token=old_lease.token,
+            )
+        assert write_error.value.code == ErrorCode.STATE_LEASE_INVALID
+
+
+def test_released_lease_can_be_reacquired(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    storage, _ = _storage(tmp_path, clock)
+    storage.initialize()
+
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        lease = state.create_run(_run(), owner_id="owner-1")
+        state.release_lease(lease)
+
+    with storage.transaction(actor="test-harness") as unit:
+        replacement = unit.state.acquire_lease(RUN_ID, owner_id="owner-2")
+    assert replacement.owner_id == "owner-2"
+    assert replacement.token != lease.token

@@ -722,7 +722,7 @@ class LeasePolicy:
     heartbeat_interval_seconds: int | None = None
 
     def __post_init__(self) -> None:
-        if not 10 <= self.ttl_seconds <= 300:
+        if type(self.ttl_seconds) is not int or not 10 <= self.ttl_seconds <= 300:
             raise ValueError("lease TTL must be between 10 and 300 seconds")
         interval = (
             self.heartbeat_interval_seconds
@@ -731,6 +731,7 @@ class LeasePolicy:
         )
         if not 1 <= interval < self.ttl_seconds:
             raise ValueError("lease heartbeat interval must be positive and shorter than TTL")
+        object.__setattr__(self, "heartbeat_interval_seconds", interval)
 
 
 class RunLease(StrictDomainModel):
