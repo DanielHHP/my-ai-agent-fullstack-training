@@ -54,6 +54,7 @@ from .domain import (
     canonical_json_dump,
     validate_contract,
 )
+from .redaction import RedactionError, RedactionLimits, RedactionResult, Redactor
 from .storage import IntegrityReport, SQLiteStorage, StorageError
 
 __all__ = [
@@ -84,6 +85,10 @@ __all__ = [
     "PathPolicyConfig",
     "ResolvedHarnessConfig",
     "RetryPolicy",
+    "RedactionError",
+    "RedactionLimits",
+    "RedactionResult",
+    "Redactor",
     "Run",
     "RunBudget",
     "RunStatus",
