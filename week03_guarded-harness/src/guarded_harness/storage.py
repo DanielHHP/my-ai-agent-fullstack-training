@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from .audit import AuditStore
     from .state_store import StateStore
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -275,6 +275,10 @@ _MIGRATION_V2 = """
 CREATE UNIQUE INDEX idx_steps_run_step ON steps(run_id, step_id);
 """
 
+_MIGRATION_V3 = """
+DROP TABLE tool_call_evidence;
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -294,6 +298,7 @@ class Migration:
 MIGRATIONS = (
     Migration(version=1, sql=_MIGRATION_V1),
     Migration(version=2, sql=_MIGRATION_V2),
+    Migration(version=3, sql=_MIGRATION_V3),
 )
 
 
@@ -549,7 +554,6 @@ class SQLiteStorage:
                     "steps",
                     "tool_calls",
                     "evidence",
-                    "tool_call_evidence",
                     "completion_results",
                     "completion_items",
                     "budget_ledger",
@@ -786,6 +790,8 @@ class SQLiteStorage:
             for migration in MIGRATIONS:
                 if migration.version in applied:
                     continue
+                if migration.version == 3:
+                    _validate_evidence_single_owner(connection)
                 for statement in _split_sql_statements(migration.sql):
                     connection.execute(statement)
                 connection.execute(
@@ -880,3 +886,32 @@ def _budget_ledger_consistent(connection: sqlite3.Connection) -> bool:
         ):
             return False
     return True
+
+
+def _validate_evidence_single_owner(connection: sqlite3.Connection) -> None:
+    table = connection.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'tool_call_evidence'
+        """
+    ).fetchone()
+    if table is None:
+        return
+    conflict = connection.execute(
+        """
+        SELECT legacy.run_id, legacy.tool_call_id, legacy.evidence_id
+        FROM tool_call_evidence AS legacy
+        LEFT JOIN evidence ON evidence.evidence_id = legacy.evidence_id
+        WHERE evidence.evidence_id IS NULL
+           OR evidence.run_id != legacy.run_id
+           OR evidence.tool_call_id IS NULL
+           OR evidence.tool_call_id != legacy.tool_call_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if conflict is not None:
+        raise StorageError(
+            ErrorCode.STATE_MIGRATION_FAILED,
+            operation="migrate",
+            message="legacy evidence association conflicts with its single producer",
+        )

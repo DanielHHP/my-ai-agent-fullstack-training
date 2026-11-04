@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-21 |
+| 决策范围 | 已确认的 D-01 至 D-22 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -37,3 +37,4 @@
 | D-19 | Run 租约与心跳 | Run 创建和租约获取原子完成。默认 TTL 30 秒、允许 10 至 300 秒；Harness 以 `min(10, TTL/3)` 秒独立心跳，WP-01 不启动隐藏线程。连续两次续租失败进入危险状态并请求取消 handler；普通续租不写业务审计，获取、接管和释放写审计。token fencing、revision 和 `STARTED` 记录共同防止旧进程提交或新进程重放副作用。 |
 | D-20 | 状态变更强制审计 | StateStore 公共业务写操作自动追加固定领域审计事件，禁止状态-only 成功；审计失败则整个事务回滚。`status` 必填，`code` 仅在拒绝、失败、超时和未知结果时必填；`actor` 来自可信 UnitOfWork 上下文，模型不能覆盖。 |
 | D-21 | 状态文件权限 | POSIX 要求状态目录、数据库、WAL/SHM 由当前有效用户拥有，文件类型安全；新建目录使用 `0700`，数据库及 WAL/SHM 使用 `0600`。已有路径权限不安全或无法收紧时失败关闭，不提供生产旁路。Windows ACL 不作为本包强隔离能力宣称。 |
+| D-22 | Evidence 单一生产者 | `Evidence.tool_call_id` 是唯一生产该证据的 ToolCall，可为 `null` 表示 Completion-only 证据；`ToolInvocation.evidence_ids` 是从 Evidence 表派生的只读投影。删除 `tool_call_evidence` junction，`transition_invocation` 不再接收 evidence_ids。Completion 可以引用 Evidence，但不改变其生产者。 |

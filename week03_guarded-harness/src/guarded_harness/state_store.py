@@ -461,7 +461,6 @@ class StateStore:
         expected_revision: int,
         target: InvocationStatus,
         result_summary: str | None,
-        evidence_ids: tuple[str, ...],
         error_code: str | None,
         lease_token: str,
     ) -> ToolInvocation:
@@ -540,28 +539,6 @@ class StateStore:
                 "transition_invocation",
                 "failed or indeterminate invocations require an error code",
             )
-        if target in {
-            InvocationStatus.SUCCEEDED,
-            InvocationStatus.FAILED,
-            InvocationStatus.TIMED_OUT,
-            InvocationStatus.UNKNOWN_RESULT,
-        } and len(set(evidence_ids)) != len(evidence_ids):
-            self._raise(
-                ErrorCode.STATE_INVARIANT_VIOLATION,
-                "transition_invocation",
-                "evidence IDs must be unique",
-            )
-        for evidence_id in evidence_ids:
-            evidence_row = self._connection.execute(
-                "SELECT 1 FROM evidence WHERE run_id = ? AND evidence_id = ?",
-                (run_id, evidence_id),
-            ).fetchone()
-            if evidence_row is None:
-                self._raise(
-                    ErrorCode.STATE_NOT_FOUND,
-                    "transition_invocation",
-                    "referenced evidence does not exist",
-                )
         redacted_summary = (
             self._redacted_text(result_summary, "transition_invocation")
             if result_summary is not None
@@ -591,20 +568,13 @@ class StateStore:
                 "transition_invocation",
                 "invocation changed concurrently",
             )
-        for ordinal, evidence_id in enumerate(evidence_ids):
-            self._connection.execute(
-                """
-                INSERT INTO tool_call_evidence(run_id, tool_call_id, evidence_id, ordinal)
-                VALUES (?, ?, ?, ?)
-                """,
-                (run_id, tool_call_id, evidence_id, ordinal),
-            )
         run_revision = self._get_run_revision(run_id)
         self._touch_run(run_id, run_revision, now)
         updated_row = self._connection.execute(
             "SELECT * FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
             (run_id, tool_call_id),
         ).fetchone()
+        updated_invocation = _invocation_from_row(self._connection, updated_row)
         event_type = {
             InvocationStatus.STARTED: AuditEventType.TOOL_STARTED,
             InvocationStatus.SUCCEEDED: AuditEventType.TOOL_SUCCEEDED,
@@ -630,10 +600,10 @@ class StateStore:
             output_summary={
                 "status": target.value,
                 "summary": redacted_summary,
-                "evidence_ids": list(evidence_ids),
+                "evidence_ids": list(updated_invocation.evidence_ids),
             },
         )
-        return _invocation_from_row(self._connection, updated_row)
+        return updated_invocation
 
     def add_evidence(self, evidence: Evidence, *, lease_token: str) -> Evidence:
         """Persist immutable evidence associated with an existing run."""
@@ -644,7 +614,7 @@ class StateStore:
         self.get_run(evidence.run_id)
         if evidence.tool_call_id is not None:
             row = self._connection.execute(
-                "SELECT 1 FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
+                "SELECT status FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
                 (evidence.run_id, evidence.tool_call_id),
             ).fetchone()
             if row is None:
@@ -652,6 +622,15 @@ class StateStore:
                     ErrorCode.STATE_NOT_FOUND,
                     "add_evidence",
                     "evidence tool call does not exist",
+                )
+            if row["status"] not in {
+                InvocationStatus.PREPARED.value,
+                InvocationStatus.STARTED.value,
+            }:
+                self._raise(
+                    ErrorCode.STATE_INVALID_TRANSITION,
+                    "add_evidence",
+                    "evidence must be recorded before its tool call becomes terminal",
                 )
         redacted_path = (
             self._redacted_text(evidence.path, "add_evidence") if evidence.path else None
@@ -1660,8 +1639,9 @@ def _invocation_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> To
         str(item["evidence_id"])
         for item in connection.execute(
             """
-            SELECT evidence_id FROM tool_call_evidence
-            WHERE run_id = ? AND tool_call_id = ? ORDER BY ordinal
+            SELECT evidence_id FROM evidence
+            WHERE run_id = ? AND tool_call_id = ?
+            ORDER BY created_at, evidence_id
             """,
             (row["run_id"], row["tool_call_id"]),
         ).fetchall()

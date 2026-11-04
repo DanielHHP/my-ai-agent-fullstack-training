@@ -47,7 +47,12 @@ RUN_ID = "run_00000000000000000000000000000001"
 TRACE_ID = "00000000000000000000000000000002"
 STEP_ID = "step_00000000000000000000000000000003"
 EVIDENCE_ID = "evidence_00000000000000000000000000000004"
+EVIDENCE_ID_2 = "evidence_00000000000000000000000000000005"
+EVIDENCE_ID_3 = "evidence_00000000000000000000000000000006"
+EVIDENCE_ID_4 = "evidence_00000000000000000000000000000007"
+EVIDENCE_ID_5 = "evidence_00000000000000000000000000000008"
 TOOL_CALL_ID = "provider-call-1"
+TOOL_CALL_ID_2 = "provider-call-2"
 DIGEST = f"sha256:{'a' * 64}"
 
 
@@ -123,9 +128,13 @@ def _plan(revision: int = 0) -> RunPlan:
     )
 
 
-def _invocation(*, idempotent: bool = True) -> ToolInvocation:
+def _invocation(
+    *,
+    idempotent: bool = True,
+    tool_call_id: str = TOOL_CALL_ID,
+) -> ToolInvocation:
     return ToolInvocation(
-        tool_call_id=TOOL_CALL_ID,
+        tool_call_id=tool_call_id,
         run_id=RUN_ID,
         step_id=STEP_ID,
         tool_name="read_file",
@@ -140,13 +149,18 @@ def _invocation(*, idempotent: bool = True) -> ToolInvocation:
     )
 
 
-def _evidence() -> Evidence:
+def _evidence(
+    *,
+    evidence_id: str = EVIDENCE_ID,
+    tool_call_id: str | None = TOOL_CALL_ID,
+    path: str = "src/app.py",
+) -> Evidence:
     return Evidence(
-        evidence_id=EVIDENCE_ID,
+        evidence_id=evidence_id,
         run_id=RUN_ID,
-        tool_call_id=TOOL_CALL_ID,
+        tool_call_id=tool_call_id,
         kind=EvidenceKind.READ,
-        path="src/app.py",
+        path=path,
         line_start=1,
         line_end=3,
         content_digest=DIGEST,
@@ -162,15 +176,15 @@ def test_storage_initializes_schema_and_pragmas(tmp_path: Path, fixed_clock) -> 
 
     report = storage.verify_integrity()
     assert report.ok
-    assert report.schema_version == 2
-    assert report.migration_count == 2
+    assert report.schema_version == 3
+    assert report.migration_count == 3
     assert report.journal_mode.casefold() == "wal"
     assert report.foreign_keys_enabled
     assert report.busy_timeout_ms == 5000
     assert report.required_tables_present
     assert report.budget_ledger_consistent
     assert report.quick_check.casefold() == "ok"
-    assert storage.schema_version() == 2
+    assert storage.schema_version() == 3
     if "posix" in __import__("os").name:
         assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE(storage.database_path.stat().st_mode) == 0o600
@@ -254,6 +268,73 @@ def test_newer_schema_version_fails_closed(tmp_path: Path, fixed_clock) -> None:
     with pytest.raises(StorageError) as error:
         storage.initialize()
     assert error.value.code == ErrorCode.STATE_SCHEMA_UNSUPPORTED
+
+
+def test_evidence_migration_rejects_conflicting_legacy_links(
+    tmp_path: Path,
+    fixed_clock,
+) -> None:
+    storage, _ = _storage(tmp_path, fixed_clock)
+    storage.initialize()
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        lease = state.create_run(_run(), owner_id="owner-1")
+        state.create_step(
+            Step(
+                step_id=STEP_ID,
+                run_id=RUN_ID,
+                ordinal=0,
+                status=StepStatus.PLANNED,
+                summary="Read files",
+                started_at=NOW,
+            ),
+            expected_run_revision=0,
+            lease_token=lease.token,
+        )
+        state.create_invocation(
+            _invocation(),
+            expected_run_revision=1,
+            lease_token=lease.token,
+        )
+        state.create_invocation(
+            _invocation(tool_call_id=TOOL_CALL_ID_2),
+            expected_run_revision=2,
+            lease_token=lease.token,
+        )
+        state.add_evidence(_evidence(), lease_token=lease.token)
+        state.add_evidence(
+            _evidence(
+                evidence_id=EVIDENCE_ID_3,
+                tool_call_id=TOOL_CALL_ID_2,
+                path="src/other.py",
+            ),
+            lease_token=lease.token,
+        )
+
+    with sqlite3.connect(storage.database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE tool_call_evidence (
+                run_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tool_call_evidence(run_id, tool_call_id, evidence_id, ordinal)
+            VALUES (?, ?, ?, 0)
+            """,
+            (RUN_ID, TOOL_CALL_ID, EVIDENCE_ID_3),
+        )
+        connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+        connection.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(StorageError) as error:
+        storage.initialize()
+    assert error.value.code == ErrorCode.STATE_MIGRATION_FAILED
 
 
 def test_run_plan_and_step_round_trip_after_reopen(tmp_path: Path, fixed_clock) -> None:
@@ -438,7 +519,6 @@ def test_tool_evidence_budget_and_completion_round_trip(tmp_path: Path, fixed_cl
             expected_revision=0,
             target=InvocationStatus.STARTED,
             result_summary=None,
-            evidence_ids=(),
             error_code=None,
             lease_token=lease.token,
         )
@@ -450,7 +530,6 @@ def test_tool_evidence_budget_and_completion_round_trip(tmp_path: Path, fixed_cl
             expected_revision=1,
             target=InvocationStatus.SUCCEEDED,
             result_summary="read 3 lines",
-            evidence_ids=(evidence.evidence_id,),
             error_code=None,
             lease_token=lease.token,
         )
@@ -657,7 +736,6 @@ def test_invocation_args_and_result_are_redacted(tmp_path: Path, fixed_clock) ->
             expected_revision=0,
             target=InvocationStatus.STARTED,
             result_summary=None,
-            evidence_ids=(),
             error_code=None,
             lease_token=lease.token,
         )
@@ -699,7 +777,6 @@ def test_non_idempotent_timeout_must_be_unknown_result(tmp_path: Path, fixed_clo
             expected_revision=0,
             target=InvocationStatus.STARTED,
             result_summary=None,
-            evidence_ids=(),
             error_code=None,
             lease_token=lease.token,
         )
@@ -711,11 +788,123 @@ def test_non_idempotent_timeout_must_be_unknown_result(tmp_path: Path, fixed_clo
                 expected_revision=1,
                 target=InvocationStatus.TIMED_OUT,
                 result_summary="timed out",
-                evidence_ids=(),
                 error_code="TOOL_TIMEOUT",
                 lease_token=lease.token,
             )
         assert error.value.code == ErrorCode.STATE_INVARIANT_VIOLATION
+
+
+def test_evidence_has_one_producer_and_is_derived_on_invocation(
+    tmp_path: Path,
+    fixed_clock,
+) -> None:
+    storage, _ = _storage(tmp_path, fixed_clock)
+    storage.initialize()
+
+    with storage.transaction(actor="test-harness") as unit:
+        state = unit.state
+        lease = state.create_run(_run(), owner_id="owner-1")
+        state.create_step(
+            Step(
+                step_id=STEP_ID,
+                run_id=RUN_ID,
+                ordinal=0,
+                status=StepStatus.PLANNED,
+                summary="Read files",
+                started_at=NOW,
+            ),
+            expected_run_revision=0,
+            lease_token=lease.token,
+        )
+        first = state.create_invocation(
+            _invocation(),
+            expected_run_revision=1,
+            lease_token=lease.token,
+        )
+        second = state.create_invocation(
+            _invocation(tool_call_id=TOOL_CALL_ID_2),
+            expected_run_revision=2,
+            lease_token=lease.token,
+        )
+        state.transition_invocation(
+            RUN_ID,
+            first.tool_call_id,
+            expected_status=InvocationStatus.PREPARED,
+            expected_revision=0,
+            target=InvocationStatus.STARTED,
+            result_summary=None,
+            error_code=None,
+            lease_token=lease.token,
+        )
+        state.transition_invocation(
+            RUN_ID,
+            second.tool_call_id,
+            expected_status=InvocationStatus.PREPARED,
+            expected_revision=0,
+            target=InvocationStatus.STARTED,
+            result_summary=None,
+            error_code=None,
+            lease_token=lease.token,
+        )
+        state.add_evidence(
+            _evidence(evidence_id=EVIDENCE_ID_2, path="src/service.py"),
+            lease_token=lease.token,
+        )
+        state.add_evidence(
+            _evidence(evidence_id=EVIDENCE_ID, path="src/app.py"),
+            lease_token=lease.token,
+        )
+        state.add_evidence(
+            _evidence(
+                evidence_id=EVIDENCE_ID_3,
+                tool_call_id=TOOL_CALL_ID_2,
+                path="src/other.py",
+            ),
+            lease_token=lease.token,
+        )
+        state.transition_invocation(
+            RUN_ID,
+            first.tool_call_id,
+            expected_status=InvocationStatus.STARTED,
+            expected_revision=1,
+            target=InvocationStatus.SUCCEEDED,
+            result_summary="read first",
+            error_code=None,
+            lease_token=lease.token,
+        )
+        state.transition_invocation(
+            RUN_ID,
+            second.tool_call_id,
+            expected_status=InvocationStatus.STARTED,
+            expected_revision=1,
+            target=InvocationStatus.SUCCEEDED,
+            result_summary="read second",
+            error_code=None,
+            lease_token=lease.token,
+        )
+        with pytest.raises(StateStoreError) as terminal_error:
+            state.add_evidence(
+                _evidence(evidence_id=EVIDENCE_ID_4),
+                lease_token=lease.token,
+            )
+        assert terminal_error.value.code == ErrorCode.STATE_INVALID_TRANSITION
+        completion_only = state.add_evidence(
+            _evidence(evidence_id=EVIDENCE_ID_5, tool_call_id=None),
+            lease_token=lease.token,
+        )
+        snapshot = state.get_run_snapshot(RUN_ID)
+
+    by_id = {item.tool_call_id: item for item in snapshot.invocations}
+    assert by_id[TOOL_CALL_ID].evidence_ids == (EVIDENCE_ID, EVIDENCE_ID_2)
+    assert by_id[TOOL_CALL_ID_2].evidence_ids == (EVIDENCE_ID_3,)
+    assert completion_only.tool_call_id is None
+    with sqlite3.connect(storage.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'tool_call_evidence'"
+            ).fetchone()
+            is None
+        )
 
 
 def test_lease_renewal_blocks_second_owner(tmp_path: Path) -> None:

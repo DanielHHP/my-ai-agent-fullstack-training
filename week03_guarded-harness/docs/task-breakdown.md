@@ -441,8 +441,8 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 
 **依赖**：WP-00。
 
-**包内文档**：[冻结规格](work-packages/wp-01-persistence-audit/spec.md)（v0.2.3 / frozen）、
-[实施计划](work-packages/wp-01-persistence-audit/plan.md)（v0.2.3 / done）、
+**包内文档**：[冻结规格](work-packages/wp-01-persistence-audit/spec.md)（v0.3.0 / frozen）、
+[实施计划](work-packages/wp-01-persistence-audit/plan.md)（v0.3.0 / done）、
 [验收报告](work-packages/wp-01-persistence-audit/acceptance-report.md)（accepted）。
 
 **主要范围**：
@@ -1178,6 +1178,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | D-19 Run 租约与心跳 | WP-01、WP-07、WP-10、WP-11 |
 | D-20 状态变更强制审计 | WP-01、WP-04、WP-07、WP-08 |
 | D-21 状态文件权限 | WP-01、WP-03、WP-11 |
+| D-22 Evidence 单一生产者 | WP-01、WP-04、WP-05、WP-08、WP-09 |
 
 ## 14. 全局完成定义
 

@@ -6,8 +6,8 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 文档状态 | frozen |
-| 规格版本 | 0.2.3 |
-| 冻结日期 | 2026-11-04（审计状态与并发验证澄清） |
+| 规格版本 | 0.3.0 |
+| 冻结日期 | 2026-11-04（Evidence 单一生产者修订） |
 | 依赖 | WP-00 v1.1.0，已验收 |
 | 下游工作包 | WP-02、WP-04、WP-07、WP-08、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-GATE-002`、`REQ-STATE-001` 至 `REQ-STATE-003`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-CHECKPOINT-003`，以及第 8 节非功能要求 |
@@ -161,7 +161,7 @@ create_invocation(invocation: ToolInvocation,
                   expected_run_revision, lease_token) -> ToolInvocation
 transition_invocation(run_id, tool_call_id, expected_status,
                       expected_revision, target, result_summary,
-                      evidence_ids, error_code, lease_token) -> ToolInvocation
+                      error_code, lease_token) -> ToolInvocation
 
 add_evidence(evidence: Evidence, lease_token) -> Evidence
 record_budget_delta(command: BudgetDeltaCommand, lease_token) -> BudgetUsage
@@ -388,6 +388,10 @@ Run 创建和租约获取在同一事务完成。`LeasePolicy` 默认 TTL 30 秒
 以 `min(10, TTL/3)` 秒独立心跳。第一次续租失败进入租约风险并立即重试，连续第二次失败请求取消
 handler；普通续租不写业务审计。旧 token 在接管后不能续租或提交状态。
 
+`Evidence.tool_call_id` 是唯一生产该证据的工具调用，可以为 `null`；ToolInvocation 的
+`evidence_ids` 是按生产调用查询得到的只读投影。证据必须在调用进入终态前写入，终态调用的证据
+投影不得再变化。Completion 可以消费 Evidence ID，但不得修改证据的生产归属。
+
 ### 7.7 审计 append-only 与哈希链
 
 - 每个 Run 的 `sequence` 从 `1` 开始连续递增，`(run_id, sequence)` 唯一；
@@ -487,7 +491,6 @@ migration 追加：
 | `steps` | Step 字段、revision | step_id 主键；`(run_id, ordinal)` 唯一；Run 外键 |
 | `tool_calls` | ToolInvocation 字段、revision | `(run_id, tool_call_id)` 主键；step/Run 外键 |
 | `evidence` | Evidence 字段 | evidence_id 主键；Run 与可选 tool_call 外键 |
-| `tool_call_evidence` | tool call 与 evidence 的有序关联 | 双外键；关联不重复 |
 | `completion_results` | CompletionCheck 字段、revision | run_id 主键；Run 外键 |
 | `completion_items` | CompletionItem 字段和有序 evidence 关联 | `(run_id, item_id)` 唯一；Run 外键 |
 | `budget_ledger` | source_kind、source_id、category、增量、创建时间 | `(run_id, source_kind, source_id, category)` 唯一；不可公开修改/删除 |
@@ -571,6 +574,7 @@ SQL 文本。
 | WP01-AC-017 | 不越权实现 | 不创建审批/Checkpoint 生命周期 API，不宣称 Gate、恢复或最终验收完成 |
 | WP01-AC-018 | RunPlan 契约 | null/非空规则、ordinal、大小上限、幂等 no-op、revision 和审计映射正确 |
 | WP01-AC-019 | 状态目录隔离与权限 | 工作区内 state_dir 在配置阶段拒绝；WP-01 复验路径；POSIX owner/type/mode 不合规时失败关闭 |
+| WP01-AC-020 | Evidence 单一生产者 | 跨 ToolCall 关联被消除；Invocation evidence_ids 为派生投影；Completion-only 证据合法 |
 
 每个场景必须映射到自动化测试；不能以人工检查或“代码存在”替代。
 

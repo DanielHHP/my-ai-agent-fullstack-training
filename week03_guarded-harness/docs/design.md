@@ -585,7 +585,7 @@ StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基�
 | `runs` | Run 当前业务状态、配置/工作区指纹、预算和最终结论 |
 | `run_plans` | 当前计划、plan revision 和有序公开计划项 |
 | `steps` | 模型步骤、stop reason 和安全边界序号 |
-| `tool_calls` | 每次候选调用、规范参数摘要、状态、结果和证据 |
+| `tool_calls` | 每次候选调用、规范参数摘要、状态和结果 |
 | `evidence` | 可关联读取、命令、diff、测试和验收事实 |
 | `budget_ledger` | 按来源和预算维度幂等记录增量 |
 | `approvals` | 审批对象、摘要、有效期、决定和消费状态 |
@@ -597,6 +597,10 @@ StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基�
 `audit_events` 通过 `BEFORE UPDATE`、`BEFORE DELETE` 触发器拒绝修改和删除；事件带有
 `(run_id, sequence)`、前一事件哈希和当前事件哈希。业务数据不通过修改审计事件“回写”，
 只能追加新事实。
+
+`Evidence.tool_call_id` 是唯一生产者引用，可以为 `null` 表示 Completion-only 证据；
+`ToolInvocation.evidence_ids` 是按 `run_id + tool_call_id` 从 Evidence 表派生的只读投影。
+Completion 可以消费 Evidence ID，但不得改变证据归属。不得另建多对多关联形成第二套事实来源。
 
 POSIX 新建状态目录使用 `0700`，数据库及 WAL/SHM 使用 `0600`；状态目录和文件必须由当前有效
 用户拥有且类型安全。已有权限不安全或无法收紧时失败关闭，不静默继续。Windows ACL 的强隔离
