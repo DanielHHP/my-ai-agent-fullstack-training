@@ -6,11 +6,11 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 报告状态 | accepted |
-| 报告版本 | 1.0.0 |
+| 报告版本 | 1.1.0 |
 | 验收日期 | 2026-11-04 |
-| 对应规格 | [spec.md](spec.md) v0.2.3 / frozen |
-| 对应计划 | [plan.md](plan.md) v0.2.3 / done |
-| 代码基线 | `c7bc4e61a03335359424b359bdf41831b03ce507` |
+| 对应规格 | [spec.md](spec.md) v0.3.0 / frozen |
+| 对应计划 | [plan.md](plan.md) v0.3.0 / done |
+| 代码基线 | `8e61d9d1a37dde82c697f0ca4547e69900d1fcac` |
 | 基线工作区 | 代码基线提交时干净，无未提交修改 |
 | 验收环境 | macOS Darwin x86_64；Python 3.13.5；pip 25.1.1 |
 
@@ -23,7 +23,7 @@
 
 - SQLite 连接、WAL、外键、busy timeout、只追加 migration 和 checksum；
 - 状态目录工作区隔离与 POSIX owner/type/mode 检查；
-- Run、RunPlan、Step、ToolInvocation、Evidence、预算 ledger 和 Completion 持久化；
+- Run、RunPlan、Step、ToolInvocation、单生产者 Evidence、预算 ledger 和 Completion 持久化；
 - Run/Step/ToolInvocation 合法状态机、乐观 revision 和基础 Run 租约；
 - 过期租约接管、续租、释放和旧 token fencing；
 - append-only 审计、连续序号、canonical JSON、哈希链、关联查询和篡改检测；
@@ -62,10 +62,10 @@
 | 检查 | 命令 | 实际结果 |
 | --- | --- | --- |
 | Editable 安装 | `python -m pip install -e '.[dev]'` | PASS |
-| WP-01 目标测试 | `python -m pytest tests/test_state_checkpoint.py tests/test_audit.py -q` | `25 passed in 1.00s` |
-| 全量测试 | `python -m pytest -q` | `63 passed in 1.20s` |
+| WP-01 目标测试 | `python -m pytest tests/test_state_checkpoint.py tests/test_audit.py -q` | `27 passed in 1.55s` |
+| 全量测试 | `python -m pytest -q` | `65 passed in 1.76s` |
 | Lint | `python -m ruff check .` | PASS；`All checks passed!` |
-| 格式 | `python -m ruff format --check .` | `27 files already formatted` |
+| 格式 | `python -m ruff format --check .` | `28 files already formatted` |
 | 依赖一致性 | `python -m pip check` | `No broken requirements found.` |
 | 补丁空白检查 | `git diff --check` | PASS，无输出 |
 
@@ -95,6 +95,7 @@
 | WP01-AC-017 职责边界 | PASS | 未创建 Approval/Checkpoint 生命周期 API 或 Gate handler |
 | WP01-AC-018 RunPlan | PASS | null/非空、连续 ordinal、32 KiB、幂等 no-op 和 revision |
 | WP01-AC-019 目录/权限 | PASS | 配置层工作区隔离；存储层复验、owner/type/mode 失败关闭 |
+| WP01-AC-020 Evidence 单一生产者 | PASS | junction 删除；派生投影顺序稳定；跨调用隔离；Completion-only 和冲突迁移拒绝 |
 
 ## 6. 任务卡验收
 
@@ -103,7 +104,7 @@
 | WP01-T01 SQLite/migration | DONE | migration v1/v2、PRAGMA、checksum、回滚、路径和权限测试 |
 | WP01-T02 Redaction | DONE | 敏感值、常见凭据、循环和有界裁剪测试 |
 | WP01-T03 Run/Plan/Step | DONE | 事务、状态机、revision、快照和重开测试 |
-| WP01-T04 Tool/Evidence/Budget/Completion | DONE | 生命周期、证据关联、四维预算、Completion 和重开测试 |
+| WP01-T04 Tool/Evidence/Budget/Completion | DONE | 生命周期、单生产者 Evidence、四维预算、Completion 和重开测试 |
 | WP01-T05 Lease | DONE | 续租、过期接管、释放、旧 token 和心跳策略测试 |
 | WP01-T06 Audit | DONE | 自动领域事件、哈希链、查询、trigger 和脱敏测试 |
 | WP01-T07 Atomicity/Concurrency | DONE | 双向回滚、commit 故障、并发追加和并行 revision 测试 |
@@ -123,6 +124,7 @@
 | commit 前进程退出 | 状态、审计和关联行一起回滚 |
 | 并发审计写入 | sequence 连续、event ID 唯一、chain 有效 |
 | 审计直接篡改 | trigger 拒绝；绕过 trigger 后链校验失败 |
+| Evidence 双重归属 | junction 表已删除；Evidence 唯一生产者，Invocation evidence_ids 为派生投影 |
 | secret 泄漏 | 参数、结果、错误摘要和审计摘要统一脱敏 |
 
 ## 8. 飞书核心验收映射
@@ -147,6 +149,8 @@
    实现。
 5. 同一 `git_root` 内、workspace 外的状态目录排除属于 WP-03；本包只保证目录位于 workspace 外。
 6. Gate、Sandbox、真实工具、审批消费、Checkpoint、Completion 策略和 Agent Loop 不在本包。
+7. Evidence 只支持一个生产 ToolCall；Completion 可以复用 Evidence ID，但同一工具结果需要跨调用
+   共享时，应由后续需求显式增加带关系类型的模型，不能复用已删除的通用 junction。
 
 ## 10. 验收结论
 
