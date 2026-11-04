@@ -1300,6 +1300,12 @@ class StateStore:
             "SELECT * FROM evidence WHERE run_id = ? ORDER BY created_at, evidence_id",
             (run_id,),
         ).fetchall()
+        approval_rows = self._connection.execute(
+            "SELECT * FROM approvals WHERE run_id = ? ORDER BY requested_at, approval_id",
+            (run_id,),
+        ).fetchall()
+        from .approval import approval_from_row
+
         return RunSnapshot(
             run=run,
             plan=plan,
@@ -1308,6 +1314,7 @@ class StateStore:
                 _invocation_from_row(self._connection, row) for row in invocation_rows
             ),
             evidence=tuple(_evidence_from_row(row) for row in evidence_rows),
+            approvals=tuple(approval_from_row(row) for row in approval_rows),
             completion=self._get_completion(run_id),
             read_at=self._now(),
         )

@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-22 |
+| 决策范围 | 已确认的 D-01 至 D-28 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -38,3 +38,9 @@
 | D-20 | 状态变更强制审计 | StateStore 公共业务写操作自动追加固定领域审计事件，禁止状态-only 成功；审计失败则整个事务回滚。`status` 必填，`code` 仅在拒绝、失败、超时和未知结果时必填；`actor` 来自可信 UnitOfWork 上下文，模型不能覆盖。 |
 | D-21 | 状态文件权限 | POSIX 要求状态目录、数据库、WAL/SHM 由当前有效用户拥有，文件类型安全；新建目录使用 `0700`，数据库及 WAL/SHM 使用 `0600`。已有路径权限不安全或无法收紧时失败关闭，不提供生产旁路。Windows ACL 不作为本包强隔离能力宣称。 |
 | D-22 | Evidence 单一生产者 | `Evidence.tool_call_id` 是唯一生产该证据的 ToolCall，可为 `null` 表示 Completion-only 证据；`ToolInvocation.evidence_ids` 是从 Evidence 表派生的只读投影。删除 `tool_call_evidence` junction，`transition_invocation` 不再接收 evidence_ids。Completion 可以引用 Evidence，但不改变其生产者。 |
+| D-23 | Approval v2 与审批配置 | `Approval` 升级为 `schema_version=2`，增加 `tool_call_id`、`task_id`、`binding_digest`、`claimed_at` 和 `revision`。任务 `ApprovalConfig` 增加 `approver_roles` 与 `ttl_seconds`；有必审工具时角色列表不得为空，TTL 默认 900 秒、允许 1 至 86400 秒，全部进入配置指纹。 |
+| D-24 | 审批身份、自批与 Channel 信任 | 审批 actor 是本地可信但未认证身份；必须提供与 `allowed_approver_roles` 相交的角色，并禁止 `requested_by == decided_by`。`requested_by` 来自 Gate 的可信 Agent 上下文，不采用模型参数。`ApprovalChannel` 只能提交或返回未授权决定，不能直接写审批状态；P0 只提供本地 SQLite 语义和 disabled/fake 通道。 |
+| D-25 | 审批与 Run 的原子边界 | Gate 在同一 UnitOfWork 中创建审批、关联 ToolInvocation、将 Run 转为 `WAITING_APPROVAL` 并写审计。claim 成功时同一 UnitOfWork 将 Run 恢复为 `RUNNING`、提交审批 claim 和预执行意图；随后单独持久化 Invocation `STARTED`，再调用 handler。`execution_intent_id` 固定使用 `tool_call_id`。 |
+| D-26 | 审批失败与结果终态 | `PENDING/APPROVED` 到期转 `EXPIRED`，`CLAIMED` 不按审批 TTL 自动过期。人工拒绝或审批过期必须与 Run `STOPPED`、新 `StopReason=APPROVAL_REJECTED/APPROVAL_EXPIRED`、`NOT_EVALUATED` 及审计原子提交。确定 `SUCCEEDED/FAILED/TIMED_OUT` 消费审批；`UNKNOWN_RESULT` 保持 `CLAIMED` 且不可重放。绑定变化使旧审批 `INVALIDATED`，Run `BLOCKED`，人工处理完成后启动新 Run。 |
+| D-27 | 审批幂等与恢复 | `(run_id, tool_call_id)` 最多一张审批；同绑定且 PENDING/APPROVED 的重复创建返回原单，绑定不同返回冲突，CLAIMED/终态重放拒绝。claim 后、STARTED 前崩溃时，新进程在重新取得租约并全量复核后通过显式 `resume_claim` 继续原 execution intent，并追加恢复审计。 |
+| D-28 | 审批参数绑定摘要 | Gate 对脱敏前的规范化参数计算 domain-separated SHA-256，工具名和参数进入 `canonical_args_digest`，完整上下文进入 `binding_digest`；审批表只保存摘要与脱敏摘要，不保存未脱敏参数。低熵秘密摘要的离线猜测风险作为 P0 限制记录。 |

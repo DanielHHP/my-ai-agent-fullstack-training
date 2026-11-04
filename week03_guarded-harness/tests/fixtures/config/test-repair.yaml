@@ -40,4 +40,8 @@ task:
       - write_file
       - apply_patch
       - run_test
+    approver_roles:
+      - local_operator
+      - maintainer
+    ttl_seconds: 600
     channel: local_cli

@@ -6,17 +6,20 @@
 | --- | --- |
 | 工作包 | WP-00 工程与契约内核 |
 | 文档状态 | frozen |
-| 规格版本 | 1.1.0 |
-| 冻结日期 | 2026-11-03（state_dir 隔离修订） |
+| 规格版本 | 1.2.0 |
+| 冻结日期 | 2026-11-04（WP-02 Approval v2 兼容修订） |
 | 依赖 | 无 |
 | 下游工作包 | WP-01、WP-03、WP-04、WP-07、WP-08、WP-09、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-HARNESS-001`、`REQ-HARNESS-004`、`REQ-GATE-002`、`REQ-GATE-003`、`REQ-SANDBOX-001`、`REQ-TASK-001`、`REQ-TASK-002`、`REQ-COMPLETE-002` |
 | 对应设计 | `design.md` 第 4、5、7.2、11.1、13、14 节 |
-| 已确认决策 | D-02 至 D-09、D-10 至 D-16、D-21 |
+| 已确认决策 | D-02 至 D-16、D-21、D-23 至 D-28 |
 | 飞书输入 | 作业文档 revision 14；“核心验收”内嵌表 revision 11 |
 
 本文是 WP-00 已冻结的行为与验收契约。状态为 `frozen` 表示规格评审完成，不表示相关工程能力
 已经实现；实现是否完成仍由测试、lint、格式检查和验收证据决定。
+
+v1.2.0 只包含已确认的 Approval 与审批配置兼容修订，具体实现和验收由 WP-02 T01 承担；
+WP-00 v1.1.0 的已验收证据仍是现有代码基线，不能用于宣称 v1.2.0 已实现。
 
 发生冲突时，文档权威顺序为
 `requirements.md / design.md / decisions.md > 本 spec.md > plan.md > 具体任务卡`。本规格不重新定义
@@ -215,8 +218,9 @@ WP-01 SQLite migration 版本。
 | `ApprovalStatus` | `PENDING`、`APPROVED`、`CLAIMED`、`CONSUMED`、`REJECTED`、`EXPIRED`、`INVALIDATED` |
 | `EvidenceKind` | `READ`、`DOCUMENT`、`COMMAND`、`TEST_REPORT`、`DIFF`、`AUDIT` |
 
-`StopReason` 至少包含 `FINAL_ANSWER`、`BUDGET_EXHAUSTED`、`APPROVAL_REQUIRED`、`GATE_BLOCKED`、
-`UNKNOWN_RESULT`、`WORKSPACE_CHANGED`、`INTERNAL_ERROR`。若实现需要更多原因，必须同步
+`StopReason` 至少包含 `FINAL_ANSWER`、`BUDGET_EXHAUSTED`、`APPROVAL_REQUIRED`、
+`APPROVAL_REJECTED`、`APPROVAL_EXPIRED`、`GATE_BLOCKED`、`UNKNOWN_RESULT`、
+`WORKSPACE_CHANGED`、`INTERNAL_ERROR`。若实现需要更多原因，必须同步
 `design.md` 和契约测试，不能使用任意自由文本代替枚举。
 
 ### 6.2 错误码
@@ -341,19 +345,22 @@ error_code, created_at, updated_at
 
 ### 7.5 Approval
 
-`Approval` 至少包含：
+`Approval` schema v2 至少包含：
 
 ```text
-schema_version, approval_id, run_id, task_kind
+schema_version, approval_id, run_id, tool_call_id
+task_id, task_kind
 git_root, workspace_root, workspace_prefix
-tool_name, canonical_args_digest, config_fingerprint
+tool_name, canonical_args_digest, binding_digest, config_fingerprint
 requested_by, allowed_approver_roles
-status, requested_at, expires_at, decided_at, consumed_at
-decided_by, execution_intent_id
+status, revision, requested_at, expires_at
+decided_at, decided_by, claimed_at, execution_intent_id
+consumed_at, consumption_code
 ```
 
 这些字段只定义审批绑定契约，不定义审批服务实现。参数、工作区、任务、Run 或配置指纹变化必须
-使旧审批失效；一次性消费和状态机由 WP-02 实现。
+使旧审批失效；一次性消费和状态机由 WP-02 实现。`execution_intent_id` 使用
+`tool_call_id`；审批 actor 必须具备允许角色且不得自批，Channel 返回值不是授权事实。
 
 ### 7.6 Evidence
 
@@ -415,6 +422,8 @@ task:
     deliverables: ["artifacts/code-understanding.md"]
   approval:
     required_tools: [write_file]
+    approver_roles: [local_operator]
+    ttl_seconds: 900
     channel: local_cli
 ```
 
@@ -626,6 +635,10 @@ UUIDv4；`run_id` 与 `trace_id` 必须不同，`trace_id` 使用 32 位小写�
 配置字段，包括规范化后的绝对工作区和 state 路径。集合语义字段排序，交付物与命令顺序保留。
 交付物和路径 pattern 只接受工作区相对 POSIX 路径，不接受绝对路径。
 
+`ApprovalConfig.approver_roles` 是允许审批角色列表；存在必审工具时不得为空。
+`ApprovalConfig.ttl_seconds` 默认 900，允许 `1..86400`。两者必须进入配置指纹，模型和 CLI
+不能临时覆盖。
+
 ### OD-04 测试修复配置的验收字段深度
 
 WP-00 只冻结 `test_command` argv、基线要求和路径/预算/审批字段。测试报告格式与测试节点证据
@@ -646,6 +659,12 @@ WP-00 的字段集合是 P0 冻结基线，下游不得用裸字典自行扩展�
 `state_dir` 必填且必须位于规范化 `workspace_root` 外。配置加载阶段执行静态真实路径检查，
 WP-01 在打开数据库前重新验证。配置 `version` 保持 `1`，本次变更作为 P0 发布前的 v1.1.0
 兼容修订；旧配置若依赖隐式默认值必须显式迁移。
+
+### OD-08 WP-02 Approval v2 兼容修订
+
+按 D-23 至 D-28，`Approval` 使用 schema v2，审批配置增加 `approver_roles` 和 `ttl_seconds`，
+StopReason 追加 `APPROVAL_REJECTED/APPROVAL_EXPIRED`。这些字段已冻结为 v1.2.0 公共契约，
+由 WP-02 T01 实现并通过契约测试；在 WP-02 验收完成前，不得把现有 v1.1.0 代码视为满足本修订。
 
 ## 16. 完成定义
 

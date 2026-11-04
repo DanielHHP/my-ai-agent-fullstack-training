@@ -56,6 +56,8 @@ def _payload(
             },
             "approval": {
                 "required_tools": ["write_file"],
+                "approver_roles": ["local_operator"],
+                "ttl_seconds": 900,
                 "channel": "local_cli",
             },
         },
@@ -195,6 +197,30 @@ def test_cross_field_semantics(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError) as duplicate_tool_error:
         load_config(duplicate_tool_path)
     assert duplicate_tool_error.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+
+def test_approval_roles_and_ttl_are_required_and_fingerprinted(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    missing_roles = _payload(str(workspace))
+    missing_roles["task"]["approval"]["approver_roles"] = []
+    missing_config = _write_yaml(tmp_path / "missing-roles.yaml", missing_roles)
+    with pytest.raises(ConfigurationError) as missing_error:
+        load_config(missing_config)
+    assert missing_error.value.code == ErrorCode.CONFIG_APPROVAL_INVALID
+
+    invalid_ttl = _payload(str(workspace))
+    invalid_ttl["task"]["approval"]["ttl_seconds"] = 0
+    ttl_config = _write_yaml(tmp_path / "invalid-ttl.yaml", invalid_ttl)
+    with pytest.raises(ConfigurationError) as ttl_error:
+        load_config(ttl_config)
+    assert ttl_error.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+    first_payload = _payload(str(workspace))
+    first = _write_yaml(tmp_path / "approval-first.yaml", first_payload)
+    second_payload = _payload(str(workspace))
+    second_payload["task"]["approval"]["ttl_seconds"] = 600
+    second = _write_yaml(tmp_path / "approval-second.yaml", second_payload)
+    assert load_config(first).fingerprint != load_config(second).fingerprint
 
 
 def test_absolute_workspace_and_state_paths_are_supported(tmp_path: Path) -> None:

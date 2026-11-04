@@ -403,7 +403,8 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 
 **依赖**：无。
 
-**包内文档**：[冻结规格](work-packages/wp-00-engineering-contracts/spec.md)（v1.1.0 / frozen）、
+**包内文档**：[冻结规格](work-packages/wp-00-engineering-contracts/spec.md)（v1.2.0 / frozen；
+Approval/config 修订已由 WP-02 T01 实现）、
 [实施计划](work-packages/wp-00-engineering-contracts/plan.md)（v1.1.0 / done）、
 [验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md)（accepted）。
 
@@ -476,6 +477,11 @@ M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并�
 **目标**：完成与工具执行解耦的审批对象、绑定摘要和一次性消费语义。
 
 **依赖**：WP-01。
+
+**包内文档**：[冻结规格](work-packages/wp-02-approval-lifecycle/spec.md)（v0.2.0 / frozen）、
+[完成计划](work-packages/wp-02-approval-lifecycle/plan.md)（v0.2.0 / done）、
+[验收报告](work-packages/wp-02-approval-lifecycle/acceptance-report.md)（accepted）。D-23 至
+D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 **主要范围**：
 
@@ -1094,7 +1100,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | --- | --- | --- |
 | SQLite 事务协作和 migration 顺序 | WP-01 | State、Audit 及后续审批/Checkpoint 必须能共同提交或回滚 |
 | Run 租约和并发写冲突 | WP-01、WP-07 | 不依赖内存锁完成跨进程安全 |
-| 审批摘要 canonical 输入 | WP-02 | 字段顺序、路径和时间格式稳定，参数或目标变化即失效 |
+| 审批摘要兼容维护 | WP-02 | D-28 已冻结 canonical 输入；字段顺序、路径和时间格式变化必须提升契约版本 |
 | `apply_patch` 上下文和原子失败语义 | WP-06 | 不产生部分未审计写入，不接受空 patch |
 | 测试报告格式和节点提取 | WP-09 | 必须可从公开命令和结构化报告中机械验证 |
 | continuation context 的有界格式 | WP-07、WP-10 | 不序列化旧 Agent，不包含隐藏推理 |

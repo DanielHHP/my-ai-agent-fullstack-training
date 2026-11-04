@@ -37,4 +37,7 @@ task:
   approval:
     required_tools:
       - write_file
+    approver_roles:
+      - local_operator
+    ttl_seconds: 900
     channel: local_cli

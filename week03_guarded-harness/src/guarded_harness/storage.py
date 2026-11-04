@@ -16,10 +16,11 @@ from typing import TYPE_CHECKING
 from .domain import Clock, ErrorCode, FaultInjector
 
 if TYPE_CHECKING:
+    from .approval import ApprovalStore
     from .audit import AuditStore
     from .state_store import StateStore
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -279,6 +280,133 @@ _MIGRATION_V3 = """
 DROP TABLE tool_call_evidence;
 """
 
+_MIGRATION_V4 = """
+CREATE TABLE runs_v4 (
+    run_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    task_kind TEXT NOT NULL,
+    task_description TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    workspace_json TEXT NOT NULL,
+    max_steps INTEGER NOT NULL CHECK (max_steps >= 1),
+    max_tool_calls INTEGER NOT NULL CHECK (max_tool_calls >= 0),
+    max_token_cost TEXT NOT NULL,
+    max_wall_time_seconds INTEGER NOT NULL CHECK (max_wall_time_seconds >= 1),
+    used_steps INTEGER NOT NULL DEFAULT 0 CHECK (used_steps >= 0),
+    used_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (used_tool_calls >= 0),
+    used_token_cost TEXT NOT NULL DEFAULT '0',
+    used_wall_time_seconds INTEGER NOT NULL DEFAULT 0 CHECK (used_wall_time_seconds >= 0),
+    status TEXT NOT NULL CHECK (
+        status IN ('NEW', 'RUNNING', 'WAITING_APPROVAL', 'VERIFYING',
+                   'COMPLETED', 'STOPPED', 'FAILED', 'BLOCKED')
+    ),
+    stop_reason TEXT CHECK (
+        stop_reason IS NULL OR stop_reason IN (
+            'FINAL_ANSWER', 'BUDGET_EXHAUSTED', 'APPROVAL_REQUIRED',
+            'APPROVAL_REJECTED', 'APPROVAL_EXPIRED',
+            'GATE_BLOCKED', 'UNKNOWN_RESULT', 'WORKSPACE_CHANGED', 'INTERNAL_ERROR'
+        )
+    ),
+    acceptance_status TEXT NOT NULL CHECK (
+        acceptance_status IN ('NOT_EVALUATED', 'ACCEPTED', 'REJECTED', 'UNVERIFIABLE')
+    ),
+    current_step_id TEXT,
+    last_checkpoint_id TEXT,
+    resumed_from_checkpoint_id TEXT,
+    candidate_final_answer TEXT,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    ended_at TEXT,
+    CHECK (updated_at >= created_at),
+    CHECK (started_at IS NULL OR started_at >= created_at),
+    CHECK (ended_at IS NULL OR started_at IS NULL OR ended_at >= started_at)
+);
+
+INSERT INTO runs_v4 SELECT * FROM runs;
+DROP TABLE runs;
+ALTER TABLE runs_v4 RENAME TO runs;
+
+CREATE TABLE approvals (
+    approval_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+    run_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    task_kind TEXT NOT NULL CHECK (task_kind IN ('code_understanding', 'test_repair')),
+    git_root TEXT NOT NULL,
+    workspace_root TEXT NOT NULL,
+    workspace_prefix TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    canonical_args_digest TEXT NOT NULL,
+    binding_digest TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    allowed_approver_roles_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'PENDING', 'APPROVED', 'CLAIMED', 'CONSUMED',
+            'REJECTED', 'EXPIRED', 'INVALIDATED'
+        )
+    ),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    requested_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT,
+    claimed_at TEXT,
+    execution_intent_id TEXT,
+    consumed_at TEXT,
+    consumption_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (run_id, tool_call_id),
+    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    FOREIGN KEY (run_id, tool_call_id)
+        REFERENCES tool_calls(run_id, tool_call_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CHECK (expires_at > requested_at),
+    CHECK (updated_at >= created_at),
+    CHECK (
+        status NOT IN ('CLAIMED', 'CONSUMED')
+        OR (claimed_at IS NOT NULL AND execution_intent_id IS NOT NULL)
+    ),
+    CHECK (
+        status NOT IN ('APPROVED', 'CLAIMED', 'CONSUMED', 'REJECTED')
+        OR (decided_at IS NOT NULL AND decided_by IS NOT NULL)
+    ),
+    CHECK (status != 'CONSUMED' OR consumed_at IS NOT NULL)
+);
+
+CREATE INDEX idx_approvals_run_status
+    ON approvals(run_id, status, requested_at);
+CREATE INDEX idx_approvals_expiry
+    ON approvals(status, expires_at);
+CREATE INDEX idx_approvals_intent
+    ON approvals(execution_intent_id);
+
+CREATE TRIGGER approvals_binding_immutable
+BEFORE UPDATE OF
+    approval_id, schema_version, run_id, tool_call_id, task_id, task_kind,
+    git_root, workspace_root, workspace_prefix, tool_name,
+    canonical_args_digest, binding_digest, config_fingerprint,
+    requested_by, allowed_approver_roles_json, requested_at, expires_at
+ON approvals
+BEGIN
+    SELECT RAISE(ABORT, 'APPROVAL_BINDING_IMMUTABLE');
+END;
+
+CREATE TRIGGER approvals_no_delete
+BEFORE DELETE ON approvals
+BEGIN
+    SELECT RAISE(ABORT, 'APPROVAL_HISTORY_APPEND_ONLY');
+END;
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -299,6 +427,7 @@ MIGRATIONS = (
     Migration(version=1, sql=_MIGRATION_V1),
     Migration(version=2, sql=_MIGRATION_V2),
     Migration(version=3, sql=_MIGRATION_V3),
+    Migration(version=4, sql=_MIGRATION_V4),
 )
 
 
@@ -380,6 +509,15 @@ class StorageUnitOfWork:
         from .audit import AuditStore
 
         return AuditStore(self)
+
+    @property
+    def approvals(self) -> ApprovalStore:
+        """Return the approval repository bound to this unit of work."""
+
+        self.ensure_active()
+        from .approval import ApprovalStore
+
+        return ApprovalStore(self)
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -559,6 +697,7 @@ class SQLiteStorage:
                     "budget_ledger",
                     "run_leases",
                     "audit_events",
+                    "approvals",
                 }
                 tables = {
                     row["name"]
@@ -745,6 +884,7 @@ class SQLiteStorage:
             ) from exc
 
     def _run_migrations(self, connection: sqlite3.Connection) -> None:
+        connection.execute("PRAGMA foreign_keys = OFF")
         try:
             connection.execute("BEGIN IMMEDIATE")
             current_user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -803,6 +943,12 @@ class SQLiteStorage:
                     ),
                 )
                 connection.execute(f"PRAGMA user_version = {migration.version}")
+            if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise StorageError(
+                    ErrorCode.STATE_MIGRATION_FAILED,
+                    operation="migrate",
+                    message="migration produced foreign key violations",
+                )
             if self.fault_injector is not None:
                 self.fault_injector.trigger("storage:migration-before-commit")
             connection.commit()
@@ -818,6 +964,10 @@ class SQLiteStorage:
                     message="database migration failed",
                 ) from exc
             raise
+        finally:
+            if connection.in_transaction:
+                connection.rollback()
+            connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _resolve_existing_or_nearest_ancestor(path: Path) -> Path:

@@ -19,6 +19,11 @@
 工程基线、公共领域契约、严格配置与 Fixture；不覆盖 Gate、Sandbox、持久化、审批、恢复、
 Completion 或 Agent 端到端运行。
 
+> 兼容修订说明：本报告的规格、计划和实测证据对应 v1.1.0 已验收基线。`spec.md` 随后按
+> D-23 至 D-28 提升到 v1.2.0，新增 Approval v2、审批角色/TTL 和 StopReason；该修订已由
+> WP-02 T01 实现并通过其目标/全量测试，验收证据见
+> [WP-02 acceptance-report.md](../wp-02-approval-lifecycle/acceptance-report.md)。
+
 ## 2. 验收范围
 
 ### 2.1 已验收能力

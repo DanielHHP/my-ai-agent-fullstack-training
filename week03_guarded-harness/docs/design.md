@@ -229,7 +229,7 @@ Gate 返回给模型的结果是有界结构化对象，至少包含：
 | 维度 | 值 |
 | --- | --- |
 | Run 状态 | `NEW`、`RUNNING`、`WAITING_APPROVAL`、`VERIFYING`、`COMPLETED`、`STOPPED`、`FAILED`、`BLOCKED` |
-| StopReason | `FINAL_ANSWER`、`BUDGET_EXHAUSTED`、`APPROVAL_REQUIRED`、`GATE_BLOCKED`、`UNKNOWN_RESULT`、`WORKSPACE_CHANGED`、`INTERNAL_ERROR` 等 |
+| StopReason | `FINAL_ANSWER`、`BUDGET_EXHAUSTED`、`APPROVAL_REQUIRED`、`APPROVAL_REJECTED`、`APPROVAL_EXPIRED`、`GATE_BLOCKED`、`UNKNOWN_RESULT`、`WORKSPACE_CHANGED`、`INTERNAL_ERROR` 等 |
 | 验收状态 | `NOT_EVALUATED`、`ACCEPTED`、`REJECTED`、`UNVERIFIABLE` |
 
 `COMPLETED` 只表示 Agent 循环正常结束且验收流程已执行，不表示验收通过。只有
@@ -372,7 +372,7 @@ CLI 命令语义：
 | `harness run ...` | 默认在 `WAITING_APPROVAL` 安全退出，不执行待审批 handler |
 | `harness approvals list` | 只读列出 PENDING、APPROVED、REJECTED、EXPIRED 等审批单 |
 | `harness approvals approve <id>` | 原子执行 `PENDING -> APPROVED` 并写审计，不执行仓库操作 |
-| `harness approvals reject <id>` | 原子执行 `PENDING -> REJECTED` 并写审计，Run 不能继续该调用 |
+| `harness approvals reject <id>` | 原子执行 `PENDING -> REJECTED`、Run `STOPPED/APPROVAL_REJECTED/NOT_EVALUATED` 并写审计 |
 | `harness resume <run_id>` | 从持久化 Checkpoint 恢复；重新校验配置、工作区、参数摘要和审批 |
 
 可选等待模式通过 `harness run ... --wait-for-approval [timeout]` 启用：
@@ -384,6 +384,14 @@ CLI 命令语义：
 - 进程崩溃后与默认模式完全一致，通过 `resume` 从安全边界恢复。
 
 等待模式是交互便利，不改变审批单的一次性、绑定和失败关闭语义。
+
+审批默认 TTL 为 900 秒，任务可在 `1..86400` 秒内配置。`PENDING/APPROVED` 到期后转为
+`EXPIRED`，并与 Run `STOPPED/APPROVAL_EXPIRED/NOT_EVALUATED` 在同一事务提交；`CLAIMED` 不按
+审批 TTL 自动释放。即使读取审批触发到期物化，也必须由受控编排同时完成审批和 Run 收口。
+
+创建审批、关联 ToolInvocation、Run `RUNNING -> WAITING_APPROVAL` 和审计属于同一事务。resume
+通过 Gate 后，审批 claim、Run `WAITING_APPROVAL -> RUNNING`、预执行意图和审计也属于同一事务；
+随后另一个事务写入 Invocation `STARTED`，再触达 handler。
 
 ### 6.4 恢复 Run
 
@@ -480,6 +488,19 @@ PENDING -> APPROVED -> CLAIMED -> CONSUMED
 - 首期采用本地 CLI 审批命令，同时保留 `ApprovalChannel` 接口，后续可接外部审批系统。
 - 默认行为是审批前安全退出、审批后显式 `resume`；可选 `--wait-for-approval` 在同一进程等待。
 - `approve/reject` 只改变授权状态，不执行 handler；执行只能从 `resume` 进入 Gate。
+- 审批 actor 必须至少命中一个允许审批角色，且不得等于可信运行上下文中的 `requested_by`；
+  本地 actor 不做密码学身份认证，外部通道只有在补充可信身份适配后才能启用。
+- `canonical_args_digest` 对脱敏前的规范化工具名和参数做 domain-separated SHA-256；
+  `binding_digest` 覆盖 Run、工具调用、任务、工作区、配置、角色和有效期。审批表只保存摘要及
+  脱敏摘要。
+- 同一 `(run_id, tool_call_id)` 最多一张审批。相同绑定且仍为 PENDING/APPROVED 的重复创建返回
+  原单；不同绑定冲突；CLAIMED 或终态重放拒绝。
+- claim 与 Run 恢复、预执行意图同事务提交，`execution_intent_id` 使用 `tool_call_id`。
+  claim 后、STARTED 前的崩溃可通过显式 `resume_claim` 重新校验后继续；STARTED 后只能进入
+  `UNKNOWN_RESULT`。
+- 人工拒绝或审批过期原子终止 Run，新增 `APPROVAL_REJECTED/APPROVAL_EXPIRED` StopReason，
+  模型不得换工具继续同一目标。绑定变化使旧审批失效并将 Run 置为 BLOCKED，人工处理完成后
+  启动新 Run。
 
 ### 7.4 重复调用和预算
 
@@ -625,7 +646,7 @@ StateStore 公共业务写操作自动产生固定领域审计；调用方不能
 | 崩溃位置 | 持久化事实 | 恢复动作 |
 | --- | --- | --- |
 | handler 前，未提交执行意图 | 无该次副作用记录，审批未 claim | 重新经过 Gate，可重新决定 |
-| 已提交意图和 claim，尚未写 STARTED | 明确“未开始” | 校验摘要与审批后，最多执行一次 |
+| 已提交意图和 claim，尚未写 STARTED | 明确“未开始” | 新租约下全量校验后 `resume_claim`，最多执行一次 |
 | 已写 STARTED，handler 尚未返回 | 无法排除副作用 | 标记 `UNKNOWN_RESULT`，停止自动恢复 |
 | handler 已返回，结果事务未提交 | 仍是 STARTED | 标记 `UNKNOWN_RESULT`，不得自动重放 |
 | 结果与审计已提交 | `SUCCEEDED/FAILED` | 使用既有结果，不重复调用 |
@@ -702,7 +723,7 @@ prev_hash, event_hash
 - Run 开始、恢复、停止和验收；
 - 配置加载、工作区基线和预算变化；
 - Gate allow/deny，以及具体规则和拒绝阶段；
-- 审批请求、决定、过期、claim 和消费；
+- 审批请求、决定、过期、撤销、claim、claim 恢复和消费；
 - 工具执行开始、成功、失败、超时、截断和结果不确定；
 - Checkpoint 写入和安全边界；
 - Completion 每项检查和最终结论。
@@ -744,6 +765,8 @@ task:
     deliverables: ["artifacts/code-understanding.md"]
   approval:
     required_tools: [write_file]
+    approver_roles: [local_operator]
+    ttl_seconds: 900
     channel: local_cli
 ```
 

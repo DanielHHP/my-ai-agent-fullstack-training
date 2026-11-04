@@ -73,6 +73,11 @@ def test_public_api_importable() -> None:
     expected = {
         "AcceptanceStatus",
         "Approval",
+        "ApprovalChannel",
+        "ApprovalDecision",
+        "ApprovalStore",
+        "ApprovalRequest",
+        "Approver",
         "Clock",
         "CompletionCheck",
         "CompletionItem",
@@ -189,19 +194,26 @@ def test_public_domain_models_contain_required_fields() -> None:
     approval = gh.Approval(
         approval_id=APPROVAL_ID,
         run_id=RUN_ID,
+        tool_call_id="provider-call-1",
+        task_id="understand_login",
         task_kind=gh.TaskKind.CODE_UNDERSTANDING,
         git_root="/tmp/repo",
         workspace_root="/tmp/repo/task",
         workspace_prefix="task",
         tool_name="write_file",
         canonical_args_digest=DIGEST,
+        binding_digest=DIGEST,
         config_fingerprint=DIGEST,
         requested_by="agent",
         allowed_approver_roles=("operator",),
         requested_at=NOW,
         expires_at=EXPIRES,
     )
+    assert approval.schema_version == 2
     assert approval.status == gh.ApprovalStatus.PENDING
+    serialized_approval = gh.canonical_json_dump(approval)
+    restored_approval = gh.Approval.model_validate_json(serialized_approval, strict=True)
+    assert gh.canonical_json_dump(restored_approval) == serialized_approval
 
     evidence = gh.Evidence(
         evidence_id=EVIDENCE_ID,

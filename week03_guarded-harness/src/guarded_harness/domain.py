@@ -50,6 +50,8 @@ class StopReason(str, Enum):
     FINAL_ANSWER = "FINAL_ANSWER"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    APPROVAL_REJECTED = "APPROVAL_REJECTED"
+    APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
     GATE_BLOCKED = "GATE_BLOCKED"
     UNKNOWN_RESULT = "UNKNOWN_RESULT"
     WORKSPACE_CHANGED = "WORKSPACE_CHANGED"
@@ -167,6 +169,13 @@ class ApprovalStatus(str, Enum):
     INVALIDATED = "INVALIDATED"
 
 
+class ApprovalDecision(str, Enum):
+    """A human or channel approval decision."""
+
+    APPROVE = "APPROVE"
+    REJECT = "REJECT"
+
+
 class EvidenceKind(str, Enum):
     """Facts that can support execution or completion checks."""
 
@@ -243,6 +252,21 @@ class ErrorCode(str, Enum):
 
     REDACTION_INVALID_INPUT = "REDACTION_INVALID_INPUT"
     REDACTION_FAILED = "REDACTION_FAILED"
+
+    APPROVAL_NOT_FOUND = "APPROVAL_NOT_FOUND"
+    APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
+    APPROVAL_BINDING_MISMATCH = "APPROVAL_BINDING_MISMATCH"
+    APPROVAL_INVALID = "APPROVAL_INVALID"
+    APPROVAL_EXPIRED = "APPROVAL_EXPIRED"
+    APPROVAL_REJECTED = "APPROVAL_REJECTED"
+    APPROVAL_NOT_EXECUTABLE = "APPROVAL_NOT_EXECUTABLE"
+    APPROVAL_ALREADY_CLAIMED = "APPROVAL_ALREADY_CLAIMED"
+    APPROVAL_REPLAYED = "APPROVAL_REPLAYED"
+    APPROVAL_CONFLICT = "APPROVAL_CONFLICT"
+    APPROVAL_APPROVER_DENIED = "APPROVAL_APPROVER_DENIED"
+    APPROVAL_SELF_APPROVAL_DENIED = "APPROVAL_SELF_APPROVAL_DENIED"
+    APPROVAL_CHANNEL_UNAVAILABLE = "APPROVAL_CHANNEL_UNAVAILABLE"
+    APPROVAL_STATE_INVALID = "APPROVAL_STATE_INVALID"
 
 
 def _validate_utc_datetime(value: datetime) -> datetime:
@@ -579,29 +603,40 @@ class ToolObservation(StrictDomainModel):
 class Approval(StrictDomainModel):
     """Approval binding and decision state for one execution intent."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     approval_id: ApprovalId
     run_id: RunId
+    tool_call_id: ToolCallId
+    task_id: str = Field(min_length=1, max_length=128)
     task_kind: TaskKind
     git_root: str = Field(min_length=1, max_length=4096)
     workspace_root: str = Field(min_length=1, max_length=4096)
     workspace_prefix: WorkspacePrefix
     tool_name: ToolName
     canonical_args_digest: Sha256Digest
+    binding_digest: Sha256Digest
     config_fingerprint: Sha256Digest
     requested_by: str = Field(min_length=1, max_length=256)
     allowed_approver_roles: tuple[str, ...] = Field(min_length=1)
     status: ApprovalStatus = ApprovalStatus.PENDING
+    revision: int = Field(default=0, ge=0)
     requested_at: UtcDatetime
     expires_at: UtcDatetime
     decided_at: UtcDatetime | None = None
-    consumed_at: UtcDatetime | None = None
     decided_by: str | None = Field(default=None, max_length=256)
+    claimed_at: UtcDatetime | None = None
     execution_intent_id: str | None = Field(default=None, max_length=256)
+    consumed_at: UtcDatetime | None = None
+    consumption_code: StableErrorCode | None = None
 
     def model_post_init(self, __context: Any) -> None:
         if self.expires_at <= self.requested_at:
             raise ValueError("expires_at must be after requested_at")
+        role_keys = [role.casefold() for role in self.allowed_approver_roles]
+        if any(not role or role != role.strip() for role in self.allowed_approver_roles):
+            raise ValueError("approval roles must be non-empty trimmed strings")
+        if len(role_keys) != len(set(role_keys)):
+            raise ValueError("approval roles must not contain duplicates")
         requires_decision = {
             ApprovalStatus.APPROVED,
             ApprovalStatus.CLAIMED,
@@ -610,13 +645,89 @@ class Approval(StrictDomainModel):
         }
         if self.status in requires_decision and self.decided_at is None:
             raise ValueError("decided_at is required after an approval decision")
+        if self.status in requires_decision and self.decided_by is None:
+            raise ValueError("decided_by is required after an approval decision")
+        requires_claim = {ApprovalStatus.CLAIMED, ApprovalStatus.CONSUMED}
+        if self.status in requires_claim and (
+            self.claimed_at is None or self.execution_intent_id is None
+        ):
+            raise ValueError("claimed approvals require claimed_at and execution_intent_id")
+        if self.status not in requires_claim and (
+            self.claimed_at is not None or self.execution_intent_id is not None
+        ):
+            raise ValueError("only claimed or consumed approvals carry claim fields")
+        if self.status == ApprovalStatus.PENDING and (
+            self.decided_at is not None or self.decided_by is not None
+        ):
+            raise ValueError("pending approvals cannot carry decision fields")
         if self.status == ApprovalStatus.CONSUMED and self.consumed_at is None:
             raise ValueError("consumed_at is required for CONSUMED approvals")
+        if self.status != ApprovalStatus.CONSUMED and self.consumed_at is not None:
+            raise ValueError("only CONSUMED approvals carry consumed_at")
+        if self.status != ApprovalStatus.CONSUMED and self.consumption_code is not None:
+            raise ValueError("only CONSUMED approvals carry consumption_code")
         if self.decided_at is not None and self.decided_at < self.requested_at:
             raise ValueError("decided_at must not precede requested_at")
+        if self.claimed_at is not None and self.decided_at is not None:
+            if self.claimed_at < self.decided_at:
+                raise ValueError("claimed_at must not precede decided_at")
         if self.consumed_at is not None and self.decided_at is not None:
             if self.consumed_at < self.decided_at:
                 raise ValueError("consumed_at must not precede decided_at")
+        if self.consumed_at is not None and self.claimed_at is not None:
+            if self.consumed_at < self.claimed_at:
+                raise ValueError("consumed_at must not precede claimed_at")
+
+
+class ApprovalRequest(StrictDomainModel):
+    """Trusted input used to request approval for one prepared invocation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: RunId
+    tool_call_id: ToolCallId
+    normalized_args: dict[str, JsonValue]
+    requested_by: str = Field(min_length=1, max_length=256)
+    allowed_approver_roles: tuple[str, ...] = Field(min_length=1)
+    ttl_seconds: int = Field(default=900, ge=1, le=86_400)
+
+    def model_post_init(self, __context: Any) -> None:
+        role_keys = [role.casefold() for role in self.allowed_approver_roles]
+        if any(not role or role != role.strip() for role in self.allowed_approver_roles):
+            raise ValueError("approval roles must be non-empty trimmed strings")
+        if len(role_keys) != len(set(role_keys)):
+            raise ValueError("approval roles must not contain duplicates")
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.requested_by):
+            raise ValueError("requested_by must not contain control characters")
+
+
+class Approver(StrictDomainModel):
+    """Trusted local approver context supplied by a controlled entry point."""
+
+    model_config = ConfigDict(frozen=True)
+
+    actor: str = Field(min_length=1, max_length=256)
+    roles: tuple[str, ...] = Field(min_length=1)
+
+    def model_post_init(self, __context: Any) -> None:
+        role_keys = [role.casefold() for role in self.roles]
+        if any(not role or role != role.strip() for role in self.roles):
+            raise ValueError("approver roles must be non-empty trimmed strings")
+        if len(role_keys) != len(set(role_keys)):
+            raise ValueError("approver roles must not contain duplicates")
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.actor):
+            raise ValueError("approver actor must not contain control characters")
+
+
+class ChannelDecision(StrictDomainModel):
+    """Untrusted decision observation returned by an approval channel."""
+
+    model_config = ConfigDict(frozen=True)
+
+    approval_id: ApprovalId
+    decision: ApprovalDecision
+    actor: str = Field(min_length=1, max_length=256)
+    roles: tuple[str, ...] = Field(default=())
 
 
 class Evidence(StrictDomainModel):
@@ -754,7 +865,7 @@ class RunLease(StrictDomainModel):
 
 
 class RunSnapshot(StrictDomainModel):
-    """Consistent read of all WP-01-owned state for one run."""
+    """Consistent read of persisted harness state for one run."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -763,6 +874,7 @@ class RunSnapshot(StrictDomainModel):
     steps: tuple[Step, ...] = ()
     invocations: tuple[ToolInvocation, ...] = ()
     evidence: tuple[Evidence, ...] = ()
+    approvals: tuple[Approval, ...] = ()
     completion: CompletionCheck | None = None
     read_at: UtcDatetime
 
@@ -842,6 +954,21 @@ class FaultInjector(Protocol):
         """Disable an armed fault point."""
 
 
+@runtime_checkable
+class ApprovalChannel(Protocol):
+    """Transport boundary for human approval decisions."""
+
+    @property
+    def name(self) -> str:
+        """Return the stable channel name."""
+
+    def submit(self, approval: Approval) -> None:
+        """Submit an approval for human handling."""
+
+    def poll(self, approval_id: ApprovalId) -> ChannelDecision | None:
+        """Return an observed decision without granting execution authority."""
+
+
 class SystemClock:
     """Production clock returning timezone-aware UTC values."""
 
@@ -894,6 +1021,7 @@ def _domain_error_code(error: dict[str, Any]) -> ErrorCode:
         "approval_requirement",
         "category",
         "concurrency_class",
+        "decision",
         "kind",
         "output_kind",
         "phase",

@@ -97,11 +97,13 @@ class ApprovalConfig(_ConfigModel):
     """Approval channel and tool requirements."""
 
     required_tools: tuple[str, ...] = ()
+    approver_roles: tuple[str, ...] = ()
+    ttl_seconds: int = Field(default=900, ge=1, le=86_400)
     channel: Literal["local_cli"] = "local_cli"
 
-    @field_validator("required_tools", mode="before")
+    @field_validator("required_tools", "approver_roles", mode="before")
     @classmethod
-    def _coerce_required_tools(cls, value: object) -> object:
+    def _coerce_sequence(cls, value: object) -> object:
         if isinstance(value, list):
             return tuple(value)
         return value
@@ -707,6 +709,20 @@ def _validate_semantics(config: HarnessConfig) -> None:
             "task.approval.required_tools",
             "required approval tools must also be allowed tools",
         )
+    if required and not config.task.approval.approver_roles:
+        raise _issue(
+            ErrorCode.CONFIG_APPROVAL_INVALID,
+            "task.approval.approver_roles",
+            "approver_roles is required when approval-required tools are configured",
+        )
+    if len({role.casefold() for role in config.task.approval.approver_roles}) != len(
+        config.task.approval.approver_roles
+    ):
+        raise _issue(
+            ErrorCode.CONFIG_APPROVAL_INVALID,
+            "task.approval.approver_roles",
+            "approver roles must not contain duplicates",
+        )
     if config.task.approval.channel != "local_cli":
         raise _issue(
             ErrorCode.CONFIG_APPROVAL_INVALID,
@@ -751,6 +767,10 @@ def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessC
         field_path="task.approval.required_tools",
         require_tool_names=True,
     )
+    approver_roles = _normalized_string_tuple(
+        config.task.approval.approver_roles,
+        field_path="task.approval.approver_roles",
+    )
 
     if isinstance(config.task.acceptance, CodeUnderstandingAcceptance):
         deliverables = _normalize_deliverables(
@@ -783,6 +803,8 @@ def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessC
         acceptance=acceptance,
         approval=ApprovalConfig(
             required_tools=required_tools,
+            approver_roles=approver_roles,
+            ttl_seconds=config.task.approval.ttl_seconds,
             channel=config.task.approval.channel,
         ),
     )
