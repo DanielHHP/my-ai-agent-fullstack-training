@@ -145,7 +145,7 @@ src/guarded_harness/
 | `harness.py` | 唯一运行编排器；加载配置、创建 Run、装配组件、启动或恢复 Agent、停止循环、调用 Completion | 依赖下列全部核心模块；CLI 只调用它 |
 | `agent_adapter.py` | 隔离 `smolagents` 公开 API；构造 `ToolCallingAgent`、GovernedTool 和流式运行适配 | 向上服务 Harness，向下只通过 Gate 执行工具 |
 | `gate.py` | 所有工具调用和系统验收动作的唯一执行入口；固定顺序完成门禁、审批、重复调用、预算与执行意图落库 | 依赖 Registry、Policy、Sandbox、StateStore、Audit |
-| `sandbox.py` | 仓库路径规范化、真实路径边界、敏感路径策略、命令 argv 校验、最小环境变量、超时和输出截断 | 由 Gate 在执行前调用，由受控 handler 复用 |
+| `sandbox.py` | 仓库路径规范化、真实路径边界、受控安全 I/O、敏感路径策略、命令 argv 校验、最小环境变量、POSIX 进程组、超时和输出截断 | 由 Gate 在执行前调用，由受控 handler 复用；handler 不直接打开目标仓库文件 |
 | `state_store.py` | 持久化 Run、步骤、工具调用、预算、审批、证据和验收结果；实现合法状态转移 | 与 Audit 共用 SQLite 事务基础设施 |
 | `checkpoint.py` | 在安全边界生成快照、校验恢复前置条件、计算恢复动作、禁止副作用重放 | 读取/写入 StateStore、Audit 和 SQLite |
 | `audit.py` | append-only 事件账本；统一事件封装、顺序、脱敏、摘要和哈希链 | 由 Gate、Harness、Checkpoint、Completion 写入 |
@@ -528,9 +528,11 @@ handler。
 | `workspace_root` | 本次任务允许 Gate 和 Sandbox 访问的子目录，可以等于 `git_root` | 文件权限、命令 `cwd`、交付物和验收范围 |
 
 启动时只要求 `workspace_root` 内没有 tracked 或 untracked 修改。允许同一 Git 仓库的其它
-子目录预先存在未提交变更，避免同一个 monorepo 中多个任务工作区互相阻塞。
+子目录预先存在未提交变更，避免同一个 monorepo 中多个任务工作区互相阻塞。空仓库使用稳定的
+`UNBORN` HEAD 哨兵，不伪造 commit。
 
-为阻止 Agent 或验收命令改动仓库其它目录，Harness 在启动时记录：
+当 `workspace.protect_other_git_changes=true` 时，为阻止 Agent 或验收命令改动仓库其它目录，
+Harness 在启动时记录：
 
 - `git_root` 内、`workspace_root` 外所有 Git-visible 修改、删除和未跟踪路径；
 - 这些路径在基线时的类型、状态摘要和内容哈希；
@@ -544,6 +546,12 @@ Run 停止和执行验收命令后重新采集同一范围：
 
 任一情况都说明本次 Run 越界，验收不得通过。被 `.gitignore` 忽略且不在任务声明保护范围内的
 外部文件不在 Git 基线中，作为剩余风险记录，不能据此宣称具备文件系统级强隔离。
+
+当 `protect_other_git_changes=false` 时，仍记录 `git_root`、HEAD 和 index，但明确跳过工作区
+外脏路径的采集和比较；外围指纹使用“未监控”域分隔哨兵，不得把关闭保护报告成“无变化”。
+`require_clean_workspace=false` 时，工作区初始 entries 的完整状态和摘要作为精确比较基线，之后
+任何偏离都视为变化。symlink 只摘要目标字符串且不跟随到工作区外，submodule/gitlink 使用 Git
+对象 ID，FIFO、设备、socket 等特殊文件在基线阶段失败关闭。
 
 工作区本身等于 `git_root` 时，该规则退化为“整个目标仓库必须干净”。
 
@@ -575,20 +583,32 @@ paths:
 这是首期明确接受的参考项目语义。目录外既有测试仍不可写，目录内写入仍须经过 Gate、审批、
 执行意图审计和最终 diff/测试覆盖验收。
 
+路径判定不是最终 I/O 授权。真实文件访问必须通过 Sandbox 提供的整文件安全 I/O：读取和写入
+上限均为 10 MiB，读取超限拒绝；写入使用同目录临时文件、`fsync` 和原子替换。覆盖写入支持预期
+内容摘要，创建写入默认要求目标不存在；只有可信工具规格可以开启逐级受检的父目录创建。既有
+文件权限保持不变，新文件使用受控 umask 结果。handler 不得绕过 Sandbox 自行打开目标仓库文件。
+
 ### 8.3 命令边界
 
-- 命令只接受任务配置或固定 allowlist 中的 argv 数组；
+- 模型只能提交可信 `command_id`；可执行文件、完整 argv、超时和输出限制来自任务配置或固定
+  allowlist，模型不得提交 argv、env、`cwd` 或限制字段；
 - 使用 `subprocess.Popen(..., shell=False)` 或等价 API；
 - `cwd` 固定为规范化 `workspace_root`，不接受模型传入；
-- 环境变量使用 allowlist 和显式安全变量构造，剔除 Key、Token、Secret、Password、
-  Credential 等变量；
-- 子进程进入独立进程组，超时先终止进程组，宽限期后强制终止；
-- stdout/stderr 分开采集并设置字节上限，进入模型前再次做字符上限裁剪；
+- 环境变量从空白映射构造，只注入受控 PATH、locale、`TZ=UTC`、隔离 HOME/TMPDIR、Python 和
+  Git 安全变量；不继承宿主代理、凭据或用户配置，任务配置不得追加 env；
+- Linux/macOS 子进程进入独立 POSIX 进程组，超时先终止进程组，宽限期后强制终止；Windows
+  等不支持可靠进程组的平台在构造阶段失败关闭；
+- stdout/stderr 分开采集，各以 1 MiB 为上限；保留头部和尾部并显式标记截断，进入模型前再次
+  做字符上限裁剪；
 - 返回结构必须包含退出码、信号、是否超时、是否截断、耗时和已采集输出。
 
 超时只表示“本地停止等待”。非幂等命令超时或无法确认副作用时写入
 `UNKNOWN_RESULT`，禁止自动重试和验收通过。只有只读或明确幂等、且上一次确定无副作用的操作
 才允许按重试策略执行。
+
+WP-03 不提供 OS 级文件系统或网络隔离。测试命令以当前用户权限运行目标仓库代码，因此只能用于
+可信仓库。输出截断不改变命令真实退出码，但依赖完整报告的证据无效，Completion 不得据此判为
+通过。
 
 ## 9. 状态、审计与 Checkpoint
 

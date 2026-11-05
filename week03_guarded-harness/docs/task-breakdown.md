@@ -510,6 +510,10 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 ### WP-03 Sandbox 边界
 
+详细规格与计划见 [spec.md](work-packages/wp-03-sandbox-boundary/spec.md) 和
+[plan.md](work-packages/wp-03-sandbox-boundary/plan.md)；实测证据见
+[acceptance-report.md](work-packages/wp-03-sandbox-boundary/acceptance-report.md)。
+
 **目标**：形成可复用的路径、Git 和进程安全边界，拒绝行为在副作用前发生。
 
 **依赖**：WP-00。
@@ -517,13 +521,14 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 **主要范围**：
 
 - `sandbox.py`、`tests/test_sandbox.py`；
-- 路径判定、Git 基线、命令规格、环境过滤、输出和进程结果模型。
+- 路径判定、10 MiB 有界安全 I/O、Git 基线、命令规格、环境过滤、输出和 POSIX 进程结果模型。
 
 **交付内容**：
 
 - 解析 `git_root`、`workspace_root` 和 `workspace_prefix`，处理尚不存在路径和符号链接；
 - 使用 `Path.relative_to()` 等路径关系判断，不使用字符串前缀；
 - 平台级敏感读规则，任务级 `deny_read`、`deny_write` 和窄范围 `allow_write`；
+- 由 Sandbox 提供整文件有界读取和原子写入，具体工具 handler 不自行打开目标仓库文件；
 - 记录工作区 status/diff、仓库外围 Git-visible 脏路径哈希、HEAD 和 index；
 - 仅接受可信 argv，固定 `cwd`，使用 `shell=False` 和最小环境变量；
 - 独立进程组、超时终止、宽限后强杀、stdout/stderr 上限和截断标记；
@@ -532,8 +537,10 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 **退出条件**：
 
 - `..`、绝对路径越界、符号链接逃逸、大小写/分隔符绕过和敏感读写测试通过；
+- 超限读取、写摘要冲突和原子写故障均失败关闭，不返回部分内容或留下部分目标；
 - 未授权命令、自定义解释器、shell 包装、重定向和环境注入被拒绝；
-- 超时后进程组确实终止，输出被有界截断；
+- Linux/macOS 超时后 POSIX 进程组确实终止，其他平台在命令能力构造时失败关闭；
+- stdout/stderr 各以 1 MiB 为上限，截断被显式标记且不能作为完整验收报告；
 - 拒绝用例验证真实 handler、I/O 或进程未执行；
 - 工作区外已有脏文件变化、HEAD/index 或工作区身份变化可被检测。
 
@@ -1185,6 +1192,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | D-20 状态变更强制审计 | WP-01、WP-04、WP-07、WP-08 |
 | D-21 状态文件权限 | WP-01、WP-03、WP-11 |
 | D-22 Evidence 单一生产者 | WP-01、WP-04、WP-05、WP-08、WP-09 |
+| D-29 至 D-36 Sandbox 边界 | WP-03、WP-04、WP-05、WP-06、WP-07、WP-09、WP-12 |
 
 ## 14. 全局完成定义
 

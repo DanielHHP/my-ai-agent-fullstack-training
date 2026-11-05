@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-28 |
+| 决策范围 | 已确认的 D-01 至 D-36 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -44,3 +44,11 @@
 | D-26 | 审批失败与结果终态 | `PENDING/APPROVED` 到期转 `EXPIRED`，`CLAIMED` 不按审批 TTL 自动过期。人工拒绝或审批过期必须与 Run `STOPPED`、新 `StopReason=APPROVAL_REJECTED/APPROVAL_EXPIRED`、`NOT_EVALUATED` 及审计原子提交。确定 `SUCCEEDED/FAILED/TIMED_OUT` 消费审批；`UNKNOWN_RESULT` 保持 `CLAIMED` 且不可重放。绑定变化使旧审批 `INVALIDATED`，Run `BLOCKED`，人工处理完成后启动新 Run。 |
 | D-27 | 审批幂等与恢复 | `(run_id, tool_call_id)` 最多一张审批；同绑定且 PENDING/APPROVED 的重复创建返回原单，绑定不同返回冲突，CLAIMED/终态重放拒绝。claim 后、STARTED 前崩溃时，新进程在重新取得租约并全量复核后通过显式 `resume_claim` 继续原 execution intent，并追加恢复审计。 |
 | D-28 | 审批参数绑定摘要 | Gate 对脱敏前的规范化参数计算 domain-separated SHA-256，工具名和参数进入 `canonical_args_digest`，完整上下文进入 `binding_digest`；审批表只保存摘要与脱敏摘要，不保存未脱敏参数。低熵秘密摘要的离线猜测风险作为 P0 限制记录。 |
+| D-29 | WP-03 威胁模型 | 目标仓库和测试代码按“可信但可能出错”处理。WP-03 不承诺容器、虚拟机或 OS 级文件系统/网络隔离，只承诺进程内路径与命令治理、固定 `cwd`、最小环境、POSIX 进程组终止和 Git-visible 外围变化检测；可访问工作区外文件或网络的风险必须在规格、验收报告和运维文档中明确声明。 |
+| D-30 | Sandbox 安全文件 I/O | 文件最终 I/O 必须经过 `Sandbox.read_file` 和 `Sandbox.write_file_atomic`，handler 不得自行用未受控路径读写目标仓库。整文件读取和写入上限均为 10 MiB；读取超限拒绝而不是静默截断。覆盖写入支持预期内容摘要，创建写入默认要求目标不存在；父目录创建只能由可信工具规格开启且每一级都重新经过写策略。原子写使用同目录临时文件、`fsync` 和替换，保留既有文件权限，新文件使用受控 umask 结果。 |
+| D-31 | Sandbox 平台支持矩阵 | P0 的进程执行只支持能够可靠创建并终止独立 POSIX 进程组的 Linux 和 macOS。Windows 或其他不满足该条件的平台在 Sandbox 构造时以 `SANDBOX_UNSUPPORTED_PLATFORM` 失败关闭，不降级为仅终止父进程。路径和 Git 能力若可安全实现，可单独保留，但不得让平台误以为 S4 已受支持。 |
+| D-32 | 模型命令输入 | 模型只能向受控工具提交可信 `command_id`，不得提交 argv、可执行文件路径、shell 片段、环境变量、`cwd`、超时、输出上限或重试策略。可执行文件、完整 argv 和限制全部来自代码固定 allowlist 或经过严格校验的任务配置；未来若需要测试节点选择，必须以受控参数槽单独评审，不改变本决策。 |
+| D-33 | 命令输出与截断语义 | 子进程 stdout 和 stderr 分别以 1,048,576 字节为上限，保留头部和尾部并插入稳定的截断标记。截断不篡改进程真实退出码，但依赖完整输出的测试报告或其他证据无效，Completion 不得基于截断报告判定通过。输出在进入模型前还必须再次经过 WP-05/WP-06 的字符上限和脱敏。 |
+| D-34 | 子进程最小环境 | 子进程环境从空白映射构造，只注入受控 `PATH`、`LANG=C.UTF-8`、`LC_ALL=C.UTF-8`、`TZ=UTC`、隔离的 `HOME`/`TMPDIR`、`PYTHONDONTWRITEBYTECODE=1`、`PYTHONNOUSERSITE=1`、`PYTHONHASHSEED=0` 以及 Git 非交互/禁用系统与全局配置变量。P0 不允许任务配置追加 env，也不从父进程继承代理、凭据、Python、pytest 或云配置变量。 |
+| D-35 | 外围 Git 保护开关 | `workspace.protect_other_git_changes=true` 时采集并强制比较 `git_root` 内、`workspace_root` 外的 Git-visible 脏路径、内容摘要和仓库身份。为 `false` 时仍记录 Git 身份、HEAD 和 index，但明确跳过外围脏路径采集与比较，`WorkspaceIdentity.external_dirty_baseline_fingerprint` 使用“未监控”域分隔哨兵；Sandbox 不得把关闭状态报告成受保护或无变化。 |
+| D-36 | Git 基线边界状态 | 支持无 HEAD 的空仓库，使用稳定 `UNBORN` 哨兵而不伪造 commit。`require_clean_workspace=false` 时记录工作区初始 entries 的完整路径、状态、类型和内容摘要，后续任何偏离该基线的情况均视为变化。symlink 只摘要目标字符串且不跟随到工作区外；submodule/gitlink 使用 Git 对象 ID；FIFO、设备、socket 等特殊文件不支持并在基线阶段失败关闭。 |
