@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-52 |
+| 决策范围 | 已确认的 D-01 至 D-58 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -68,3 +68,9 @@
 | D-50 | WP-06 写入 no-op 语义 | `apply_patch` 拒绝所有 no-op，包括每段 `oldText == newText` 及按顺序应用后内容不变。`write_file` 在目标内容与提交内容完全相同时返回成功且 `changed=false`，不进行第二次物理替换，不改变文件内容或 mtime。 |
 | D-51 | WP-06 副作用工具审批策略 | `write_file` 与 `apply_patch` 的 `ToolSpec.approval_requirement` 固定为 `REQUIRED`。`run_test` 默认不固定必审，但任务 `approval.required_tools` 命中时必须提升为必审；审批仍绑定规范化参数、工作区、Run、任务和配置指纹。 |
 | D-52 | WP-06 测试命令效果分类 | `run_test` 固定使用 `CommandEffectClass.NON_IDEMPOTENT`，不假设测试命令不会写缓存、报告或其他文件。超时、取消、进程组终止失败或采集失败均产生 `UNKNOWN_RESULT`，不得自动重试、消费为成功或生成完整命令 Evidence。 |
+| D-53 | WP-07 PREPARED 恢复入口 | Gate 新增可信公共入口 `reenter_prepared`。恢复只使用持久化 Invocation 的工具名、规范化参数和调用 ID，重新执行现有可见性、schema、语义、权限、风险、审批、重复与预算检查；`CLAIMED + PREPARED` 先 `resume_claim`，随后写 STARTED 并最多执行 handler 一次。不得直接执行 handler、复制弱化门禁或 monkey patch。 |
+| D-54 | WP-07 未知/阻塞恢复边界 | P0 不允许同一 Run 从 `UNKNOWN_RESULT` 或 `BLOCKED` 自动恢复，也不提供把 UNKNOWN 改写为成功、释放 CLAIMED 审批或自动重放原执行的 API。人工入口只查看/核对事实；需要继续工作时启动新 Run。 |
+| D-55 | WP-07 W6 工作区差异 | “结果已提交但 Checkpoint 未提交”的恢复先验证配置、Git/工作区身份、HEAD/index、外围保护基线和证据版本。W6 只有不存在 STARTED/UNKNOWN/冲突执行，且工作区差异能归因于自上一 Checkpoint 以来已提交确定结果或其 Evidence 时，才允许补建 Checkpoint；无法归因或外围变化时 `BLOCKED/WORKSPACE_CHANGED`。 |
+| D-56 | WP-07 Evidence 失效 | 复用 `Evidence.is_valid`，新增受租约保护的单向 `true -> false` 状态操作并追加 `EVIDENCE_INVALIDATED` 审计。恢复上下文和后续 Completion 只能消费仍有效的 Evidence；不得把失效证据恢复为有效或删除原事实。 |
+| D-57 | WP-07 Checkpoint 上限与保留 | Checkpoint canonical snapshot 上限 1 MiB，continuation context 与渲染文本上限均为 64 KiB。P0 保留全部 Checkpoint 和 recovery record，不自动清理；超限失败关闭，不静默截断关键安全事实。 |
+| D-58 | WP-07 待审批 Checkpoint 边界 | 追加 `CheckpointBoundaryKind.APPROVAL_REQUESTED`，用于审批已创建且处于 PENDING、Run 已安全进入 `WAITING_APPROVAL` 的 Checkpoint；`APPROVAL_SETTLED` 继续表示批准、拒绝、过期、撤销、claim 恢复或消费等已落定状态。两者都必须在快照中保存完整审批与待执行调用。 |

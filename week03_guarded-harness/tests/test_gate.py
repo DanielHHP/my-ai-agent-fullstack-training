@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import guarded_harness as gh
 from guarded_harness import (
     AcceptanceStatus,
     ApprovalConfig,
@@ -335,6 +336,9 @@ def _gate_fixture(
         )
 
     def result_fault_handler(_args, _context):
+        deadline_state["result_fault_handler_calls"] = (
+            deadline_state.get("result_fault_handler_calls", 0) + 1
+        )
         if fault_injector is not None:
             fault_injector.arm("audit:before-insert")
         return HandlerResult(
@@ -1292,3 +1296,170 @@ def test_revision_reads_are_public_and_lease_bound(tmp_path: Path) -> None:
             assert getattr(exc, "code", None) == ErrorCode.STATE_LEASE_INVALID
         else:
             raise AssertionError("wrong lease token was accepted")
+
+
+def test_reenter_prepared_revalidates_and_executes_once(
+    tmp_path: Path,
+    fault_injector,
+) -> None:
+    fixture = _gate_fixture(tmp_path, fault_injector=fault_injector)
+    fault_injector.arm("gate:before-start")
+    first = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-prepared-read",
+            tool="read_file",
+            args={"path": "src/app.py"},
+        )
+    )
+    assert first.status == ObservationStatus.DENIED
+    assert fixture.read_handler_calls == []
+    fault_injector.disable("gate:before-start")
+    with fixture.storage.transaction(actor="agent") as unit:
+        invocation = unit.state.get_run_snapshot(RUN_ID).invocations[0]
+        usage_before = unit.state.get_run(RUN_ID).usage.tool_calls
+    assert invocation.status == InvocationStatus.PREPARED
+
+    recovered = fixture.gate.reenter_prepared(
+        RUN_ID,
+        invocation.tool_call_id,
+        fixture.context,
+        fixture.lease_token,
+    )
+
+    assert recovered.status == ObservationStatus.ALLOWED
+    assert len(fixture.read_handler_calls) == 1
+    with fixture.storage.transaction(actor="agent") as unit:
+        result = unit.state.get_run_snapshot(RUN_ID).invocations[0]
+        usage_after = unit.state.get_run(RUN_ID).usage.tool_calls
+    assert result.status == InvocationStatus.SUCCEEDED
+    assert usage_after == usage_before
+
+
+def test_reenter_claimed_prepared_resumes_without_double_budget(
+    tmp_path: Path,
+    fault_injector,
+) -> None:
+    fixture = _gate_fixture(tmp_path, fault_injector=fault_injector)
+    waiting = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-claimed-write",
+            tool="write_file",
+            args={"path": "artifacts/out.md", "content": "payload"},
+        )
+    )
+    assert waiting.status == ObservationStatus.WAITING_APPROVAL
+    _approve(fixture, waiting.approval_id)
+    fault_injector.arm("gate:before-start")
+    interrupted = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-claimed-write",
+            tool="write_file",
+            args={"path": "artifacts/out.md", "content": "payload"},
+        )
+    )
+    assert interrupted.status == ObservationStatus.DENIED
+    assert fixture.write_handler_calls == []
+    fault_injector.disable("gate:before-start")
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        invocation = snapshot.invocations[0]
+        approval = next(
+            item for item in snapshot.approvals if item.approval_id == waiting.approval_id
+        )
+        usage_before = snapshot.run.usage.tool_calls
+    assert invocation.status == InvocationStatus.PREPARED
+    assert approval.status == ApprovalStatus.CLAIMED
+
+    recovered = fixture.gate.reenter_prepared(
+        RUN_ID,
+        invocation.tool_call_id,
+        fixture.context,
+        fixture.lease_token,
+    )
+
+    assert recovered.status == ObservationStatus.ALLOWED
+    assert len(fixture.write_handler_calls) == 1
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        usage_after = snapshot.run.usage.tool_calls
+        approval = next(
+            item for item in snapshot.approvals if item.approval_id == waiting.approval_id
+        )
+        events = unit.audit.list_approval_events(RUN_ID, waiting.approval_id)
+    assert snapshot.invocations[0].status == InvocationStatus.SUCCEEDED
+    assert approval.status == ApprovalStatus.CONSUMED
+    assert usage_after == usage_before
+    assert any(event.event_type == gh.AuditEventType.APPROVAL_CLAIM_RECOVERED for event in events)
+
+
+def test_reenter_approved_prepared_claims_and_records_budget_once(
+    tmp_path: Path,
+) -> None:
+    fixture = _gate_fixture(tmp_path)
+    waiting = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-approved-write",
+            tool="write_file",
+            args={"path": "artifacts/out.md", "content": "approved payload"},
+        )
+    )
+    _approve(fixture, waiting.approval_id)
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        invocation = snapshot.invocations[0]
+        usage_before = snapshot.run.usage.tool_calls
+    assert invocation.status == InvocationStatus.PREPARED
+    assert usage_before == 0
+
+    recovered = fixture.gate.reenter_prepared(
+        RUN_ID,
+        invocation.tool_call_id,
+        fixture.context,
+        fixture.lease_token,
+    )
+
+    assert recovered.status == ObservationStatus.ALLOWED
+    assert len(fixture.write_handler_calls) == 1
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        approval = next(
+            item for item in snapshot.approvals if item.approval_id == waiting.approval_id
+        )
+    assert snapshot.invocations[0].status == InvocationStatus.SUCCEEDED
+    assert snapshot.run.usage.tool_calls == 1
+    assert approval.status == ApprovalStatus.CONSUMED
+
+
+def test_reenter_started_is_rejected_without_replay(
+    tmp_path: Path,
+    fault_injector,
+) -> None:
+    fixture = _gate_fixture(tmp_path, fault_injector=fault_injector)
+    first = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-started-read",
+            tool="result_fault_tool",
+            args={},
+        )
+    )
+    assert first.status == ObservationStatus.DENIED
+    assert fixture.deadline_state["result_fault_handler_calls"] == 1
+    fault_injector.disable("audit:before-insert")
+    with fixture.storage.transaction(actor="agent") as unit:
+        invocation = unit.state.get_run_snapshot(RUN_ID).invocations[0]
+    assert invocation.status == InvocationStatus.STARTED
+
+    recovered = fixture.gate.reenter_prepared(
+        RUN_ID,
+        invocation.tool_call_id,
+        fixture.context,
+        fixture.lease_token,
+    )
+
+    assert recovered.status == ObservationStatus.DENIED
+    assert fixture.deadline_state["result_fault_handler_calls"] == 1

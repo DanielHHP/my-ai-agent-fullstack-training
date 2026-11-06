@@ -39,6 +39,7 @@ from .domain import (
     RunSnapshot,
     RunStatus,
     ToolCallRequest,
+    ToolExecutionContext,
     ToolInvocation,
     ToolObservation,
     ToolOutputKind,
@@ -121,6 +122,304 @@ class Gate:
                     "GATE_INTERNAL_V1",
                 )
                 return self._deny_observation(request, denial)
+
+    def reenter_prepared(
+        self,
+        run_id: str,
+        tool_call_id: str,
+        context: ToolExecutionContext,
+        lease_token: str,
+    ) -> ToolObservation:
+        """Revalidate and execute one persisted PREPARED invocation exactly once."""
+
+        if not isinstance(context, ToolExecutionContext):
+            raise TypeError("context must be a ToolExecutionContext")
+        if context.run_id != run_id:
+            raise ValueError("context run_id must match run_id")
+        with self._run_lock(run_id):
+            try:
+                request = self._load_prepared_request(
+                    run_id,
+                    tool_call_id,
+                    context,
+                    lease_token,
+                )
+            except _GateDenial as denial:
+                request = ToolCallRequest(
+                    tool_call_id=tool_call_id,
+                    tool_name="recovery_unknown",
+                    args={},
+                    context=context,
+                    lease_token=lease_token,
+                )
+                return self._deny_observation(request, denial)
+            try:
+                return self._reenter_prepared_locked(request)
+            except _GateDenial as denial:
+                return self._deny_observation(request, denial)
+            except Exception as exc:
+                denial = _GateDenial(
+                    ErrorCode.GATE_INTERNAL_ERROR,
+                    GatePhase.EXECUTION,
+                    _safe_exception_message(exc),
+                    "GATE_RECOVERY_V1",
+                )
+                return self._deny_observation(request, denial)
+
+    def _load_prepared_request(
+        self,
+        run_id: str,
+        tool_call_id: str,
+        context: ToolExecutionContext,
+        lease_token: str,
+    ) -> ToolCallRequest:
+        try:
+            with self._storage.transaction(actor=context.actor) as unit:
+                unit.state.verify_lease(run_id, lease_token)
+                snapshot = unit.state.get_run_snapshot(run_id)
+        except Exception as exc:
+            raise _GateDenial(
+                ErrorCode.GATE_INTERNAL_ERROR,
+                GatePhase.VISIBILITY,
+                _safe_exception_message(exc),
+                "GATE_RECOVERY_STATE_V1",
+            ) from exc
+        invocation = _invocation_by_call_id(snapshot, tool_call_id)
+        if invocation is None:
+            raise _GateDenial(
+                ErrorCode.GATE_TOOL_NOT_FOUND,
+                GatePhase.VISIBILITY,
+                "recovery invocation does not exist",
+                "GATE_RECOVERY_V1",
+            )
+        if invocation.status != InvocationStatus.PREPARED:
+            raise _GateDenial(
+                ErrorCode.GATE_REPEATED_CALL,
+                GatePhase.EXECUTION,
+                "recovery invocation is not PREPARED",
+                "GATE_RECOVERY_V1",
+            )
+        return ToolCallRequest(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            args=invocation.normalized_args,
+            context=context,
+            lease_token=lease_token,
+        )
+
+    def _reenter_prepared_locked(self, request: ToolCallRequest) -> ToolObservation:
+        definition = self._lookup_definition(request)
+        snapshot = self._read_snapshot(request)
+        run = snapshot.run
+        self._validate_context(request, run)
+        if run.status not in {RunStatus.RUNNING, RunStatus.WAITING_APPROVAL}:
+            raise _GateDenial(
+                ErrorCode.GATE_INTERNAL_ERROR,
+                GatePhase.VISIBILITY,
+                "run state does not permit recovered execution",
+                "GATE_RECOVERY_STATE_V1",
+            )
+        self._check_visibility(request, snapshot, definition)
+        normalized = self._validate_and_normalize(request, definition)
+        self._check_permission_and_risk(request, definition)
+        existing = _invocation_by_call_id(snapshot, request.tool_call_id)
+        if existing is None or existing.status != InvocationStatus.PREPARED:
+            raise _GateDenial(
+                ErrorCode.GATE_REPEATED_CALL,
+                GatePhase.EXECUTION,
+                "recovery requires a PREPARED invocation",
+                "GATE_RECOVERY_V1",
+            )
+        if (
+            existing.tool_name != request.tool_name
+            or existing.args_digest != normalized.args_digest
+            or existing.tool_name != definition.spec.name
+        ):
+            raise _GateDenial(
+                ErrorCode.GATE_TOOL_CALL_ID_CONFLICT,
+                GatePhase.SEMANTIC,
+                "persisted recovery arguments no longer match the invocation",
+                "GATE_RECOVERY_BINDING_V1",
+            )
+        self._check_repeat_and_replay(request, snapshot, normalized)
+        self._check_recovery_budget(snapshot)
+        approval = _approval_for_call(snapshot, request.tool_call_id)
+        if approval is None:
+            if run.status != RunStatus.RUNNING:
+                raise _GateDenial(
+                    ErrorCode.GATE_INTERNAL_ERROR,
+                    GatePhase.VISIBILITY,
+                    "run must be RUNNING for an unapproved recovered invocation",
+                    "GATE_RECOVERY_STATE_V1",
+                )
+            self._record_recovery_allow(request, normalized, None)
+        elif approval.status == ApprovalStatus.PENDING:
+            if run.status != RunStatus.WAITING_APPROVAL:
+                raise _GateDenial(
+                    ErrorCode.APPROVAL_STATE_INVALID,
+                    GatePhase.APPROVAL,
+                    "run is not waiting for the persisted approval",
+                    "GATE_APPROVAL_V1",
+                    approval_id=approval.approval_id,
+                )
+            return _observation(
+                request,
+                ObservationStatus.WAITING_APPROVAL,
+                ErrorCode.APPROVAL_REQUIRED,
+                GatePhase.APPROVAL,
+                "approval is required before recovered execution",
+                approval_id=approval.approval_id,
+            )
+        elif approval.status == ApprovalStatus.APPROVED:
+            if run.status != RunStatus.WAITING_APPROVAL:
+                raise _GateDenial(
+                    ErrorCode.APPROVAL_STATE_INVALID,
+                    GatePhase.APPROVAL,
+                    "run is not waiting for the approved invocation",
+                    "GATE_APPROVAL_V1",
+                    approval_id=approval.approval_id,
+                )
+            self._resume_or_claim_recovery(request, normalized, approval)
+        elif approval.status == ApprovalStatus.CLAIMED:
+            if run.status != RunStatus.RUNNING:
+                raise _GateDenial(
+                    ErrorCode.APPROVAL_STATE_INVALID,
+                    GatePhase.APPROVAL,
+                    "claimed recovery requires a RUNNING run",
+                    "GATE_APPROVAL_V1",
+                    approval_id=approval.approval_id,
+                )
+            self._resume_or_claim_recovery(request, normalized, approval)
+        else:
+            raise _GateDenial(
+                ErrorCode.APPROVAL_NOT_EXECUTABLE,
+                GatePhase.APPROVAL,
+                "persisted approval is not executable",
+                "GATE_APPROVAL_V1",
+                approval_id=approval.approval_id,
+            )
+        self._mark_started(request)
+        return self._execute(request, normalized, approval)
+
+    def _resume_or_claim_recovery(
+        self,
+        request: ToolCallRequest,
+        prepared: _PreparedCall,
+        approval: Approval,
+    ) -> None:
+        try:
+            with self._storage.transaction(actor=request.context.actor) as unit:
+                unit.state.verify_lease(request.context.run_id, request.lease_token)
+                current = ApprovalStore(unit, id_factory=self._ids).load(
+                    approval.approval_id,
+                    lease_token=request.lease_token,
+                )
+                if current.status == ApprovalStatus.CLAIMED:
+                    ApprovalStore(unit, id_factory=self._ids).resume_claim(
+                        current.approval_id,
+                        expected_revision=current.revision,
+                        execution_intent_id=request.tool_call_id,
+                        lease_token=request.lease_token,
+                    )
+                    rule_id = "GATE_RECOVERY_CLAIM_V1"
+                elif current.status == ApprovalStatus.APPROVED:
+                    ApprovalStore(unit, id_factory=self._ids).claim(
+                        current.approval_id,
+                        expected_revision=current.revision,
+                        execution_intent_id=request.tool_call_id,
+                        lease_token=request.lease_token,
+                    )
+                    unit.state.transition_run(
+                        request.context.run_id,
+                        expected_status=RunStatus.WAITING_APPROVAL,
+                        expected_revision=unit.state.get_run_revision(request.context.run_id),
+                        target=RunStatus.RUNNING,
+                        stop_reason=None,
+                        ended_at=None,
+                        acceptance_status=None,
+                        lease_token=request.lease_token,
+                    )
+                    self._record_tool_budget(unit.state, request)
+                    rule_id = "GATE_RECOVERY_CLAIM_V1"
+                else:
+                    raise _GateDenial(
+                        ErrorCode.APPROVAL_NOT_EXECUTABLE,
+                        GatePhase.APPROVAL,
+                        "approval is not resumable",
+                        "GATE_APPROVAL_V1",
+                        approval_id=approval.approval_id,
+                    )
+                self._append_decision(
+                    unit,
+                    request,
+                    phase=GatePhase.EXECUTION,
+                    status=AuditStatus.ALLOWED,
+                    decision=AuditDecision.ALLOW,
+                    code=ErrorCode.GATE_ALLOWED,
+                    rule_id=rule_id,
+                    approval_id=approval.approval_id,
+                    args_digest=prepared.args_digest,
+                )
+        except _GateDenial:
+            raise
+        except Exception as exc:
+            raise _GateDenial(
+                ErrorCode.GATE_INTENT_WRITE_FAILED,
+                GatePhase.APPROVAL,
+                _safe_exception_message(exc),
+                "GATE_RECOVERY_APPROVAL_V1",
+                approval_id=approval.approval_id,
+            ) from exc
+
+    def _record_recovery_allow(
+        self,
+        request: ToolCallRequest,
+        prepared: _PreparedCall,
+        approval: Approval | None,
+    ) -> None:
+        try:
+            with self._storage.transaction(actor=request.context.actor) as unit:
+                unit.state.verify_lease(request.context.run_id, request.lease_token)
+                self._append_decision(
+                    unit,
+                    request,
+                    phase=GatePhase.EXECUTION,
+                    status=AuditStatus.ALLOWED,
+                    decision=AuditDecision.ALLOW,
+                    code=ErrorCode.GATE_ALLOWED,
+                    rule_id="GATE_RECOVERY_V1",
+                    args_digest=prepared.args_digest,
+                    approval_id=approval.approval_id if approval else None,
+                )
+        except Exception as exc:
+            raise _GateDenial(
+                ErrorCode.GATE_INTENT_WRITE_FAILED,
+                GatePhase.EXECUTION,
+                _safe_exception_message(exc),
+                "GATE_RECOVERY_V1",
+            ) from exc
+
+    def _check_recovery_budget(self, snapshot: RunSnapshot) -> None:
+        run = snapshot.run
+        if (
+            run.usage.steps >= run.budget.max_steps
+            or run.usage.token_cost >= run.budget.max_token_cost
+        ):
+            raise _GateDenial(
+                ErrorCode.GATE_BUDGET_EXHAUSTED,
+                GatePhase.BUDGET,
+                "run budget no longer permits recovered execution",
+                "GATE_RECOVERY_BUDGET_V1",
+            )
+        if run.started_at is not None:
+            elapsed = int((self._clock.now() - run.started_at).total_seconds())
+            if elapsed >= run.budget.max_wall_time_seconds:
+                raise _GateDenial(
+                    ErrorCode.GATE_BUDGET_EXHAUSTED,
+                    GatePhase.BUDGET,
+                    "wall-time budget no longer permits recovered execution",
+                    "GATE_RECOVERY_BUDGET_V1",
+                )
 
     def _invoke_locked(self, request: ToolCallRequest) -> ToolObservation:
         definition = self._lookup_definition(request)

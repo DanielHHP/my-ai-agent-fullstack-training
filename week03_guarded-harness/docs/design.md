@@ -654,6 +654,7 @@ StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基�
 | `budget_ledger` | 按来源和预算维度幂等记录增量 |
 | `approvals` | 审批对象、摘要、有效期、决定和消费状态 |
 | `checkpoints` | 快照、快照哈希、安全边界和 schema 版本 |
+| `recovery_records` | 恢复动作、原因、关联调用/审批和稳定幂等键 |
 | `completion_results` | 验收项和证据关联 |
 | `audit_events` | append-only 事件账本 |
 | `run_leases` | 跨进程单写者租约和心跳 |
@@ -698,6 +699,18 @@ StateStore 公共业务写操作自动产生固定领域审计；调用方不能
 Checkpoint 至少保存 Run、当前步骤、计划、工具调用结果、预算、审批状态、停止原因、最后审计序号、
 配置指纹、工作区证据和 schema 版本。其职责是描述“从哪个安全点继续”，不替代业务状态。
 
+安全边界区分 `APPROVAL_REQUESTED` 与 `APPROVAL_SETTLED`：前者用于审批已创建、Run 已进入
+`WAITING_APPROVAL` 的待处理安全点，必须包含完整审批和 PREPARED 调用；后者用于批准、拒绝、
+过期、撤销、claim 恢复或消费已落定的边界。PENDING 审批不得使用 `APPROVAL_SETTLED`。
+
+WP-07 的确定规则：
+
+- 配置、Git/工作区身份、HEAD/index 和外围保护基线先于结果重建校验；
+- W6 只允许补建可归因于自上一 Checkpoint 以来已提交确定结果或其 Evidence 的工作区差异；
+- 无法归因的变化、未决 STARTED 或冲突执行均进入 `BLOCKED/WORKSPACE_CHANGED` 或人工复核；
+- Checkpoint snapshot 上限 1 MiB，continuation 上限 64 KiB；P0 不自动清理历史 Checkpoint 和
+  recovery record。
+
 ### 9.3 恢复校验
 
 恢复前必须验证：
@@ -718,6 +731,13 @@ Run 创建与租约获取原子完成。租约默认 TTL 30 秒、允许 10 至 
 
 恢复不依赖旧模型对象、线程上下文或仅存于内存的重复调用缓存。
 
+PREPARED 调用的恢复只能通过可信 `Gate.reenter_prepared` 重新进入 Gate。该入口从持久化
+ToolInvocation 读取工具名和规范化参数，重新执行全部门禁；`CLAIMED + PREPARED` 必须先
+`resume_claim`，再写 STARTED 并最多调用一次 handler。恢复模块不得直接执行 handler。
+
+`UNKNOWN_RESULT` 和 `BLOCKED` 在 P0 不允许同一 Run 自动恢复。人工入口只查看和核对关联事实；
+需要继续时启动新 Run，不提供改写未知结果为成功、释放 CLAIMED 审批或重放原执行的旁路。
+
 ### 9.4 Continuation prompt 契约
 
 恢复上下文只从 StateStore 中经过校验的结构化状态生成，至少包含：
@@ -729,6 +749,9 @@ Run 创建与租约获取原子完成。租约默认 TTL 30 秒、允许 10 至 
 - `PREPARED` 待执行调用、有效审批和下一次允许动作；
 - 已用与剩余轮数、工具次数、Token/成本和时间预算；
 - 当前 stop reason，以及哪些操作禁止自动重放。
+
+文件型 Evidence 在恢复校验时重新比较当前内容摘要；版本不匹配时通过受租约保护的单向
+`valid -> false` 操作失效并追加审计。恢复上下文只把仍有效的 Evidence 作为可引用事实。
 
 恢复上下文禁止包含：
 

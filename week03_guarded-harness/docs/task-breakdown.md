@@ -659,6 +659,10 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 **依赖**：WP-01、WP-02、WP-06。
 
+**包内文档**：[规格](work-packages/wp-07-checkpoint-recovery/spec.md)（v1.1.0 / frozen）、
+[计划](work-packages/wp-07-checkpoint-recovery/plan.md)（v1.1.0 / done）、
+[验收报告](work-packages/wp-07-checkpoint-recovery/acceptance-report.md)（accepted）。
+
 **主要范围**：
 
 - `checkpoint.py`；

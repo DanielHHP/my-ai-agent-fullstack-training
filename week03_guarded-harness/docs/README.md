@@ -30,5 +30,8 @@
 | [WP-06 规格](work-packages/wp-06-write-and-command/spec.md) | 已冻结的写入、单文件 patch、受控测试命令、审批、超时、未知结果和飞书验收映射 |
 | [WP-06 计划](work-packages/wp-06-write-and-command/plan.md) | WP-06 已完成详细设计、D-48 至 D-52、任务卡、测试矩阵、风险和回滚计划 |
 | [WP-06 验收报告](work-packages/wp-06-write-and-command/acceptance-report.md) | 三工具实现、124 项目标测试、221 项全量测试、审批/超时/Evidence 证据和验收结论 |
+| [WP-07 规格](work-packages/wp-07-checkpoint-recovery/spec.md) | 已冻结的 Checkpoint 快照、恢复窗口、租约、续接上下文、飞书 C1-C4 映射和 D-53 至 D-58 |
+| [WP-07 计划](work-packages/wp-07-checkpoint-recovery/plan.md) | WP-07 migration v5、恢复设计、任务卡、测试矩阵、风险和回滚计划 |
+| [WP-07 验收报告](work-packages/wp-07-checkpoint-recovery/acceptance-report.md) | Checkpoint/恢复实现、101 项目标测试、249 项全量测试、场景映射和验收结论 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

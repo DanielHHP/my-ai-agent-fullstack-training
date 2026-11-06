@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .audit import AuditStore
     from .state_store import StateStore
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -407,6 +407,77 @@ BEGIN
 END;
 """
 
+_MIGRATION_V5 = """
+CREATE TABLE checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    run_id TEXT NOT NULL REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+    boundary_kind TEXT NOT NULL,
+    boundary_ref TEXT NOT NULL,
+    boundary_json TEXT NOT NULL,
+    step_id TEXT,
+    tool_call_id TEXT,
+    approval_id TEXT,
+    run_revision INTEGER NOT NULL CHECK (run_revision >= 0),
+    last_audit_sequence INTEGER NOT NULL CHECK (last_audit_sequence >= 1),
+    last_audit_hash TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    snapshot_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, sequence),
+    UNIQUE (run_id, boundary_kind, boundary_ref)
+);
+
+CREATE INDEX idx_checkpoints_run ON checkpoints(run_id, sequence);
+
+CREATE TRIGGER checkpoints_no_update
+BEFORE UPDATE ON checkpoints
+BEGIN
+    SELECT RAISE(ABORT, 'CHECKPOINT_APPEND_ONLY');
+END;
+
+CREATE TRIGGER checkpoints_no_delete
+BEFORE DELETE ON checkpoints
+BEGIN
+    SELECT RAISE(ABORT, 'CHECKPOINT_APPEND_ONLY');
+END;
+
+CREATE TABLE recovery_records (
+    recovery_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    run_id TEXT NOT NULL REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    checkpoint_id TEXT REFERENCES checkpoints(checkpoint_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason_code TEXT,
+    invocation_id TEXT,
+    approval_id TEXT,
+    input_digest TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    continuation_context_digest TEXT,
+    record_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_recovery_run ON recovery_records(run_id, created_at, recovery_id);
+
+CREATE TRIGGER recovery_records_no_update
+BEFORE UPDATE ON recovery_records
+BEGIN
+    SELECT RAISE(ABORT, 'RECOVERY_RECORD_APPEND_ONLY');
+END;
+
+CREATE TRIGGER recovery_records_no_delete
+BEFORE DELETE ON recovery_records
+BEGIN
+    SELECT RAISE(ABORT, 'RECOVERY_RECORD_APPEND_ONLY');
+END;
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -428,6 +499,7 @@ MIGRATIONS = (
     Migration(version=2, sql=_MIGRATION_V2),
     Migration(version=3, sql=_MIGRATION_V3),
     Migration(version=4, sql=_MIGRATION_V4),
+    Migration(version=5, sql=_MIGRATION_V5),
 )
 
 
@@ -698,6 +770,8 @@ class SQLiteStorage:
                     "run_leases",
                     "audit_events",
                     "approvals",
+                    "checkpoints",
+                    "recovery_records",
                 }
                 tables = {
                     row["name"]

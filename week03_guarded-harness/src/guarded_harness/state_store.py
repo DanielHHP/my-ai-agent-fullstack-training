@@ -681,6 +681,121 @@ class StateStore:
         )
         return evidence.model_copy(update={"path": redacted_path, "command_id": redacted_command})
 
+    def invalidate_evidence(
+        self,
+        run_id: str,
+        evidence_id: str,
+        *,
+        reason_code: ErrorCode,
+        lease_token: str,
+    ) -> Evidence:
+        """Permanently mark one evidence fact invalid when its version is stale."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(run_id, lease_token, now)
+        run = self.get_run(run_id)
+        if run.status in _TERMINAL_RUN_STATUSES:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "invalidate_evidence",
+                "terminal runs cannot invalidate evidence",
+            )
+        row = self._connection.execute(
+            "SELECT * FROM evidence WHERE run_id = ? AND evidence_id = ?",
+            (run_id, evidence_id),
+        ).fetchone()
+        if row is None:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "invalidate_evidence",
+                "evidence does not exist in this run",
+            )
+        current = _evidence_from_row(row)
+        if not current.is_valid:
+            return current
+        changed = self._connection.execute(
+            """
+            UPDATE evidence SET is_valid = 0
+            WHERE run_id = ? AND evidence_id = ? AND is_valid = 1
+            """,
+            (run_id, evidence_id),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "invalidate_evidence",
+                "evidence changed concurrently",
+            )
+        run_revision = self._get_run_revision(run_id)
+        self._touch_run(run_id, run_revision, now)
+        self._append_event(
+            run_id=run_id,
+            event_type=AuditEventType.EVIDENCE_INVALIDATED,
+            status=AuditStatus.DENIED,
+            code=reason_code.value,
+            tool_call_id=current.tool_call_id,
+            input_summary={"evidence_id": evidence_id},
+            output_summary={"kind": current.kind.value, "path": current.path},
+            evidence_ref=current.evidence_id,
+        )
+        return current.model_copy(update={"is_valid": False})
+
+    def mark_checkpoint_written(
+        self,
+        run_id: str,
+        checkpoint_id: str,
+        *,
+        lease_token: str,
+    ) -> Run:
+        """Atomically point a run at a persisted checkpoint and audit the fact."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(run_id, lease_token, now)
+        checkpoint = self._connection.execute(
+            """
+            SELECT sequence, boundary_kind, boundary_ref
+            FROM checkpoints WHERE run_id = ? AND checkpoint_id = ?
+            """,
+            (run_id, checkpoint_id),
+        ).fetchone()
+        if checkpoint is None:
+            self._raise(
+                ErrorCode.CHECKPOINT_NOT_FOUND,
+                "mark_checkpoint_written",
+                "checkpoint does not exist in this run",
+            )
+        current = self.get_run(run_id)
+        if current.last_checkpoint_id == checkpoint_id:
+            return current
+        run_revision = self._get_run_revision(run_id)
+        changed = self._connection.execute(
+            """
+            UPDATE runs
+            SET last_checkpoint_id = ?, revision = revision + 1, updated_at = ?
+            WHERE run_id = ? AND revision = ?
+            """,
+            (checkpoint_id, _serialize_datetime(now), run_id, run_revision),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "mark_checkpoint_written",
+                "run changed concurrently",
+            )
+        self._append_event(
+            run_id=run_id,
+            event_type=AuditEventType.CHECKPOINT_WRITTEN,
+            input_summary={
+                "checkpoint_id": checkpoint_id,
+                "sequence": int(checkpoint["sequence"]),
+                "boundary_kind": str(checkpoint["boundary_kind"]),
+                "boundary_ref": str(checkpoint["boundary_ref"]),
+            },
+        )
+        return self.get_run(run_id)
+
     def record_budget_delta(
         self,
         command: BudgetDeltaCommand,

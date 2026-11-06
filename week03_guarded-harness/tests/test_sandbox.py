@@ -381,6 +381,23 @@ def test_dirty_workspace_and_dirty_baseline_semantics(
     assert "WORKSPACE_CONTENT_CHANGED" in comparison.reason_codes
 
 
+def test_checkpoint_workspace_snapshot_allows_expected_dirty_tree(
+    tmp_path: Path,
+    fixed_clock: object,
+) -> None:
+    sandbox, _, workspace = _sandbox(tmp_path, fixed_clock=fixed_clock)
+    sandbox.capture_baseline()
+    target = workspace / "README.md"
+    target.write_text("changed after a governed write\n", encoding="utf-8")
+
+    snapshot = sandbox.capture_checkpoint_workspace()
+    comparison = sandbox.compare_checkpoint_workspace(snapshot)
+
+    assert snapshot.entries_truncated is False
+    assert any(entry.path.endswith("task/README.md") for entry in snapshot.workspace_entries)
+    assert comparison.equal
+
+
 def test_external_dirty_baseline_detects_change(
     tmp_path: Path,
     fixed_clock: object,

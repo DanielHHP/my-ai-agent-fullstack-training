@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import stat
+import subprocess
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -357,15 +360,15 @@ def test_storage_initializes_schema_and_pragmas(tmp_path: Path, fixed_clock) -> 
 
     report = storage.verify_integrity()
     assert report.ok
-    assert report.schema_version == 4
-    assert report.migration_count == 4
+    assert report.schema_version == 5
+    assert report.migration_count == 5
     assert report.journal_mode.casefold() == "wal"
     assert report.foreign_keys_enabled
     assert report.busy_timeout_ms == 5000
     assert report.required_tables_present
     assert report.budget_ledger_consistent
     assert report.quick_check.casefold() == "ok"
-    assert storage.schema_version() == 4
+    assert storage.schema_version() == 5
     if "posix" in __import__("os").name:
         assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE(storage.database_path.stat().st_mode) == 0o600
@@ -1735,15 +1738,39 @@ def test_approval_migration_upgrades_v3_and_preserves_runs(
         unit.state.create_run(_run(), owner_id="owner-1")
     assert storage.schema_version() == 3
 
-    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 4)
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 5)
     monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
     storage.initialize()
     report = storage.verify_integrity()
     with storage.transaction(actor="agent") as unit:
         run = unit.state.get_run(RUN_ID)
     assert report.ok
-    assert report.schema_version == 4
+    assert report.schema_version == 5
     assert run.run_id == RUN_ID
+
+
+def test_checkpoint_migration_upgrades_v4_and_preserves_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    clock = MutableClock(NOW)
+    storage, _ = _storage(tmp_path, clock)
+    all_migrations = storage_module.MIGRATIONS
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 4)
+    monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations[:4])
+    storage.initialize()
+    with storage.transaction(actor="agent") as unit:
+        unit.state.create_run(_run(), owner_id="owner-1")
+
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 5)
+    monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
+    storage.initialize()
+    report = storage.verify_integrity()
+
+    assert report.ok
+    assert report.schema_version == 5
+    with storage.transaction(actor="agent") as unit:
+        assert unit.state.get_run(RUN_ID).run_id == RUN_ID
 
 
 def test_approval_rows_are_binding_immutable_and_not_deletable(tmp_path: Path) -> None:
@@ -1963,3 +1990,888 @@ def test_approval_request_actor_must_match_unit_of_work(tmp_path: Path) -> None:
         with pytest.raises(ApprovalStoreError) as invalid:
             unit.approvals.create(_approval_request(), lease_token=lease.token)
     assert invalid.value.code == ErrorCode.APPROVAL_INVALID
+
+
+@dataclass
+class CheckpointFixture:
+    """Paths and services for a real temporary Git checkpoint fixture."""
+
+    storage: SQLiteStorage
+    sandbox: gh.Sandbox
+    service: gh.CheckpointService
+    config: gh.ResolvedHarnessConfig
+    lease_token: str
+    run_id: str
+    step_id: str
+    root: Path
+    workspace: Path
+    clock: MutableClock
+
+
+def _checkpoint_fixture(
+    tmp_path: Path,
+    *,
+    fault_injector=None,
+) -> CheckpointFixture:
+    clock = MutableClock(NOW)
+    root = tmp_path / "repo"
+    workspace = root / "task"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "artifacts").mkdir()
+    (workspace / "src" / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "tests@example.invalid"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "Harness Tests"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-q", "-m", "baseline"],
+        check=True,
+        capture_output=True,
+    )
+    state_dir = tmp_path / "state"
+    config_path = tmp_path / "checkpoint-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "state_dir": str(state_dir),
+                "workspace": {
+                    "root": str(workspace),
+                    "require_clean_workspace": True,
+                    "protect_other_git_changes": True,
+                },
+                "budget": {
+                    "max_steps": 10,
+                    "max_tool_calls": 20,
+                    "max_token_cost": 10,
+                    "max_wall_time_seconds": 300,
+                },
+                "task": {
+                    "id": "checkpoint-task",
+                    "kind": "code_understanding",
+                    "description": "Exercise checkpoint recovery",
+                    "allowed_tools": ["read_file"],
+                    "paths": {
+                        "deny_read": [],
+                        "deny_write": ["src/**"],
+                        "allow_write": ["artifacts/**"],
+                    },
+                    "acceptance": {
+                        "strategy": "code_understanding",
+                        "deliverables": ["artifacts/report.md"],
+                    },
+                    "approval": {
+                        "required_tools": [],
+                        "approver_roles": [],
+                        "ttl_seconds": 900,
+                        "channel": "local_cli",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = gh.load_config(config_path)
+    sandbox = gh.Sandbox.from_resolved_config(config, clock=clock)
+    baseline = sandbox.capture_baseline()
+    storage = SQLiteStorage(
+        state_dir / "harness.sqlite3",
+        workspace,
+        clock,
+        fault_injector=fault_injector,
+    )
+    storage.initialize()
+    run = Run(
+        run_id=RUN_ID,
+        trace_id=TRACE_ID,
+        task_id="checkpoint-task",
+        task_kind=TaskKind.CODE_UNDERSTANDING,
+        task_description="Exercise checkpoint recovery",
+        config_fingerprint=config.fingerprint,
+        workspace=baseline.identity,
+        budget=RunBudget(
+            max_steps=10,
+            max_tool_calls=20,
+            max_token_cost=Decimal("10"),
+            max_wall_time_seconds=300,
+        ),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    with storage.transaction(actor="agent") as unit:
+        lease = unit.state.create_run(run, owner_id="owner-1")
+        unit.state.create_step(
+            Step(
+                step_id=STEP_ID,
+                run_id=RUN_ID,
+                ordinal=0,
+                summary="Read source",
+                started_at=NOW,
+            ),
+            expected_run_revision=unit.state.get_run_revision(RUN_ID),
+            lease_token=lease.token,
+        )
+        unit.state.transition_step(
+            STEP_ID,
+            expected_status=StepStatus.PLANNED,
+            expected_revision=0,
+            target=StepStatus.RUNNING,
+            ended_at=None,
+            lease_token=lease.token,
+        )
+        unit.state.transition_step(
+            STEP_ID,
+            expected_status=StepStatus.RUNNING,
+            expected_revision=1,
+            target=StepStatus.COMPLETED,
+            ended_at=NOW,
+            lease_token=lease.token,
+        )
+        unit.state.transition_run(
+            RUN_ID,
+            expected_status=RunStatus.NEW,
+            expected_revision=unit.state.get_run_revision(RUN_ID),
+            target=RunStatus.RUNNING,
+            stop_reason=None,
+            ended_at=None,
+            acceptance_status=None,
+            lease_token=lease.token,
+        )
+    service = gh.CheckpointService(
+        storage=storage,
+        config=config,
+        sandbox=sandbox,
+        clock=clock,
+    )
+    return CheckpointFixture(
+        storage=storage,
+        sandbox=sandbox,
+        service=service,
+        config=config,
+        lease_token=lease.token,
+        run_id=RUN_ID,
+        step_id=STEP_ID,
+        root=root,
+        workspace=workspace,
+        clock=clock,
+    )
+
+
+def _step_boundary() -> gh.CheckpointBoundary:
+    return gh.CheckpointBoundary(
+        kind=gh.CheckpointBoundaryKind.STEP_COMPLETED,
+        boundary_ref=STEP_ID,
+        step_id=STEP_ID,
+        public_summary="Completed source read step",
+    )
+
+
+def _create_checkpoint_invocation(fixture: CheckpointFixture) -> None:
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.create_invocation(
+            ToolInvocation(
+                tool_call_id=TOOL_CALL_ID,
+                run_id=RUN_ID,
+                step_id=STEP_ID,
+                tool_name="read_file",
+                raw_args={"path": "src/app.py"},
+                normalized_args={"path": "src/app.py"},
+                args_digest=DIGEST,
+                risk=ToolRisk.READ,
+                required_permissions=frozenset({ToolPermission.READ}),
+                idempotent=True,
+                created_at=NOW,
+                updated_at=NOW,
+            ),
+            expected_run_revision=unit.state.get_run_revision(RUN_ID),
+            lease_token=fixture.lease_token,
+        )
+
+
+def _start_invocation(fixture: CheckpointFixture) -> None:
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.transition_invocation(
+            RUN_ID,
+            TOOL_CALL_ID,
+            expected_status=InvocationStatus.PREPARED,
+            expected_revision=0,
+            target=InvocationStatus.STARTED,
+            result_summary=None,
+            error_code=None,
+            lease_token=fixture.lease_token,
+        )
+
+
+def test_checkpoint_round_trip_hash_and_reopen(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+
+    checkpoint = fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        _step_boundary(),
+    )
+
+    assert checkpoint.sequence == 1
+    assert checkpoint.snapshot.steps[0].status == StepStatus.COMPLETED
+    assert checkpoint.snapshot.plan is None
+    assert checkpoint.snapshot_digest.startswith("sha256:")
+    assert checkpoint.snapshot.workspace.identity.workspace_root == str(fixture.workspace)
+    verification = fixture.service.verify_checkpoint(
+        checkpoint.checkpoint_id,
+        fixture.lease_token,
+    )
+    assert verification.valid
+    with fixture.storage.transaction(actor="agent") as unit:
+        run = unit.state.get_run(RUN_ID)
+        events = unit.audit.list_run_events(RUN_ID)
+    assert run.last_checkpoint_id == checkpoint.checkpoint_id
+    assert events[-1].event_type == gh.AuditEventType.CHECKPOINT_WRITTEN
+
+    reopened = SQLiteStorage(
+        fixture.storage.database_path,
+        fixture.workspace,
+        fixture.clock,
+    )
+    reopened.initialize()
+    restored = gh.CheckpointService(
+        storage=reopened,
+        config=fixture.config,
+        sandbox=fixture.sandbox,
+        clock=fixture.clock,
+    ).latest_checkpoint(RUN_ID)
+    assert restored is not None
+    assert restored.checkpoint_id == checkpoint.checkpoint_id
+    assert restored.snapshot_digest == checkpoint.snapshot_digest
+
+
+def test_checkpoint_tamper_and_append_only_fail_closed(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    checkpoint = fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        _step_boundary(),
+    )
+    with sqlite3.connect(fixture.storage.database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="CHECKPOINT_APPEND_ONLY"):
+            connection.execute(
+                "UPDATE checkpoints SET boundary_ref = 'changed' WHERE checkpoint_id = ?",
+                (checkpoint.checkpoint_id,),
+            )
+        connection.execute("DROP TRIGGER checkpoints_no_update")
+        connection.execute(
+            "UPDATE checkpoints SET snapshot_json = '{}' WHERE checkpoint_id = ?",
+            (checkpoint.checkpoint_id,),
+        )
+
+    verification = fixture.service.verify_checkpoint(
+        checkpoint.checkpoint_id,
+        fixture.lease_token,
+    )
+    assert verification.valid is False
+    assert verification.code in {
+        gh.ErrorCode.CHECKPOINT_INVALID.value,
+        gh.ErrorCode.CHECKPOINT_HASH_MISMATCH.value,
+        gh.ErrorCode.CHECKPOINT_SCHEMA_UNSUPPORTED.value,
+    }
+
+
+def test_recovery_prepared_reenters_gate_action(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    _create_checkpoint_invocation(fixture)
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.REENTER_GATE
+    assert plan.status == gh.RecoveryStatus.RESUMABLE
+    assert plan.invocation_id == TOOL_CALL_ID
+    assert plan.valid_evidence_ids == ()
+    context = fixture.service.build_continuation_context(plan)
+    assert context.pending_invocation is not None
+    assert context.pending_invocation.tool_call_id == TOOL_CALL_ID
+    assert context.context_digest == plan.continuation_context_digest
+    with fixture.storage.transaction(actor="agent") as unit:
+        invocation = unit.state.get_run_snapshot(RUN_ID).invocations[0]
+    assert invocation.status == InvocationStatus.PREPARED
+
+
+def test_recovery_started_marks_unknown_without_replay(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    _create_checkpoint_invocation(fixture)
+    _start_invocation(fixture)
+    handler_calls = 0
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert handler_calls == 0
+    assert plan.action == gh.RecoveryAction.MARK_UNKNOWN_RESULT
+    assert plan.status == gh.RecoveryStatus.MANUAL_REVIEW
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        chain = unit.audit.verify_chain(RUN_ID)
+    assert snapshot.invocations[0].status == InvocationStatus.UNKNOWN_RESULT
+    assert snapshot.run.status == RunStatus.BLOCKED
+    assert snapshot.run.stop_reason == StopReason.UNKNOWN_RESULT
+    assert chain.valid
+    repeated = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+    assert repeated.action == gh.RecoveryAction.MANUAL_REVIEW
+    assert handler_calls == 0
+
+
+def test_recovery_invalidates_stale_file_evidence_and_blocks(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    source = fixture.sandbox.read_file("src/app.py")
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.add_evidence(
+            Evidence(
+                evidence_id=EVIDENCE_ID,
+                run_id=RUN_ID,
+                kind=EvidenceKind.READ,
+                path="src/app.py",
+                line_start=1,
+                line_end=1,
+                content_digest=source.content_digest,
+                created_at=NOW,
+            ),
+            lease_token=fixture.lease_token,
+        )
+    checkpoint = fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        _step_boundary(),
+    )
+    assert checkpoint.snapshot.evidence[0].is_valid
+    (fixture.workspace / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.status == gh.RecoveryStatus.MANUAL_REVIEW
+    assert EVIDENCE_ID in plan.invalid_evidence_ids
+    with fixture.storage.transaction(actor="agent") as unit:
+        evidence = unit.state.get_run_snapshot(RUN_ID).evidence[0]
+        events = unit.audit.list_run_events(RUN_ID)
+    assert evidence.is_valid is False
+    assert any(event.event_type == gh.AuditEventType.EVIDENCE_INVALIDATED for event in events)
+
+
+def test_recovery_w6_rebuilds_missing_checkpoint_without_replay(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    _create_checkpoint_invocation(fixture)
+    _start_invocation(fixture)
+    target = fixture.workspace / "src" / "app.py"
+    target.write_text("VALUE = 2\n", encoding="utf-8")
+    current = fixture.sandbox.read_file("src/app.py")
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.add_evidence(
+            Evidence(
+                evidence_id=EVIDENCE_ID,
+                run_id=RUN_ID,
+                tool_call_id=TOOL_CALL_ID,
+                kind=EvidenceKind.DIFF,
+                path="src/app.py",
+                content_digest=current.content_digest,
+                created_at=NOW,
+            ),
+            lease_token=fixture.lease_token,
+        )
+        unit.state.transition_invocation(
+            RUN_ID,
+            TOOL_CALL_ID,
+            expected_status=InvocationStatus.STARTED,
+            expected_revision=unit.state.get_invocation_revision(RUN_ID, TOOL_CALL_ID),
+            target=InvocationStatus.SUCCEEDED,
+            result_summary="read completed",
+            error_code=None,
+            lease_token=fixture.lease_token,
+        )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.REBUILD_CHECKPOINT_THEN_CONTINUE
+    assert plan.status == gh.RecoveryStatus.RESUMABLE
+    assert plan.invocation_id == TOOL_CALL_ID
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        rows = unit.connection.execute(
+            "SELECT sequence FROM checkpoints WHERE run_id = ? ORDER BY sequence",
+            (RUN_ID,),
+        ).fetchall()
+    assert snapshot.invocations[0].status == InvocationStatus.SUCCEEDED
+    assert [row["sequence"] for row in rows] == [1, 2]
+
+
+def _seed_pending_checkpoint_approval(
+    fixture: CheckpointFixture,
+) -> tuple[str, str]:
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.create_invocation(
+            _write_invocation(),
+            expected_run_revision=unit.state.get_run_revision(RUN_ID),
+            lease_token=fixture.lease_token,
+        )
+        approval = unit.approvals.create(
+            _approval_request(),
+            lease_token=fixture.lease_token,
+        )
+        unit.state.transition_run(
+            RUN_ID,
+            expected_status=RunStatus.RUNNING,
+            expected_revision=unit.state.get_run_revision(RUN_ID),
+            target=RunStatus.WAITING_APPROVAL,
+            stop_reason=None,
+            ended_at=None,
+            acceptance_status=None,
+            lease_token=fixture.lease_token,
+        )
+    return approval.approval_id, approval.tool_call_id
+
+
+def test_recovery_pending_approval_waits_and_requested_checkpoint_round_trips(
+    tmp_path: Path,
+) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    approval_id, tool_call_id = _seed_pending_checkpoint_approval(fixture)
+    checkpoint = fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        gh.CheckpointBoundary(
+            kind=gh.CheckpointBoundaryKind.APPROVAL_REQUESTED,
+            boundary_ref=approval_id,
+            step_id=STEP_ID,
+            tool_call_id=tool_call_id,
+            approval_id=approval_id,
+        ),
+    )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert checkpoint.snapshot.approvals[0].status == ApprovalStatus.PENDING
+    assert plan.action == gh.RecoveryAction.WAIT_FOR_APPROVAL
+    assert plan.status == gh.RecoveryStatus.WAITING_APPROVAL
+    assert plan.approval_id == approval_id
+    assert plan.invocation_id == tool_call_id
+    with fixture.storage.transaction(actor="agent") as unit:
+        assert unit.state.get_run(RUN_ID).status == RunStatus.WAITING_APPROVAL
+
+
+def test_recovery_approved_prepared_requires_gate_reentry(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    approval_id, tool_call_id = _seed_pending_checkpoint_approval(fixture)
+    fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        gh.CheckpointBoundary(
+            kind=gh.CheckpointBoundaryKind.APPROVAL_REQUESTED,
+            boundary_ref=approval_id,
+            step_id=STEP_ID,
+            tool_call_id=tool_call_id,
+            approval_id=approval_id,
+        ),
+    )
+    _approve_pending_approval(
+        fixture.storage,
+        type("Lease", (), {"token": fixture.lease_token})(),
+        type(
+            "Approval",
+            (),
+            {
+                "approval_id": approval_id,
+                "revision": 0,
+            },
+        )(),
+    )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.REENTER_GATE
+    assert plan.status == gh.RecoveryStatus.RESUMABLE
+    assert plan.approval_id == approval_id
+
+
+def test_recovery_claimed_prepared_requires_resume_claim(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    approval_id, tool_call_id = _seed_pending_checkpoint_approval(fixture)
+    fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        gh.CheckpointBoundary(
+            kind=gh.CheckpointBoundaryKind.APPROVAL_REQUESTED,
+            boundary_ref=approval_id,
+            step_id=STEP_ID,
+            tool_call_id=tool_call_id,
+            approval_id=approval_id,
+        ),
+    )
+    approved = _approve_pending_approval(
+        fixture.storage,
+        type("Lease", (), {"token": fixture.lease_token})(),
+        type("Approval", (), {"approval_id": approval_id, "revision": 0})(),
+    )
+    with fixture.storage.transaction(actor="operator") as unit:
+        claimed = unit.approvals.claim(
+            approval_id,
+            expected_revision=approved.revision,
+            execution_intent_id=tool_call_id,
+            lease_token=fixture.lease_token,
+        )
+        unit.state.transition_run(
+            RUN_ID,
+            expected_status=RunStatus.WAITING_APPROVAL,
+            expected_revision=unit.state.get_run_revision(RUN_ID),
+            target=RunStatus.RUNNING,
+            stop_reason=None,
+            ended_at=None,
+            acceptance_status=None,
+            lease_token=fixture.lease_token,
+        )
+    assert claimed.status == ApprovalStatus.CLAIMED
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.RESUME_CLAIM_THEN_REENTER_GATE
+    assert plan.invocation_id == tool_call_id
+    assert plan.approval_id == approval_id
+
+
+def test_recovery_multiple_prepared_calls_blocks_as_ambiguous(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    _create_checkpoint_invocation(fixture)
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.create_invocation(
+            ToolInvocation(
+                tool_call_id=TOOL_CALL_ID_2,
+                run_id=RUN_ID,
+                step_id=STEP_ID,
+                tool_name="read_file",
+                raw_args={"path": "src/app.py"},
+                normalized_args={"path": "src/app.py"},
+                args_digest=DIGEST,
+                risk=ToolRisk.READ,
+                required_permissions=frozenset({ToolPermission.READ}),
+                idempotent=True,
+                created_at=NOW,
+                updated_at=NOW,
+            ),
+            expected_run_revision=unit.state.get_run_revision(RUN_ID),
+            lease_token=fixture.lease_token,
+        )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.MANUAL_REVIEW
+    assert plan.reason_code == ErrorCode.RECOVERY_STATE_AMBIGUOUS.value
+    with fixture.storage.transaction(actor="agent") as unit:
+        assert unit.state.get_run(RUN_ID).status == RunStatus.BLOCKED
+
+
+def test_recovery_no_pending_work_continues_agent(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.CONTINUE_AGENT
+    assert plan.status == gh.RecoveryStatus.RESUMABLE
+    context = fixture.service.build_continuation_context(plan)
+    rendered = fixture.service.render_continuation(context)
+    assert "GUARDED HARNESS RESUME CONTEXT" in rendered
+    assert fixture.lease_token not in rendered
+    assert context.remaining_budget.steps == 10
+
+
+def test_recovery_plan_becomes_stale_after_state_revision_changes(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.put_plan(
+            RUN_ID,
+            expected_revision=unit.state.get_run_revision(RUN_ID),
+            plan=RunPlan(
+                run_id=RUN_ID,
+                revision=0,
+                items=(PlanItem(ordinal=0, summary="new plan"),),
+                updated_at=NOW,
+            ),
+            lease_token=fixture.lease_token,
+        )
+
+    with pytest.raises(gh.CheckpointServiceError) as stale:
+        fixture.service.build_continuation_context(plan)
+
+    assert stale.value.code == ErrorCode.RECOVERY_NOT_ALLOWED
+
+
+def test_recovery_config_mismatch_blocks_and_invalidates_approval(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    approval_id, _ = _seed_pending_checkpoint_approval(fixture)
+    fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        gh.CheckpointBoundary(
+            kind=gh.CheckpointBoundaryKind.APPROVAL_REQUESTED,
+            boundary_ref=approval_id,
+            step_id=STEP_ID,
+            tool_call_id=APPROVAL_TOOL_CALL_ID,
+            approval_id=approval_id,
+        ),
+    )
+    with sqlite3.connect(fixture.storage.database_path) as connection:
+        connection.execute(
+            "UPDATE runs SET config_fingerprint = ? WHERE run_id = ?",
+            (f"sha256:{'b' * 64}", RUN_ID),
+        )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.status == gh.RecoveryStatus.MANUAL_REVIEW
+    assert plan.reason_code == ErrorCode.RECOVERY_CONFIG_MISMATCH.value
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+    assert snapshot.run.status == RunStatus.BLOCKED
+    assert snapshot.run.stop_reason == StopReason.WORKSPACE_CHANGED
+    assert snapshot.approvals[0].status == ApprovalStatus.INVALIDATED
+
+
+def test_recovery_external_workspace_change_blocks(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    (fixture.root / "outside.txt").write_text("changed outside\n", encoding="utf-8")
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.status == gh.RecoveryStatus.MANUAL_REVIEW
+    assert plan.reason_code == ErrorCode.RECOVERY_WORKSPACE_CHANGED.value
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+    assert snapshot.run.status == RunStatus.BLOCKED
+    assert snapshot.run.stop_reason == StopReason.WORKSPACE_CHANGED
+
+
+def test_recovery_already_terminal_returns_read_only_disposition(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.transition_run(
+            RUN_ID,
+            expected_status=RunStatus.RUNNING,
+            expected_revision=unit.state.get_run_revision(RUN_ID),
+            target=RunStatus.STOPPED,
+            stop_reason=StopReason.GATE_BLOCKED,
+            ended_at=NOW,
+            acceptance_status=AcceptanceStatus.NOT_EVALUATED,
+            lease_token=fixture.lease_token,
+        )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.ALREADY_TERMINAL
+    assert plan.status == gh.RecoveryStatus.ALREADY_TERMINAL
+
+
+def test_recovery_audit_corruption_blocks_before_state_mutation(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    with sqlite3.connect(fixture.storage.database_path) as connection:
+        connection.execute("DROP TRIGGER audit_events_no_update")
+        connection.execute(
+            "UPDATE audit_events SET actor = 'tampered' WHERE run_id = ? AND sequence = 1",
+            (RUN_ID,),
+        )
+
+    with pytest.raises(gh.CheckpointServiceError) as invalid:
+        fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert invalid.value.code == ErrorCode.RECOVERY_AUDIT_INVALID
+    with fixture.storage.transaction(actor="agent") as unit:
+        assert unit.state.get_run(RUN_ID).status == RunStatus.RUNNING
+
+
+def test_recovery_records_are_append_only(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+    repeated = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+    assert repeated.recovery_id == plan.recovery_id
+    assert fixture.service.get_recovery_record(plan.recovery_id).plan == plan
+    assert fixture.service.list_recovery_records(RUN_ID)[0].plan == plan
+
+    with sqlite3.connect(fixture.storage.database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="RECOVERY_RECORD_APPEND_ONLY"):
+            connection.execute(
+                "UPDATE recovery_records SET action = 'MANUAL_REVIEW' WHERE recovery_id = ?",
+                (plan.recovery_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="RECOVERY_RECORD_APPEND_ONLY"):
+            connection.execute(
+                "DELETE FROM recovery_records WHERE recovery_id = ?",
+                (plan.recovery_id,),
+            )
+
+
+def test_checkpoint_fault_rolls_back_snapshot_pointer_and_audit(
+    tmp_path: Path,
+    fault_injector,
+) -> None:
+    fixture = _checkpoint_fixture(tmp_path, fault_injector=fault_injector)
+    fault_injector.arm("checkpoint:before-audit")
+
+    with pytest.raises(gh.CheckpointServiceError):
+        fixture.service.create_checkpoint(
+            RUN_ID,
+            fixture.lease_token,
+            _step_boundary(),
+        )
+
+    with fixture.storage.transaction(actor="agent") as unit:
+        count = unit.connection.execute(
+            "SELECT COUNT(*) AS count FROM checkpoints WHERE run_id = ?",
+            (RUN_ID,),
+        ).fetchone()
+        events = unit.audit.list_run_events(RUN_ID)
+        run = unit.state.get_run(RUN_ID)
+    assert count["count"] == 0
+    assert run.last_checkpoint_id is None
+    assert not any(event.event_type == gh.AuditEventType.CHECKPOINT_WRITTEN for event in events)
+
+
+def test_recovery_lease_takeover_preserves_budget_after_reopen(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.record_budget_delta(
+            BudgetDeltaCommand(
+                run_id=RUN_ID,
+                source_kind=BudgetSourceKind.TOOL_CALL,
+                source_id=TOOL_CALL_ID,
+                category=BudgetCategory.TOOL_CALLS,
+                expected_run_revision=unit.state.get_run_revision(RUN_ID),
+                delta=Decimal(1),
+            ),
+            lease_token=fixture.lease_token,
+        )
+
+    fixture.clock.advance(31)
+    reopened = SQLiteStorage(
+        fixture.storage.database_path,
+        fixture.workspace,
+        fixture.clock,
+    )
+    reopened.initialize()
+    with reopened.transaction(actor="resumed-agent") as unit:
+        replacement = unit.state.acquire_lease(
+            RUN_ID,
+            owner_id="owner-2",
+            lease_policy=LeasePolicy(ttl_seconds=30),
+        )
+    resumed_service = gh.CheckpointService(
+        storage=reopened,
+        config=fixture.config,
+        sandbox=fixture.sandbox,
+        clock=fixture.clock,
+    )
+
+    plan = resumed_service.prepare_recovery(RUN_ID, replacement.token)
+    context = resumed_service.build_continuation_context(plan)
+
+    assert plan.action == gh.RecoveryAction.CONTINUE_AGENT
+    assert context.usage.tool_calls == 1
+    assert context.remaining_budget.tool_calls == 19
+
+
+def test_continuation_is_deterministic_and_secret_free(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    checkpoint = fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        _step_boundary(),
+    )
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    first = fixture.service.build_continuation_context(plan)
+    second = fixture.service.build_continuation_context(plan)
+    first_text = fixture.service.render_continuation(first)
+    second_text = fixture.service.render_continuation(second)
+
+    assert gh.canonical_json_dump(first) == gh.canonical_json_dump(second)
+    assert first_text == second_text
+    assert first.context_digest == second.context_digest
+    assert checkpoint.checkpoint_id in first_text
+    assert fixture.lease_token not in first_text
+    assert "super-secret" not in first_text
+
+
+def test_checkpoint_and_context_redact_model_generated_text(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    secret = "super-secret-token"
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.put_plan(
+            RUN_ID,
+            expected_revision=unit.state.get_run_revision(RUN_ID),
+            plan=RunPlan(
+                run_id=RUN_ID,
+                revision=0,
+                items=(PlanItem(ordinal=0, summary=f"token={secret}"),),
+                updated_at=NOW,
+            ),
+            lease_token=fixture.lease_token,
+        )
+    checkpoint = fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        _step_boundary(),
+    )
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+    context = fixture.service.build_continuation_context(plan)
+
+    assert secret not in gh.canonical_json_dump(checkpoint)
+    assert secret not in gh.canonical_json_dump(context)
+    assert "super-secret-token" not in fixture.service.render_continuation(context)
+
+
+def test_recovery_with_committed_result_and_checkpoint_continues(tmp_path: Path) -> None:
+    fixture = _checkpoint_fixture(tmp_path)
+    fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
+    _create_checkpoint_invocation(fixture)
+    _start_invocation(fixture)
+    with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.transition_invocation(
+            RUN_ID,
+            TOOL_CALL_ID,
+            expected_status=InvocationStatus.STARTED,
+            expected_revision=unit.state.get_invocation_revision(RUN_ID, TOOL_CALL_ID),
+            target=InvocationStatus.SUCCEEDED,
+            result_summary="read done",
+            error_code=None,
+            lease_token=fixture.lease_token,
+        )
+    fixture.service.create_checkpoint(
+        RUN_ID,
+        fixture.lease_token,
+        gh.CheckpointBoundary(
+            kind=gh.CheckpointBoundaryKind.TOOL_SUCCEEDED,
+            boundary_ref=TOOL_CALL_ID,
+            step_id=STEP_ID,
+            tool_call_id=TOOL_CALL_ID,
+            public_summary="Read completed",
+        ),
+    )
+
+    plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+
+    assert plan.action == gh.RecoveryAction.CONTINUE_AGENT
+    assert plan.status == gh.RecoveryStatus.RESUMABLE
+    with fixture.storage.transaction(actor="agent") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+    assert snapshot.invocations[0].status == InvocationStatus.SUCCEEDED

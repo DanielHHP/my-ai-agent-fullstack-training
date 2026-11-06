@@ -62,6 +62,7 @@ class AuditEventType(str, Enum):
     TOOL_TIMED_OUT = "TOOL_TIMED_OUT"
     TOOL_UNKNOWN_RESULT = "TOOL_UNKNOWN_RESULT"
     EVIDENCE_RECORDED = "EVIDENCE_RECORDED"
+    EVIDENCE_INVALIDATED = "EVIDENCE_INVALIDATED"
     BUDGET_UPDATED = "BUDGET_UPDATED"
     COMPLETION_RECORDED = "COMPLETION_RECORDED"
     GATE_DECISION = "GATE_DECISION"
@@ -73,6 +74,7 @@ class AuditEventType(str, Enum):
     APPROVAL_CLAIM_RECOVERED = "APPROVAL_CLAIM_RECOVERED"
     APPROVAL_CONSUMED = "APPROVAL_CONSUMED"
     CHECKPOINT_WRITTEN = "CHECKPOINT_WRITTEN"
+    RECOVERY_RECORDED = "RECOVERY_RECORDED"
 
 
 class AuditStatus(str, Enum):
@@ -332,6 +334,19 @@ class AuditStore:
         row = self._connection.execute(
             "SELECT * FROM audit_events WHERE run_id = ? AND sequence = ?",
             (run_id, sequence),
+        ).fetchone()
+        return _record_from_row(row) if row is not None else None
+
+    def head(self, run_id: str) -> AuditEventRecord | None:
+        """Return the latest event in one run's append-only chain."""
+
+        self._ensure_active()
+        row = self._connection.execute(
+            """
+            SELECT * FROM audit_events
+            WHERE run_id = ? ORDER BY sequence DESC LIMIT 1
+            """,
+            (run_id,),
         ).fetchone()
         return _record_from_row(row) if row is not None else None
 

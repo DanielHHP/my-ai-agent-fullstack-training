@@ -67,6 +67,41 @@ class AcceptanceStatus(str, Enum):
     UNVERIFIABLE = "UNVERIFIABLE"
 
 
+class CheckpointBoundaryKind(str, Enum):
+    """Stable safety boundaries that may produce a checkpoint."""
+
+    STEP_COMPLETED = "STEP_COMPLETED"
+    TOOL_SUCCEEDED = "TOOL_SUCCEEDED"
+    TOOL_FAILED = "TOOL_FAILED"
+    TOOL_TIMED_OUT = "TOOL_TIMED_OUT"
+    TOOL_UNKNOWN_RESULT = "TOOL_UNKNOWN_RESULT"
+    APPROVAL_REQUESTED = "APPROVAL_REQUESTED"
+    APPROVAL_SETTLED = "APPROVAL_SETTLED"
+    COMPLETION_RECORDED = "COMPLETION_RECORDED"
+
+
+class RecoveryAction(str, Enum):
+    """Deterministic action selected by the recovery planner."""
+
+    CONTINUE_AGENT = "CONTINUE_AGENT"
+    WAIT_FOR_APPROVAL = "WAIT_FOR_APPROVAL"
+    REENTER_GATE = "REENTER_GATE"
+    RESUME_CLAIM_THEN_REENTER_GATE = "RESUME_CLAIM_THEN_REENTER_GATE"
+    REBUILD_CHECKPOINT_THEN_CONTINUE = "REBUILD_CHECKPOINT_THEN_CONTINUE"
+    MARK_UNKNOWN_RESULT = "MARK_UNKNOWN_RESULT"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+    ALREADY_TERMINAL = "ALREADY_TERMINAL"
+
+
+class RecoveryStatus(str, Enum):
+    """Caller-visible disposition of a recovery plan."""
+
+    RESUMABLE = "RESUMABLE"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+    ALREADY_TERMINAL = "ALREADY_TERMINAL"
+
+
 class StepStatus(str, Enum):
     """Lifecycle state for an agent step."""
 
@@ -259,6 +294,26 @@ class ErrorCode(str, Enum):
     STATE_BUDGET_EXCEEDED = "STATE_BUDGET_EXCEEDED"
     STATE_INTEGRITY_ERROR = "STATE_INTEGRITY_ERROR"
 
+    CHECKPOINT_NOT_FOUND = "CHECKPOINT_NOT_FOUND"
+    CHECKPOINT_INVALID = "CHECKPOINT_INVALID"
+    CHECKPOINT_HASH_MISMATCH = "CHECKPOINT_HASH_MISMATCH"
+    CHECKPOINT_SCHEMA_UNSUPPORTED = "CHECKPOINT_SCHEMA_UNSUPPORTED"
+    CHECKPOINT_SEQUENCE_CONFLICT = "CHECKPOINT_SEQUENCE_CONFLICT"
+    CHECKPOINT_SNAPSHOT_TOO_LARGE = "CHECKPOINT_SNAPSHOT_TOO_LARGE"
+    CHECKPOINT_WRITE_FAILED = "CHECKPOINT_WRITE_FAILED"
+
+    RECOVERY_NOT_ALLOWED = "RECOVERY_NOT_ALLOWED"
+    RECOVERY_STATE_AMBIGUOUS = "RECOVERY_STATE_AMBIGUOUS"
+    RECOVERY_CONFIG_MISMATCH = "RECOVERY_CONFIG_MISMATCH"
+    RECOVERY_WORKSPACE_CHANGED = "RECOVERY_WORKSPACE_CHANGED"
+    RECOVERY_AUDIT_INVALID = "RECOVERY_AUDIT_INVALID"
+    RECOVERY_APPROVAL_INVALID = "RECOVERY_APPROVAL_INVALID"
+    RECOVERY_EVIDENCE_INVALID = "RECOVERY_EVIDENCE_INVALID"
+    RECOVERY_CHECKPOINT_REQUIRED = "RECOVERY_CHECKPOINT_REQUIRED"
+    RECOVERY_MANUAL_REVIEW_REQUIRED = "RECOVERY_MANUAL_REVIEW_REQUIRED"
+    RECOVERY_WRITE_FAILED = "RECOVERY_WRITE_FAILED"
+    RECOVERY_CONTEXT_TOO_LARGE = "RECOVERY_CONTEXT_TOO_LARGE"
+
     AUDIT_WRITE_FAILED = "AUDIT_WRITE_FAILED"
     AUDIT_READ_FAILED = "AUDIT_READ_FAILED"
     AUDIT_APPEND_ONLY = "AUDIT_APPEND_ONLY"
@@ -430,6 +485,7 @@ StepId = Annotated[str, StringConstraints(strict=True, pattern=r"^step_[0-9a-f]{
 EvidenceId = Annotated[str, StringConstraints(strict=True, pattern=r"^evidence_[0-9a-f]{32}$")]
 ApprovalId = Annotated[str, StringConstraints(strict=True, pattern=r"^approval_[0-9a-f]{32}$")]
 CheckpointId = Annotated[str, StringConstraints(strict=True, pattern=r"^checkpoint_[0-9a-f]{32}$")]
+RecoveryId = Annotated[str, StringConstraints(strict=True, pattern=r"^recovery_[0-9a-f]{32}$")]
 ToolCallId = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=256),
@@ -1072,6 +1128,315 @@ class RunSnapshot(StrictDomainModel):
     read_at: UtcDatetime
 
 
+class CheckpointWorkspaceEntry(StrictDomainModel):
+    """One bounded Git-visible workspace entry in a checkpoint."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str = Field(min_length=1, max_length=32)
+    path: RelativePath
+    file_type: str = Field(min_length=1, max_length=32)
+    content_digest: Sha256Digest
+
+
+class CheckpointWorkspace(StrictDomainModel):
+    """Serializable workspace facts captured at a safety boundary."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    identity: WorkspaceIdentity
+    head_oid_or_unborn: str = Field(min_length=1, max_length=128)
+    index_digest: Sha256Digest
+    workspace_status_digest: Sha256Digest
+    workspace_diff_digest: Sha256Digest
+    external_dirty_baseline_digest: Sha256Digest
+    external_protection: Literal["ENABLED", "DISABLED"]
+    workspace_entries: tuple[CheckpointWorkspaceEntry, ...] = ()
+    external_entries: tuple[CheckpointWorkspaceEntry, ...] = ()
+    entries_truncated: bool = False
+    captured_at: UtcDatetime
+
+
+class CheckpointBoundary(StrictDomainModel):
+    """Trusted description of the safe boundary captured by a checkpoint."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    kind: CheckpointBoundaryKind
+    boundary_ref: str = Field(min_length=1, max_length=256)
+    step_id: StepId | None = None
+    tool_call_id: ToolCallId | None = None
+    approval_id: ApprovalId | None = None
+    public_summary: str = Field(default="", max_length=4000)
+
+    def model_post_init(self, __context: Any) -> None:
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.boundary_ref):
+            raise ValueError("boundary_ref must not contain control characters")
+        if self.kind == CheckpointBoundaryKind.STEP_COMPLETED and self.step_id is None:
+            raise ValueError("step boundaries require step_id")
+        if (
+            self.kind
+            in {
+                CheckpointBoundaryKind.TOOL_SUCCEEDED,
+                CheckpointBoundaryKind.TOOL_FAILED,
+                CheckpointBoundaryKind.TOOL_TIMED_OUT,
+                CheckpointBoundaryKind.TOOL_UNKNOWN_RESULT,
+            }
+            and self.tool_call_id is None
+        ):
+            raise ValueError("tool boundaries require tool_call_id")
+        if (
+            self.kind
+            in {
+                CheckpointBoundaryKind.APPROVAL_REQUESTED,
+                CheckpointBoundaryKind.APPROVAL_SETTLED,
+            }
+            and self.approval_id is None
+        ):
+            raise ValueError("approval boundaries require approval_id")
+
+
+class CheckpointSnapshot(StrictDomainModel):
+    """Complete structured state from which recovery may continue."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    run: Run
+    plan: RunPlan | None = None
+    steps: tuple[Step, ...] = ()
+    invocations: tuple[ToolInvocation, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+    approvals: tuple[Approval, ...] = ()
+    completion: CompletionCheck | None = None
+    last_audit_sequence: int = Field(ge=1)
+    last_audit_hash: Sha256Digest
+    workspace: CheckpointWorkspace
+    recent_observations: tuple[str, ...] = Field(default=(), max_length=10)
+    created_at: UtcDatetime
+
+
+class Checkpoint(StrictDomainModel):
+    """Append-only checkpoint metadata and its validated snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    checkpoint_id: CheckpointId
+    run_id: RunId
+    sequence: int = Field(ge=1)
+    boundary: CheckpointBoundary
+    run_revision: int = Field(ge=0)
+    last_audit_sequence: int = Field(ge=1)
+    last_audit_hash: Sha256Digest
+    snapshot_digest: Sha256Digest
+    snapshot: CheckpointSnapshot
+    created_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.snapshot.run.run_id != self.run_id:
+            raise ValueError("checkpoint snapshot run_id does not match")
+        if (
+            self.snapshot.last_audit_sequence != self.last_audit_sequence
+            or self.snapshot.last_audit_hash != self.last_audit_hash
+        ):
+            raise ValueError("checkpoint audit head does not match snapshot")
+
+
+class CheckpointVerification(StrictDomainModel):
+    """Result of validating one checkpoint against persisted state."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    checkpoint_id: CheckpointId
+    run_id: RunId
+    valid: bool
+    checked_audit_sequence: int = Field(ge=0)
+    code: StableErrorCode | None = None
+    reason: str | None = Field(default=None, max_length=1000)
+    checked_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.valid and self.code is None:
+            raise ValueError("invalid checkpoint verification requires a code")
+
+
+class RemainingBudget(StrictDomainModel):
+    """Non-negative remaining resource amounts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    steps: int = Field(ge=0)
+    tool_calls: int = Field(ge=0)
+    token_cost: Decimal = Field(ge=0)
+    wall_time_seconds: int = Field(ge=0)
+
+
+class ContinuationStep(StrictDomainModel):
+    """One bounded publicly visible step summary."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step_id: StepId
+    ordinal: int = Field(ge=0)
+    status: StepStatus
+    summary: str = Field(max_length=4000)
+
+
+class ContinuationEvidence(StrictDomainModel):
+    """One currently valid evidence fact available after recovery."""
+
+    model_config = ConfigDict(frozen=True)
+
+    evidence_id: EvidenceId
+    kind: EvidenceKind
+    path: RelativePath | None = None
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    content_digest: Sha256Digest
+
+    def model_post_init(self, __context: Any) -> None:
+        if (self.line_start is None) != (self.line_end is None):
+            raise ValueError("line_start and line_end must be provided together")
+        if self.line_start is not None and self.line_end is not None:
+            if self.line_end < self.line_start:
+                raise ValueError("line_end must not precede line_start")
+
+
+class ContinuationInvocation(StrictDomainModel):
+    """A prepared invocation awaiting a governed recovery decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tool_call_id: ToolCallId
+    tool_name: ToolName
+    status: InvocationStatus
+    args_digest: Sha256Digest
+    approval_id: ApprovalId | None = None
+
+
+class ContinuationApproval(StrictDomainModel):
+    """A non-terminal approval relevant to resumed work."""
+
+    model_config = ConfigDict(frozen=True)
+
+    approval_id: ApprovalId
+    tool_call_id: ToolCallId
+    tool_name: ToolName
+    status: ApprovalStatus
+    binding_digest: Sha256Digest
+    expires_at: UtcDatetime
+
+
+class ContinuationContext(StrictDomainModel):
+    """Bounded deterministic context for constructing a new agent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    checkpoint_id: CheckpointId | None = None
+    task_id: str = Field(min_length=1, max_length=128)
+    task_kind: TaskKind
+    task_description: str = Field(min_length=1, max_length=4000)
+    config_fingerprint: Sha256Digest
+    workspace_root: str = Field(min_length=1, max_length=4096)
+    git_root: str = Field(min_length=1, max_length=4096)
+    current_status: RunStatus
+    stop_reason: StopReason | None = None
+    budget: RunBudget
+    usage: BudgetUsage
+    remaining_budget: RemainingBudget
+    plan: RunPlan | None = None
+    completed_steps: tuple[ContinuationStep, ...] = Field(default=(), max_length=10)
+    valid_evidence: tuple[ContinuationEvidence, ...] = ()
+    invalid_evidence_ids: tuple[EvidenceId, ...] = ()
+    pending_invocation: ContinuationInvocation | None = None
+    pending_approval: ContinuationApproval | None = None
+    prohibited_actions: tuple[str, ...] = Field(min_length=1)
+    context_digest: Sha256Digest
+    generated_at: UtcDatetime
+
+
+class RecoveryPlan(StrictDomainModel):
+    """Persisted deterministic recovery decision; never an execution grant."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    recovery_id: RecoveryId
+    run_id: RunId
+    checkpoint_id: CheckpointId | None = None
+    source_run_revision: int = Field(ge=0)
+    status: RecoveryStatus
+    action: RecoveryAction
+    reason_code: StableErrorCode | None = None
+    invocation_id: ToolCallId | None = None
+    approval_id: ApprovalId | None = None
+    valid_evidence_ids: tuple[EvidenceId, ...] = ()
+    invalid_evidence_ids: tuple[EvidenceId, ...] = ()
+    continuation_context_digest: Sha256Digest | None = None
+    created_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        expected_status = {
+            RecoveryAction.CONTINUE_AGENT: RecoveryStatus.RESUMABLE,
+            RecoveryAction.REENTER_GATE: RecoveryStatus.RESUMABLE,
+            RecoveryAction.RESUME_CLAIM_THEN_REENTER_GATE: RecoveryStatus.RESUMABLE,
+            RecoveryAction.REBUILD_CHECKPOINT_THEN_CONTINUE: RecoveryStatus.RESUMABLE,
+            RecoveryAction.WAIT_FOR_APPROVAL: RecoveryStatus.WAITING_APPROVAL,
+            RecoveryAction.MARK_UNKNOWN_RESULT: RecoveryStatus.MANUAL_REVIEW,
+            RecoveryAction.MANUAL_REVIEW: RecoveryStatus.MANUAL_REVIEW,
+            RecoveryAction.ALREADY_TERMINAL: RecoveryStatus.ALREADY_TERMINAL,
+        }[self.action]
+        if self.status != expected_status:
+            raise ValueError("recovery action and status do not match")
+        if len(set(self.valid_evidence_ids)) != len(self.valid_evidence_ids):
+            raise ValueError("valid_evidence_ids must not contain duplicates")
+        if len(set(self.invalid_evidence_ids)) != len(self.invalid_evidence_ids):
+            raise ValueError("invalid_evidence_ids must not contain duplicates")
+        if set(self.valid_evidence_ids) & set(self.invalid_evidence_ids):
+            raise ValueError("evidence cannot be both valid and invalid")
+        if (
+            self.action
+            in {
+                RecoveryAction.REENTER_GATE,
+                RecoveryAction.RESUME_CLAIM_THEN_REENTER_GATE,
+                RecoveryAction.REBUILD_CHECKPOINT_THEN_CONTINUE,
+                RecoveryAction.MARK_UNKNOWN_RESULT,
+            }
+            and self.invocation_id is None
+        ):
+            raise ValueError("recovery action requires an invocation_id")
+        if self.action == RecoveryAction.WAIT_FOR_APPROVAL and self.approval_id is None:
+            raise ValueError("waiting recovery requires an approval_id")
+
+
+class RecoveryRecord(StrictDomainModel):
+    """Append-only recovery decision record."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    recovery_id: RecoveryId
+    run_id: RunId
+    checkpoint_id: CheckpointId | None = None
+    plan: RecoveryPlan
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    created_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        if (
+            self.plan.recovery_id != self.recovery_id
+            or self.plan.run_id != self.run_id
+            or self.plan.checkpoint_id != self.checkpoint_id
+        ):
+            raise ValueError("recovery record payload does not match indexed fields")
+
+
 class BudgetDeltaCommand(StrictDomainModel):
     """One idempotent budget increment from a trusted source."""
 
@@ -1125,6 +1490,9 @@ class IdFactory(Protocol):
 
     def new_checkpoint_id(self) -> str:
         """Create a checkpoint ID."""
+
+    def new_recovery_id(self) -> str:
+        """Create a recovery decision ID."""
 
 
 @runtime_checkable
@@ -1190,6 +1558,9 @@ class Uuid4IdFactory:
     def new_checkpoint_id(self) -> str:
         return f"checkpoint_{uuid4().hex}"
 
+    def new_recovery_id(self) -> str:
+        return f"recovery_{uuid4().hex}"
+
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -1211,6 +1582,7 @@ def _domain_error_code(error: dict[str, Any]) -> ErrorCode:
     location = tuple(error.get("loc", ()))
     enum_fields = {
         "acceptance_status",
+        "action",
         "approval_requirement",
         "category",
         "concurrency_class",
@@ -1225,6 +1597,7 @@ def _domain_error_code(error: dict[str, Any]) -> ErrorCode:
         "strategy",
         "source_kind",
         "task_kind",
+        "recovery_status",
     }
     if "schema_version" in location:
         return ErrorCode.DOMAIN_SCHEMA_VERSION_UNSUPPORTED

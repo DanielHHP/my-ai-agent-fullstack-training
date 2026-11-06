@@ -59,6 +59,9 @@ class FixedIdFactory:
     def new_checkpoint_id(self) -> str:
         return f"checkpoint_{self._take()}"
 
+    def new_recovery_id(self) -> str:
+        return f"recovery_{self._take()}"
+
 
 class RecordingFaultInjector:
     """Record fault points and raise only when a point is explicitly armed."""

@@ -28,6 +28,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from .config import ResolvedHarnessConfig, TestRepairAcceptance
 from .domain import (
+    CheckpointWorkspace,
+    CheckpointWorkspaceEntry,
     Clock,
     ErrorCode,
     FaultInjector,
@@ -44,6 +46,7 @@ DEFAULT_STDOUT_LIMIT_BYTES = 1024 * 1024
 DEFAULT_STDERR_LIMIT_BYTES = 1024 * 1024
 MAX_PATHSPECS = 1_000
 MAX_DIRECTORY_SCAN_ENTRIES = 20_000
+MAX_CHECKPOINT_WORKSPACE_ENTRIES = 1_000
 MAX_COMMAND_TIMEOUT_SECONDS = 3600.0
 MAX_KILL_GRACE_SECONDS = 30.0
 _READ_CHUNK_BYTES = 64 * 1024
@@ -1157,6 +1160,55 @@ class Sandbox:
 
         return self._capture_baseline(enforce_clean=True)
 
+    def capture_checkpoint_workspace(self) -> CheckpointWorkspace:
+        """Capture a bounded workspace snapshot without requiring an initial clean tree."""
+
+        baseline = self._capture_baseline(enforce_clean=False)
+        return self._checkpoint_workspace_from_baseline(baseline)
+
+    def compare_checkpoint_workspace(
+        self,
+        snapshot: CheckpointWorkspace,
+    ) -> WorkspaceComparison:
+        """Compare current workspace facts with a persisted checkpoint snapshot."""
+
+        if not isinstance(snapshot, CheckpointWorkspace):
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_BASELINE_INVALID,
+                "compare_checkpoint_workspace",
+                "snapshot must be a CheckpointWorkspace",
+            )
+        baseline = WorkspaceBaseline(
+            identity=snapshot.identity,
+            head_oid_or_unborn=snapshot.head_oid_or_unborn,
+            index_digest=snapshot.index_digest,
+            workspace_status_digest=snapshot.workspace_status_digest,
+            workspace_diff_digest=snapshot.workspace_diff_digest,
+            external_dirty_baseline_digest=snapshot.external_dirty_baseline_digest,
+            external_protection=ExternalProtection(snapshot.external_protection),
+            workspace_entries=tuple(
+                WorkspaceEntry(
+                    status=entry.status,
+                    path=entry.path,
+                    file_type=entry.file_type,
+                    content_digest=entry.content_digest,
+                )
+                for entry in snapshot.workspace_entries
+            ),
+            external_entries=tuple(
+                WorkspaceEntry(
+                    status=entry.status,
+                    path=entry.path,
+                    file_type=entry.file_type,
+                    content_digest=entry.content_digest,
+                )
+                for entry in snapshot.external_entries
+            ),
+            captured_at=snapshot.captured_at,
+            schema_version=snapshot.schema_version,
+        )
+        return self.compare_workspace(baseline)
+
     def compare_workspace(self, baseline: WorkspaceBaseline) -> WorkspaceComparison:
         """Compare the current workspace with a previous baseline without replaying work."""
 
@@ -1216,6 +1268,46 @@ class Sandbox:
             reason_codes=tuple(reasons),
             changed_paths=tuple(sorted(set(changed_paths)))[:1000],
             compared_at=self._clock.now(),
+        )
+
+    @staticmethod
+    def _checkpoint_workspace_from_baseline(
+        baseline: WorkspaceBaseline,
+    ) -> CheckpointWorkspace:
+        workspace_entries = baseline.workspace_entries
+        external_entries = baseline.external_entries
+        truncated = (
+            len(workspace_entries) > MAX_CHECKPOINT_WORKSPACE_ENTRIES
+            or len(external_entries) > MAX_CHECKPOINT_WORKSPACE_ENTRIES
+        )
+        return CheckpointWorkspace(
+            identity=baseline.identity,
+            head_oid_or_unborn=baseline.head_oid_or_unborn,
+            index_digest=baseline.index_digest,
+            workspace_status_digest=baseline.workspace_status_digest,
+            workspace_diff_digest=baseline.workspace_diff_digest,
+            external_dirty_baseline_digest=baseline.external_dirty_baseline_digest,
+            external_protection=baseline.external_protection.value,
+            workspace_entries=tuple(
+                CheckpointWorkspaceEntry(
+                    status=entry.status,
+                    path=entry.path,
+                    file_type=entry.file_type,
+                    content_digest=entry.content_digest,
+                )
+                for entry in workspace_entries[:MAX_CHECKPOINT_WORKSPACE_ENTRIES]
+            ),
+            external_entries=tuple(
+                CheckpointWorkspaceEntry(
+                    status=entry.status,
+                    path=entry.path,
+                    file_type=entry.file_type,
+                    content_digest=entry.content_digest,
+                )
+                for entry in external_entries[:MAX_CHECKPOINT_WORKSPACE_ENTRIES]
+            ),
+            entries_truncated=truncated,
+            captured_at=baseline.captured_at,
         )
 
     def register_trusted_command(self, spec: TrustedCommandSpec) -> None:
