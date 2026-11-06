@@ -43,7 +43,7 @@ _JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-
 _PREFIXED_TOKEN_PATTERN = re.compile(r"\b(?:sk|gh[pousr]|xox[baprs])[-_][A-Za-z0-9_-]{16,}\b")
 _AWS_ACCESS_KEY_PATTERN = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 _KEY_VALUE_PATTERN = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)"
+    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)"
     r"(\s*=\s*)([^&\s]+)"
 )
 

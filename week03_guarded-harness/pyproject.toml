@@ -11,6 +11,7 @@ license = { text = "Proprietary" }
 authors = [{ name = "Guarded Harness Team" }]
 dynamic = ["version"]
 dependencies = [
+    "jsonschema>=4.23.0,<5.0.0",
     "smolagents==1.26.0",
     "pydantic>=2.9.0,<3.0.0",
     "PyYAML>=6.0.0,<7.0.0",
@@ -38,4 +39,3 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-

@@ -8,7 +8,7 @@
 | 对应需求 | [requirements.md](requirements.md) |
 | 上游输入 | 飞书文档“AI Agent 全栈工程师训练营-作业三”及其中“必须交付”“核心验收”表格 |
 | 参考实现 | `ai-agent-fullstack-training/course_code/week03/3-7/project3` |
-| 目标运行时 | Python 3.10+、`smolagents==1.26.0`、Pydantic 2、SQLite |
+| 目标运行时 | Python 3.10+、`smolagents==1.26.0`、Pydantic 2、jsonschema 4、SQLite |
 | 首期任务 | 代码理解、测试修复 |
 
 本文描述计划实现的结构和安全语义，不代表这些能力已经实现。实现完成与否仍由自动化测试、
@@ -198,7 +198,7 @@ tool_name -> 规范化工具名
 raw_args -> 模型原始参数，仅用于受控审计
 normalized_args -> schema 校验和路径规范化后的参数
 risk, permissions, idempotent -> 来自可信工具注册表
-args_digest -> 工具、规范参数、workspace、run_id、task 的绑定摘要
+args_digest -> 工具名和规范参数的 canonical 摘要（完整 Run/工作区绑定由审批 binding_digest 负责）
 status -> PREPARED / STARTED / SUCCEEDED / FAILED / TIMED_OUT / UNKNOWN_RESULT
 ```
 
@@ -208,19 +208,24 @@ Gate 返回给模型的结果是有界结构化对象，至少包含：
 
 ```json
 {
+  "schema_version": 2,
   "status": "allowed|denied|waiting_approval|failed",
   "code": "STABLE_ERROR_CODE",
   "tool_call_id": "model-supplied-call-id",
   "phase": "schema|policy|approval|repeat|budget|execution",
   "message": "脱敏、可行动且长度受限的说明",
   "retryable": false,
-  "evidence_id": "optional-audit-or-tool-result-id"
+  "approval_id": "optional-approval-id",
+  "evidence_ids": ["optional-evidence-id"],
+  "truncated": false,
+  "output": {}
 }
 ```
 
 拒绝结果不得包含伪造的成功结果，不得触达 handler。`WAITING_APPROVAL` 表示当前进程停止
 继续决策，但 Run 仍可通过恢复入口继续；默认先写出安全 Checkpoint，再由 `Harness.run(...)`
 返回 `WAITING_APPROVAL` 并结束当前进程。`UNKNOWN_RESULT`、审计不可写等条件则终止自动恢复。
+兼容字段 `evidence_id` 由 `evidence_ids` 的首项派生，不能表达与列表不同的事实。
 
 ### 5.4 状态与验收分离
 
@@ -432,7 +437,7 @@ Gate 对每个调用按下列顺序检查，前一步失败后立即返回，不
 | 阶段 | 检查 | 典型错误码 |
 | --- | --- | --- |
 | 1. 可见性与注册 | 工具存在、属于当前 Agent 的任务可见白名单 | `GATE_TOOL_NOT_FOUND`、`GATE_TOOL_NOT_VISIBLE` |
-| 2. 参数 schema | Pydantic/JSON Schema 严格校验，拒绝类型错误和未声明字段 | `GATE_INVALID_ARGUMENT` |
+| 2. 参数 schema | `jsonschema` draft 2020-12 严格校验，拒绝类型错误和未声明字段 | `GATE_INVALID_ARGUMENT` |
 | 3. 语义与规范化 | 参数边界、路径格式、命令规格、规范化参数摘要 | `GATE_SEMANTIC_INVALID`、`SANDBOX_PATH_OUT_OF_WORKSPACE` |
 | 4. 权限 | 当前 actor、任务、模式具备读/写/执行权限 | `GATE_PERMISSION_DENIED` |
 | 5. 风险与模式 | plan 模式禁止写；风险等级必须被任务策略允许 | `GATE_RISK_DENIED`、`GATE_MODE_DENIED` |

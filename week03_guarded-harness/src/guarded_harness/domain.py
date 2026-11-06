@@ -97,6 +97,22 @@ class ObservationStatus(str, Enum):
     UNKNOWN_RESULT = "UNKNOWN_RESULT"
 
 
+class ExecutionMode(str, Enum):
+    """Trusted execution mode for one tool-call context."""
+
+    PLAN = "PLAN"
+    EXECUTE = "EXECUTE"
+
+
+class HandlerResultStatus(str, Enum):
+    """Outcomes a trusted tool handler may report to the Gate."""
+
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    UNKNOWN_RESULT = "UNKNOWN_RESULT"
+
+
 class GatePhase(str, Enum):
     """Fixed gate phase names used for decisions and audit correlation."""
 
@@ -298,6 +314,32 @@ class ErrorCode(str, Enum):
     SANDBOX_COMMAND_CANCELLED = "SANDBOX_COMMAND_CANCELLED"
     SANDBOX_PROCESS_TERMINATION_FAILED = "SANDBOX_PROCESS_TERMINATION_FAILED"
     SANDBOX_RESULT_UNKNOWN = "SANDBOX_RESULT_UNKNOWN"
+
+    REGISTRY_INVALID_DEFINITION = "REGISTRY_INVALID_DEFINITION"
+    REGISTRY_TOOL_CONFLICT = "REGISTRY_TOOL_CONFLICT"
+    POLICY_CONFIG_INVALID = "POLICY_CONFIG_INVALID"
+
+    GATE_ALLOWED = "GATE_ALLOWED"
+    GATE_TOOL_NOT_FOUND = "GATE_TOOL_NOT_FOUND"
+    GATE_TOOL_NOT_VISIBLE = "GATE_TOOL_NOT_VISIBLE"
+    GATE_INVALID_ARGUMENT = "GATE_INVALID_ARGUMENT"
+    GATE_SEMANTIC_INVALID = "GATE_SEMANTIC_INVALID"
+    GATE_PERMISSION_DENIED = "GATE_PERMISSION_DENIED"
+    GATE_RISK_DENIED = "GATE_RISK_DENIED"
+    GATE_MODE_DENIED = "GATE_MODE_DENIED"
+    GATE_REPEATED_CALL = "GATE_REPEATED_CALL"
+    GATE_REPLAY_SUPPRESSED = "GATE_REPLAY_SUPPRESSED"
+    GATE_TOOL_CALL_ID_CONFLICT = "GATE_TOOL_CALL_ID_CONFLICT"
+    GATE_BUDGET_EXHAUSTED = "GATE_BUDGET_EXHAUSTED"
+    GATE_INTENT_WRITE_FAILED = "GATE_INTENT_WRITE_FAILED"
+    GATE_START_WRITE_FAILED = "GATE_START_WRITE_FAILED"
+    GATE_HANDLER_FAILED = "GATE_HANDLER_FAILED"
+    GATE_HANDLER_TIMEOUT = "GATE_HANDLER_TIMEOUT"
+    GATE_RESULT_UNKNOWN = "GATE_RESULT_UNKNOWN"
+    GATE_RESULT_INVALID = "GATE_RESULT_INVALID"
+    GATE_RESULT_WRITE_FAILED = "GATE_RESULT_WRITE_FAILED"
+    GATE_OUTPUT_INVALID = "GATE_OUTPUT_INVALID"
+    GATE_INTERNAL_ERROR = "GATE_INTERNAL_ERROR"
 
 
 def _validate_utc_datetime(value: datetime) -> datetime:
@@ -621,14 +663,116 @@ class ToolObservation(StrictDomainModel):
 
     model_config = ConfigDict(frozen=True)
 
+    schema_version: Literal[2] = 2
     status: ObservationStatus
     code: StableErrorCode
     tool_call_id: ToolCallId
     phase: GatePhase
     message: str = Field(min_length=1, max_length=4000)
     retryable: bool = False
+    approval_id: ApprovalId | None = None
     evidence_id: EvidenceId | None = None
+    evidence_ids: tuple[EvidenceId, ...] = ()
+    truncated: bool = False
     output: JsonValue | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("evidence_ids must not contain duplicates")
+        if self.evidence_id is not None and self.evidence_id not in self.evidence_ids:
+            object.__setattr__(
+                self,
+                "evidence_ids",
+                (self.evidence_id, *self.evidence_ids),
+            )
+        if self.evidence_id is None and self.evidence_ids:
+            object.__setattr__(self, "evidence_id", self.evidence_ids[0])
+
+
+class ToolExecutionContext(StrictDomainModel):
+    """Trusted, model-independent context passed to one tool handler."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: RunId
+    step_id: StepId
+    task_id: str = Field(min_length=1, max_length=128)
+    task_kind: TaskKind
+    mode: ExecutionMode
+    actor: str = Field(min_length=1, max_length=256)
+    roles: tuple[str, ...] = ()
+
+    def model_post_init(self, __context: Any) -> None:
+        role_keys = [role.casefold() for role in self.roles]
+        if any(not role or role != role.strip() for role in self.roles):
+            raise ValueError("roles must be non-empty trimmed strings")
+        if len(role_keys) != len(set(role_keys)):
+            raise ValueError("roles must not contain duplicates")
+        for value in (self.task_id, self.actor, *self.roles):
+            if any(ord(character) < 32 or ord(character) == 127 for character in value):
+                raise ValueError("tool execution context must not contain control characters")
+
+
+class ToolCallRequest(StrictDomainModel):
+    """One model-proposed tool call awaiting Gate authorization."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tool_call_id: ToolCallId
+    tool_name: ToolName
+    args: dict[str, JsonValue]
+    context: ToolExecutionContext
+    lease_token: str = Field(min_length=1, max_length=512, repr=False)
+
+    def model_post_init(self, __context: Any) -> None:
+        if any(ord(character) < 32 or ord(character) == 127 for character in self.lease_token):
+            raise ValueError("lease_token must not contain control characters")
+
+
+class EvidenceDraft(StrictDomainModel):
+    """Trusted handler evidence before Gate assigns identity and ownership."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: EvidenceKind
+    path: RelativePath | None = None
+    command_id: str | None = Field(default=None, max_length=256)
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    content_digest: Sha256Digest
+
+    def model_post_init(self, __context: Any) -> None:
+        if (self.line_start is None) != (self.line_end is None):
+            raise ValueError("line_start and line_end must be provided together")
+        if self.line_start is not None and self.line_end is not None:
+            if self.line_end < self.line_start:
+                raise ValueError("line_end must not precede line_start")
+        if self.kind in {EvidenceKind.READ, EvidenceKind.DOCUMENT} and self.path is None:
+            raise ValueError("file evidence requires a path")
+
+
+class HandlerResult(StrictDomainModel):
+    """Structured result returned by a trusted tool handler."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    status: HandlerResultStatus
+    output: JsonValue | None = None
+    summary: str = Field(default="", max_length=8000)
+    error_code: StableErrorCode | None = None
+    evidence: tuple[EvidenceDraft, ...] = ()
+    retryable: bool = False
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.status == HandlerResultStatus.SUCCEEDED and self.error_code is not None:
+            raise ValueError("successful handler results cannot carry an error code")
+        if self.status != HandlerResultStatus.SUCCEEDED and self.error_code is None:
+            raise ValueError("failed or indeterminate handler results require an error code")
+        if self.retryable and self.status != HandlerResultStatus.FAILED:
+            raise ValueError("only deterministic failed handler results can be retryable")
+        if self.status == HandlerResultStatus.UNKNOWN_RESULT and self.evidence:
+            raise ValueError("unknown handler results cannot claim new evidence")
 
 
 class Approval(StrictDomainModel):

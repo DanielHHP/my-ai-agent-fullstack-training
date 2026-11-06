@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from .audit import AuditDecision, AuditEventDraft, AuditEventType, AuditStatus
 from .domain import (
+    AcceptanceStatus,
     Approval,
     ApprovalDecision,
     ApprovalId,
@@ -25,6 +26,7 @@ from .domain import (
     InvocationStatus,
     RunStatus,
     Sha256Digest,
+    StopReason,
     TaskKind,
     Uuid4IdFactory,
 )
@@ -344,7 +346,10 @@ class ApprovalStore:
         self._ensure_active()
         row = self._required_row(approval_id)
         self._verify_lease(str(row["run_id"]), lease_token, self._now())
-        return self._materialize_expiry(approval_from_row(row))
+        return self._materialize_expiry(
+            approval_from_row(row),
+            lease_token=lease_token,
+        )
 
     def list_for_run(
         self,
@@ -384,7 +389,10 @@ class ApprovalStore:
             """,
             parameters,
         ).fetchall()
-        return tuple(self._materialize_expiry(approval_from_row(row)) for row in rows)
+        return tuple(
+            self._materialize_expiry(approval_from_row(row), lease_token=lease_token)
+            for row in rows
+        )
 
     def approve(
         self,
@@ -439,7 +447,9 @@ class ApprovalStore:
             """,
             (run_id, _serialize_datetime(now)),
         ).fetchall()
-        return tuple(self._expire(approval_from_row(row), now=now) for row in rows)
+        return tuple(
+            self._expire(approval_from_row(row), now=now, lease_token=lease_token) for row in rows
+        )
 
     def invalidate(
         self,
@@ -452,9 +462,10 @@ class ApprovalStore:
         """Invalidate an approval that can no longer authorize execution."""
 
         self._ensure_active()
-        approval = self._required_approval(approval_id)
+        approval = self._required_approval(approval_id, expire=False)
         now = self._now()
         self._verify_lease(approval.run_id, lease_token, now)
+        approval = self._materialize_expiry(approval, lease_token=lease_token)
         if approval.revision != expected_revision:
             self._raise(ErrorCode.APPROVAL_CONFLICT, "invalidate", "approval revision changed")
         if approval.status == ApprovalStatus.CLAIMED:
@@ -515,10 +526,10 @@ class ApprovalStore:
         """Claim an approved request exactly once for one execution intent."""
 
         self._ensure_active()
-        approval = self._required_approval(approval_id)
+        approval = self._required_approval(approval_id, expire=False)
         now = self._now()
         self._verify_lease(approval.run_id, lease_token, now)
-        approval = self._materialize_expiry(approval)
+        approval = self._materialize_expiry(approval, lease_token=lease_token)
         if approval.status == ApprovalStatus.EXPIRED:
             self._raise(ErrorCode.APPROVAL_EXPIRED, "claim", "approval has expired")
         if approval.status == ApprovalStatus.CLAIMED:
@@ -598,7 +609,7 @@ class ApprovalStore:
         """Recover an existing claim only while the invocation is still PREPARED."""
 
         self._ensure_active()
-        approval = self._required_approval(approval_id)
+        approval = self._required_approval(approval_id, expire=False)
         now = self._now()
         self._verify_lease(approval.run_id, lease_token, now)
         self._validate_current_binding(approval)
@@ -653,7 +664,7 @@ class ApprovalStore:
         """Consume a claimed approval only after a deterministic invocation result."""
 
         self._ensure_active()
-        approval = self._required_approval(approval_id)
+        approval = self._required_approval(approval_id, expire=False)
         now = self._now()
         self._verify_lease(approval.run_id, lease_token, now)
         if approval.revision != expected_revision:
@@ -734,10 +745,10 @@ class ApprovalStore:
         reason_code: str | None,
     ) -> Approval:
         self._ensure_active()
-        approval = self._required_approval(approval_id)
+        approval = self._required_approval(approval_id, expire=False)
         now = self._now()
         self._verify_lease(approval.run_id, lease_token, now)
-        approval = self._materialize_expiry(approval)
+        approval = self._materialize_expiry(approval, lease_token=lease_token)
         if approval.status == ApprovalStatus.EXPIRED:
             self._raise(ErrorCode.APPROVAL_EXPIRED, "decide", "approval has expired")
         if approval.revision != expected_revision:
@@ -817,6 +828,18 @@ class ApprovalStore:
             input_summary={"approver": approver.actor, "roles": list(approver.roles)},
             output_summary={"status": target.value, "reason": stable_reason},
         )
+        if target == ApprovalStatus.REJECTED:
+            state = self._unit.state
+            state.transition_run(
+                approval.run_id,
+                expected_status=RunStatus.WAITING_APPROVAL,
+                expected_revision=state.get_run_revision(approval.run_id),
+                target=RunStatus.STOPPED,
+                stop_reason=StopReason.APPROVAL_REJECTED,
+                ended_at=now,
+                acceptance_status=AcceptanceStatus.NOT_EVALUATED,
+                lease_token=lease_token,
+            )
         return self._required_approval(approval_id, expire=False)
 
     def _handle_duplicate(
@@ -900,15 +923,21 @@ class ApprovalStore:
                 "approval binding no longer matches current execution context",
             )
 
-    def _materialize_expiry(self, approval: Approval) -> Approval:
+    def _materialize_expiry(self, approval: Approval, *, lease_token: str) -> Approval:
         if approval.status not in _ACTIVE_APPROVAL_STATUSES:
             return approval
         now = self._now()
         if now < approval.expires_at:
             return approval
-        return self._expire(approval, now=now)
+        return self._expire(approval, now=now, lease_token=lease_token)
 
-    def _expire(self, approval: Approval, *, now: datetime) -> Approval:
+    def _expire(
+        self,
+        approval: Approval,
+        *,
+        now: datetime,
+        lease_token: str,
+    ) -> Approval:
         if approval.status not in _ACTIVE_APPROVAL_STATUSES:
             return approval
         self._trigger("approval:before-update")
@@ -944,11 +973,29 @@ class ApprovalStore:
             rule_id="APPROVAL_TTL",
             output_summary={"from": approval.status.value, "status": "EXPIRED"},
         )
+        run = self._unit.state.get_run(approval.run_id)
+        if run.status == RunStatus.WAITING_APPROVAL:
+            self._unit.state.transition_run(
+                approval.run_id,
+                expected_status=RunStatus.WAITING_APPROVAL,
+                expected_revision=self._unit.state.get_run_revision(approval.run_id),
+                target=RunStatus.STOPPED,
+                stop_reason=StopReason.APPROVAL_EXPIRED,
+                ended_at=now,
+                acceptance_status=AcceptanceStatus.NOT_EVALUATED,
+                lease_token=lease_token,
+            )
         return self._required_approval(approval.approval_id, expire=False)
 
-    def _required_approval(self, approval_id: str, *, expire: bool = True) -> Approval:
+    def _required_approval(self, approval_id: str, *, expire: bool = False) -> Approval:
         approval = approval_from_row(self._required_row(approval_id))
-        return self._materialize_expiry(approval) if expire else approval
+        if expire:
+            raise ApprovalStoreError(
+                ErrorCode.APPROVAL_INVALID,
+                operation="load",
+                message="lease token is required to materialize approval expiry",
+            )
+        return approval
 
     def _required_row(self, approval_id: str) -> sqlite3.Row:
         row = self._get_row(approval_id)

@@ -6,20 +6,20 @@
 | --- | --- |
 | 工作包 | WP-00 工程与契约内核 |
 | 文档状态 | frozen |
-| 规格版本 | 1.2.0 |
-| 冻结日期 | 2026-11-04（WP-02 Approval v2 兼容修订） |
+| 规格版本 | 1.3.0 |
+| 冻结日期 | 2026-11-05（WP-04 Observation v2 兼容修订） |
 | 依赖 | 无 |
 | 下游工作包 | WP-01、WP-03、WP-04、WP-07、WP-08、WP-09、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-HARNESS-001`、`REQ-HARNESS-004`、`REQ-GATE-002`、`REQ-GATE-003`、`REQ-SANDBOX-001`、`REQ-TASK-001`、`REQ-TASK-002`、`REQ-COMPLETE-002` |
 | 对应设计 | `design.md` 第 4、5、7.2、11.1、13、14 节 |
-| 已确认决策 | D-02 至 D-16、D-21、D-23 至 D-28 |
+| 已确认决策 | D-02 至 D-16、D-21、D-23 至 D-28、D-38、D-39 |
 | 飞书输入 | 作业文档 revision 14；“核心验收”内嵌表 revision 11 |
 
 本文是 WP-00 已冻结的行为与验收契约。状态为 `frozen` 表示规格评审完成，不表示相关工程能力
 已经实现；实现是否完成仍由测试、lint、格式检查和验收证据决定。
 
-v1.2.0 只包含已确认的 Approval 与审批配置兼容修订，具体实现和验收由 WP-02 T01 承担；
-WP-00 v1.1.0 的已验收证据仍是现有代码基线，不能用于宣称 v1.2.0 已实现。
+v1.2.0 包含 Approval 与审批配置兼容修订；v1.3.0 增加 WP-04 所需的 Observation v2 和
+JSON Schema runtime 契约。WP-02/WP-04 的测试与验收报告分别承担这些兼容修订的实现证据。
 
 发生冲突时，文档权威顺序为
 `requirements.md / design.md / decisions.md > 本 spec.md > plan.md > 具体任务卡`。本规格不重新定义
@@ -321,7 +321,7 @@ approval_requirement: ApprovalRequirement
 concurrency_class: ConcurrencyClass
 ```
 
-`input_schema` 是 JSON Schema 形状的兼容契约，只包含可序列化值；WP-00 校验其顶层结构和大小，
+`input_schema` 使用 JSON Schema draft 2020-12，只包含可序列化值；`jsonschema` 是运行时依赖，
 具体工具参数 schema 校验由 WP-04 执行。`handler`、真实可执行文件路径、凭据和内部实现不得出现
 在该公共模型中。
 
@@ -340,8 +340,9 @@ error_code, created_at, updated_at
 `raw_args` 仅用于受控审计；`normalized_args` 是由 Gate 生成的可重放规范参数。WP-00 只冻结字段和
 可序列化边界，不提供参数授权。`args_digest` 在 WP-02/WP-04 按审批摘要规则生成。
 
-`ToolObservation` 至少包含 `status`、`code`、`tool_call_id`、`phase`、有界 `message`、
-`retryable`、可选 `evidence_id` 和可选结构化 `output`。拒绝状态不得包含伪造成功 output。
+`ToolObservation` schema v2 至少包含 `schema_version`、`status`、`code`、`tool_call_id`、
+`phase`、有界 `message`、`retryable`、可选 `approval_id`、`evidence_ids`、`truncated` 和可选
+结构化 `output`。兼容字段 `evidence_id` 必须由证据列表派生。拒绝状态不得包含伪造成功 output。
 
 ### 7.5 Approval
 

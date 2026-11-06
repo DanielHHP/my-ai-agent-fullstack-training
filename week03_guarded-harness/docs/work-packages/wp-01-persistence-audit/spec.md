@@ -6,9 +6,9 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 文档状态 | frozen |
-| 规格版本 | 0.3.0 |
-| 冻结日期 | 2026-11-04（Evidence 单一生产者修订） |
-| 依赖 | WP-00 v1.1.0，已验收 |
+| 规格版本 | 0.4.0 |
+| 冻结日期 | 2026-11-05（WP-04 revision 读取兼容修订） |
+| 依赖 | WP-00 v1.3.0 |
 | 下游工作包 | WP-02、WP-04、WP-07、WP-08、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-GATE-002`、`REQ-STATE-001` 至 `REQ-STATE-003`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-CHECKPOINT-003`，以及第 8 节非功能要求 |
 | 对应设计 | `design.md` 第 4、5、9、10、13、14 节 |
@@ -174,10 +174,17 @@ transition_run(run_id, expected_status, expected_revision, target,
 acquire_lease(run_id, owner_id, ttl_seconds) -> RunLease
 renew_lease(lease, ttl_seconds) -> RunLease
 release_lease(lease) -> None
+
+get_run_revision(run_id) -> int
+get_invocation_revision(run_id, tool_call_id) -> int
+verify_lease(run_id, lease_token) -> None
 ```
 
 所有读取结果必须重新经过冻结的 Pydantic 模型校验。数据库中的类型、枚举、时间、ID、JSON、
 状态组合或引用不合法时，不得返回部分对象，必须失败关闭。
+
+v0.4.0 增加的三个只读接口供 WP-04 在不读取私有字段、不执行直接 SQL 的前提下组合条件更新：
+revision getter 返回当前版本，`verify_lease` 只验证当前未过期 owner token，不续期、不修改状态。
 
 `RunSnapshot` 在 WP-01 至少包含：
 

@@ -85,14 +85,19 @@ def test_public_api_importable() -> None:
         "ErrorCode",
         "Evidence",
         "FaultInjector",
+        "Gate",
+        "HandlerResult",
         "IdFactory",
+        "PolicyEngine",
         "Run",
         "RunStatus",
         "Step",
         "StopReason",
         "TaskKind",
         "ToolInvocation",
+        "ToolExecutionContext",
         "ToolObservation",
+        "ToolRegistry",
         "ToolSpec",
         "load_config",
     }
@@ -106,6 +111,7 @@ def test_pyproject_is_the_single_dependency_source() -> None:
     requires = metadata.requires("guarded-harness") or []
     assert not (project_root / "requirements.txt").exists()
     assert any(requirement.startswith("smolagents==1.26.0") for requirement in requires)
+    assert any(requirement.startswith("jsonschema") for requirement in requires)
     assert any(
         requirement.startswith("pytest") and 'extra == "dev"' in requirement
         for requirement in requires
@@ -190,6 +196,8 @@ def test_public_domain_models_contain_required_fields() -> None:
         message="Tool is not visible to this task.",
     )
     assert observation.retryable is False
+    assert observation.schema_version == 2
+    assert observation.evidence_ids == ()
 
     approval = gh.Approval(
         approval_id=APPROVAL_ID,
@@ -214,6 +222,13 @@ def test_public_domain_models_contain_required_fields() -> None:
     serialized_approval = gh.canonical_json_dump(approval)
     restored_approval = gh.Approval.model_validate_json(serialized_approval, strict=True)
     assert gh.canonical_json_dump(restored_approval) == serialized_approval
+
+    handler_result = gh.HandlerResult(
+        status=gh.HandlerResultStatus.SUCCEEDED,
+        output={"ok": True},
+        summary="ok",
+    )
+    assert handler_result.status == gh.HandlerResultStatus.SUCCEEDED
 
     evidence = gh.Evidence(
         evidence_id=EVIDENCE_ID,

@@ -21,5 +21,8 @@
 | [WP-03 规格](work-packages/wp-03-sandbox-boundary/spec.md) | Sandbox 路径、安全 I/O、Git 基线、受信命令、环境、进程组、飞书验收映射和已冻结决策 |
 | [WP-03 计划](work-packages/wp-03-sandbox-boundary/plan.md) | WP-03 已完成的实施计划：详细设计、任务卡、测试矩阵、风险、回滚和决策追溯 |
 | [WP-03 验收报告](work-packages/wp-03-sandbox-boundary/acceptance-report.md) | Sandbox 实现、52 项目标测试、145 项全量测试、场景映射、限制和验收结论 |
+| [WP-04 规格](work-packages/wp-04-governed-execution/spec.md) | Registry、Policy、Gate 固定检查链、审批/执行生命周期、飞书验收映射和 D-37 至 D-44 |
+| [WP-04 计划](work-packages/wp-04-governed-execution/plan.md) | WP-04 详细设计、事务边界、任务卡、测试矩阵、风险和回滚计划 |
+| [WP-04 验收报告](work-packages/wp-04-governed-execution/acceptance-report.md) | Gate 实现、目标/全量测试、故障/并发证据、限制和验收结论 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

@@ -1282,6 +1282,34 @@ class StateStore:
             output_summary={"released_at": _serialize_datetime(now)},
         )
 
+    def get_run_revision(self, run_id: str) -> int:
+        """Return the current optimistic-concurrency revision for one run."""
+
+        self._ensure_active()
+        return self._get_run_revision(run_id)
+
+    def get_invocation_revision(self, run_id: str, tool_call_id: str) -> int:
+        """Return the current revision for one tool invocation."""
+
+        self._ensure_active()
+        row = self._connection.execute(
+            "SELECT revision FROM tool_calls WHERE run_id = ? AND tool_call_id = ?",
+            (run_id, tool_call_id),
+        ).fetchone()
+        if row is None:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "get_invocation_revision",
+                "tool invocation does not exist",
+            )
+        return int(row["revision"])
+
+    def verify_lease(self, run_id: str, lease_token: str) -> None:
+        """Verify that a non-expired lease token still owns the run."""
+
+        self._ensure_active()
+        self._verify_lease(run_id, lease_token, self._now())
+
     def get_run_snapshot(self, run_id: str) -> RunSnapshot:
         """Read all WP-01-owned state in the current transaction."""
 

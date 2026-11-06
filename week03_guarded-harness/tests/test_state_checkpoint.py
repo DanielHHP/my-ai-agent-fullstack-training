@@ -1329,16 +1329,6 @@ def test_approval_expiry_stops_run_atomically(tmp_path: Path) -> None:
 
     with storage.transaction(actor="harness") as unit:
         expired = unit.approvals.expire_due(RUN_ID, lease_token=lease.token)
-        unit.state.transition_run(
-            RUN_ID,
-            expected_status=RunStatus.WAITING_APPROVAL,
-            expected_revision=_run_revision(unit),
-            target=RunStatus.STOPPED,
-            stop_reason=StopReason.APPROVAL_EXPIRED,
-            ended_at=NOW,
-            acceptance_status=AcceptanceStatus.NOT_EVALUATED,
-            lease_token=lease.token,
-        )
 
     assert len(expired) == 1
     assert expired[0].approval_id == pending.approval_id
@@ -1367,16 +1357,6 @@ def test_approval_rejection_stops_run_atomically(tmp_path: Path) -> None:
             expected_revision=pending.revision,
             approver=Approver(actor="operator", roles=("operator",)),
             reason_code="HUMAN_REJECTED",
-            lease_token=lease.token,
-        )
-        unit.state.transition_run(
-            RUN_ID,
-            expected_status=RunStatus.WAITING_APPROVAL,
-            expected_revision=_run_revision(unit),
-            target=RunStatus.STOPPED,
-            stop_reason=StopReason.APPROVAL_REJECTED,
-            ended_at=NOW,
-            acceptance_status=AcceptanceStatus.NOT_EVALUATED,
             lease_token=lease.token,
         )
 

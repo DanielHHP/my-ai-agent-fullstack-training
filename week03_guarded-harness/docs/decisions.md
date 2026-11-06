@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-36 |
+| 决策范围 | 已确认的 D-01 至 D-44 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -52,3 +52,11 @@
 | D-34 | 子进程最小环境 | 子进程环境从空白映射构造，只注入受控 `PATH`、`LANG=C.UTF-8`、`LC_ALL=C.UTF-8`、`TZ=UTC`、隔离的 `HOME`/`TMPDIR`、`PYTHONDONTWRITEBYTECODE=1`、`PYTHONNOUSERSITE=1`、`PYTHONHASHSEED=0` 以及 Git 非交互/禁用系统与全局配置变量。P0 不允许任务配置追加 env，也不从父进程继承代理、凭据、Python、pytest 或云配置变量。 |
 | D-35 | 外围 Git 保护开关 | `workspace.protect_other_git_changes=true` 时采集并强制比较 `git_root` 内、`workspace_root` 外的 Git-visible 脏路径、内容摘要和仓库身份。为 `false` 时仍记录 Git 身份、HEAD 和 index，但明确跳过外围脏路径采集与比较，`WorkspaceIdentity.external_dirty_baseline_fingerprint` 使用“未监控”域分隔哨兵；Sandbox 不得把关闭状态报告成受保护或无变化。 |
 | D-36 | Git 基线边界状态 | 支持无 HEAD 的空仓库，使用稳定 `UNBORN` 哨兵而不伪造 commit。`require_clean_workspace=false` 时记录工作区初始 entries 的完整路径、状态、类型和内容摘要，后续任何偏离该基线的情况均视为变化。symlink 只摘要目标字符串且不跟随到工作区外；submodule/gitlink 使用 Git 对象 ID；FIFO、设备、socket 等特殊文件不支持并在基线阶段失败关闭。 |
+| D-37 | WP-04 revision 与租约读取 | WP-01 追加只读公共接口 `get_run_revision`、`get_invocation_revision` 和 `verify_lease`。Gate 只能通过这些接口组合条件更新，不使用私有 helper 或直接 SQL。 |
+| D-38 | ToolObservation v2 | `ToolObservation` 升级为 schema v2，增加 `approval_id`、`evidence_ids` 和 `truncated`；保留 `evidence_id` 作为由首条证据派生的兼容字段。 |
+| D-39 | 工具参数 Schema | 运行时依赖增加 `jsonschema>=4.23,<5`；Registry 和 Gate 统一使用 JSON Schema draft 2020-12，工具根 schema 必须为 object 且显式设置 `additionalProperties=false`。 |
+| D-40 | 重复与 replay 上限 | 只读工具默认最多进入 handler 2 次，写/执行工具默认最多 1 次；可信 PolicyConfig 可以覆盖。已完成写操作即使换新 `tool_call_id` 也先做 replay suppression。 |
+| D-41 | handler 超时边界 | WP-04 使用同步协作 deadline 和事后 elapsed 判定；真实阻塞操作由 WP-05/WP-06 交给 Sandbox 硬终止。超时或迟到结果进入 `UNKNOWN_RESULT`，不得用后台线程伪造强制停止。 |
+| D-42 | Gate 自动重试 | WP-04 不自动重试 handler；仅校验 retry metadata 并返回 `retryable`。安全重试必须由 WP-06 在真实进程结果和幂等证据下重新经过 Gate。 |
+| D-43 | 角色与权限装配 | WP-04 通过可信代码构造的 `PolicyEngine` 接收任务工具白名单、角色权限和审批角色；本包不新增 YAML 字段，Harness 配置装配由 WP-10 负责。 |
+| D-44 | 前置拒绝持久化 | 前置拒绝不创建 ToolInvocation，只写带 `run_id`、`tool_call_id`、actor、phase、rule 和 decision 的 Gate 审计事实；Invocation 仅表示已进入执行意图的候选。 |
