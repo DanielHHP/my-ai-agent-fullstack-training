@@ -6,11 +6,11 @@
 | --- | --- |
 | 工作包 | WP-03 Sandbox 边界 |
 | 报告状态 | accepted |
-| 报告版本 | 1.0.0 |
-| 验收日期 | 2026-11-05 |
-| 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
-| 对应计划 | [plan.md](plan.md) v1.0.0 / done |
-| 仓库基线 | `805e7f00ed19dff246d956cd11828234f3f63869` + WP-03 工作区改动 |
+| 报告版本 | 1.1.0 |
+| 验收日期 | 2026-11-06 |
+| 对应规格 | [spec.md](spec.md) v1.1.0 / frozen |
+| 对应计划 | [plan.md](plan.md) v1.1.0 / done |
+| 仓库基线 | `7439bb352d9db4bc0ba4b455b08b9bb87c006704` + WP-03 v1.1/WP-05 工作区改动 |
 | 基线工作区 | 验收前存在 WP-03 未提交改动；本报告记录当前工作树证据 |
 | 验收环境 | macOS Darwin 22.6.0 x86_64；Python 3.13.5；pip 25.1.1；git 2.39.2 |
 
@@ -25,6 +25,8 @@ Sandbox 能力可被下游复用，不表示 Gate、审批、真实仓库工具�
 - `..`、绝对越界、兄弟前缀、Windows/UNC/反斜杠、大小写敏感规则和符号链接逃逸拒绝；
 - 平台敏感读、`.git`/依赖目录禁写、任务 `deny_read`/`deny_write` 和窄范围 `allow_write`；
 - 10 MiB 有界整文件读取、目录/特殊文件拒绝和读取后路径复核；
+- v1.1 安全目录枚举、稳定排序、敏感条目聚合省略和目录符号链接不递归；
+- v1.1 受控 pathspec 参数槽，只接受当前 Sandbox 的 READ 路径并在 Popen 前复核；
 - 同目录临时文件、`fsync`、原子创建/替换、预期摘要、权限保留和父目录策略；
 - 工作区状态、diff、外围 Git-visible 脏路径、HEAD、index 和空仓库 `UNBORN` 基线；
 - 外围保护开关的 `ENABLED/DISABLED` 明确语义和状态目录精确排除；
@@ -63,10 +65,10 @@ WP-03 不提供 OS 级文件系统或网络隔离。测试命令只允许在可�
 | 检查 | 命令 | 实际结果 |
 | --- | --- | --- |
 | Editable 安装 | `python -m pip install -e '.[dev]'` | PASS；成功构建并安装 editable `guarded-harness==0.1.0` |
-| WP-03 目标测试 | `python -m pytest tests/test_sandbox.py -q` | `52 passed in 17.57s` |
-| 全量测试 | `python -m pytest -q` | `145 passed in 18.68s` |
+| WP-03 目标测试 | `python -m pytest tests/test_sandbox.py -q` | `56 passed` |
+| 全量测试 | `python -m pytest -q` | `196 passed` |
 | Lint | `python -m ruff check .` | PASS；`All checks passed!` |
-| 格式 | `python -m ruff format --check .` | PASS；`37 files already formatted` |
+| 格式 | `python -m ruff format --check .` | PASS；`53 files already formatted` |
 | 依赖一致性 | `python -m pip check` | PASS；`No broken requirements found.` |
 | 文档空白检查 | `git diff --check` | PASS |
 
@@ -110,6 +112,10 @@ WP-03 不提供 OS 级文件系统或网络隔离。测试命令只允许在可�
 | WP03-AC-032 平台能力 | PASS | `test_unsupported_platform_fails_before_popen` |
 | WP03-AC-033 外围保护关闭 | PASS | `test_disabled_external_protection_is_explicit` |
 | WP03-AC-034 空仓库/特殊类型 | PASS | `test_unborn_repository_uses_stable_sentinel`、`test_symlink_gitlink_and_special_file_baseline_edges` |
+| WP03-AC-035 安全目录枚举 | PASS | `test_list_directory_is_safe_sorted_and_bounded` |
+| WP03-AC-036 有界递归遍历 | PASS | `test_walk_readable_files_reports_limit_reasons` |
+| WP03-AC-037 未授权 pathspec | PASS | `test_pathspec_execution_rejects_untrusted_paths` |
+| WP03-AC-038 授权 pathspec | PASS | `test_pathspec_execution_uses_validated_read_paths` |
 
 ## 6. 任务卡验收
 
@@ -124,6 +130,8 @@ WP-03 不提供 OS 级文件系统或网络隔离。测试命令只允许在可�
 | WP03-T07 进程执行与输出 | DONE | 输出截断、超时、取消、进程组终止、启动失败和分类矩阵通过 |
 | WP03-T08 安全回归 | DONE | 副作用为 0、无自动重试、损坏 Git 和平台失败关闭通过 |
 | WP03-T09 文档与验收 | DONE | spec/plan/decision/design/index/report 同步，验收命令复跑通过 |
+| WP03-T10 安全目录枚举 | DONE | 稳定排序、省略敏感名称、目录 symlink 不递归、三类上限测试通过 |
+| WP03-T11 受限 pathspec | DONE | 未授权/非 READ/重复 pathspec 在 Popen 前拒绝；合法路径独立追加 |
 
 ## 7. 安全与故障矩阵
 
@@ -155,7 +163,7 @@ WP-03 不提供 OS 级文件系统或网络隔离。测试命令只允许在可�
 | S4 超时/取消 | 父和后代进程组终止，结果结构化 | 直接 PASS | WP-06/WP-11 映射业务终态 |
 | C4 工作区变化 | 工作区、外围、HEAD/index/身份比较 | 基础 PASS | WP-07 失效证据并停止恢复 |
 | A2 全链路关联 | 结果含 command_id、路径、错误码和摘要 | 基础 PASS | WP-01/WP-04 建立完整审计链 |
-| T1 确定性测试 | 52 项目标测试、145 项全量测试通过 | PASS | WP-12 全局收口 |
+| T1 确定性测试 | 56 项目标测试、196 项全量测试通过 | PASS | WP-12 全局收口 |
 | T2 真实模型任务 | 未执行 | N/A（P1） | WP-12/P1 |
 
 ## 9. 限制与剩余风险
@@ -174,7 +182,8 @@ WP-03 不提供 OS 级文件系统或网络隔离。测试命令只允许在可�
 
 ## 10. 验收结论
 
-**WP-03 Sandbox 边界：ACCEPTED。**
+**WP-03 Sandbox 边界：ACCEPTED（v1.1 兼容修订）。**
 
-冻结规格中的 34 个场景、T01-T09、目标测试、全量测试、Ruff、格式、依赖和文档检查均有实际
-复跑证据。WP-04、WP-05、WP-06 和 WP-07 可以在 D-29 至 D-36 的 Sandbox 契约上继续施工。
+冻结规格中的 38 个场景、T01-T11、目标测试、全量测试、Ruff、格式、依赖和文档检查均有实际
+复跑证据。WP-04、WP-05、WP-06 和 WP-07 可以在 D-29 至 D-36、D-46、D-47 的 Sandbox 契约上
+继续施工。

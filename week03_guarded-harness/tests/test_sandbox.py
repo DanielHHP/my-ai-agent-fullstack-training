@@ -1036,3 +1036,161 @@ def test_feishu_s1_s4_partial_mapping(
     s4 = sandbox.execute("s4")
     assert s4.timed_out is True
     assert s4.process_group_terminated is True
+
+
+def test_list_directory_is_safe_sorted_and_bounded(
+    tmp_path: Path,
+    fixed_clock: object,
+) -> None:
+    sandbox, root, workspace = _sandbox(tmp_path, fixed_clock=fixed_clock)
+    (workspace / ".env").write_text("SECRET=hidden\n", encoding="utf-8")
+    (workspace / "z.txt").write_text("z\n", encoding="utf-8")
+    (workspace / "a.txt").write_text("a\n", encoding="utf-8")
+    os.symlink(root / "outside.txt", workspace / "outside-link")
+    os.symlink(workspace / "src", workspace / "src-link")
+
+    listing = sandbox.list_directory(".", max_entries=20)
+    names = [entry.name for entry in listing.entries]
+
+    directory_names = [
+        entry.name for entry in listing.entries if entry.entry_type == gh.SandboxEntryType.DIRECTORY
+    ]
+    file_names = [
+        entry.name for entry in listing.entries if entry.entry_type != gh.SandboxEntryType.DIRECTORY
+    ]
+    assert directory_names == sorted(directory_names)
+    assert file_names == sorted(file_names)
+    assert [
+        entry.entry_type == gh.SandboxEntryType.DIRECTORY for entry in listing.entries
+    ] == sorted(
+        (entry.entry_type == gh.SandboxEntryType.DIRECTORY for entry in listing.entries),
+        reverse=True,
+    )
+    assert ".env" not in names
+    assert "outside-link" not in names
+    assert "src-link" in names
+    assert next(entry for entry in listing.entries if entry.name == "src-link").entry_type == (
+        gh.SandboxEntryType.SYMLINK
+    )
+    assert listing.omitted_count == 2
+
+    bounded = sandbox.list_directory(".", max_entries=2)
+    assert bounded.returned_count == 2
+    assert bounded.truncated is True
+
+
+def test_walk_readable_files_reports_limit_reasons(
+    tmp_path: Path,
+    fixed_clock: object,
+) -> None:
+    sandbox, _, workspace = _sandbox(tmp_path, fixed_clock=fixed_clock)
+    (workspace / "node_modules").mkdir()
+    (workspace / "node_modules" / "ignored.js").write_text("ignored\n", encoding="utf-8")
+    (workspace / "src" / "extra.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    walked = sandbox.walk_readable_files(".", max_files=10, max_bytes=1024, max_entries=100)
+    paths = [path.workspace_relative for path in walked.files]
+    assert "node_modules/ignored.js" not in paths
+    assert paths == sorted(paths)
+
+    files_limited = sandbox.walk_readable_files(".", max_files=1, max_bytes=1024, max_entries=100)
+    assert files_limited.truncated is True
+    assert files_limited.limit_reason == gh.SandboxWalkLimitReason.FILES
+
+    bytes_limited = sandbox.walk_readable_files(".", max_files=10, max_bytes=1, max_entries=100)
+    assert bytes_limited.truncated is True
+    assert bytes_limited.limit_reason == gh.SandboxWalkLimitReason.BYTES
+
+    entries_limited = sandbox.walk_readable_files(
+        ".",
+        max_files=10,
+        max_bytes=1024,
+        max_entries=1,
+    )
+    assert entries_limited.truncated is True
+    assert entries_limited.limit_reason == gh.SandboxWalkLimitReason.ENTRIES
+
+
+def test_pathspec_execution_rejects_untrusted_paths(
+    tmp_path: Path,
+    fixed_clock: object,
+) -> None:
+    sandbox, _, _ = _sandbox(tmp_path, fixed_clock=fixed_clock)
+    with pytest.raises(ValueError):
+        gh.TrustedCommandSpec(
+            command_id="legacy_pathspec",
+            argv=("git", "diff", "--"),
+            effect_class=gh.CommandEffectClass.READ_ONLY,
+            schema_version=1,
+            allow_pathspecs=True,
+        )
+    with pytest.raises(ValueError):
+        gh.TrustedCommandSpec(
+            command_id="missing_separator",
+            argv=("git", "diff"),
+            effect_class=gh.CommandEffectClass.READ_ONLY,
+            allow_pathspecs=True,
+        )
+    sandbox.register_trusted_command(
+        gh.TrustedCommandSpec(
+            command_id="inspect_args",
+            argv=(
+                "python",
+                "-c",
+                "import json,sys; print(json.dumps(sys.argv[1:]))",
+                "--",
+            ),
+            effect_class=gh.CommandEffectClass.READ_ONLY,
+        )
+    )
+    read_path = sandbox.check_read("README.md")
+    with pytest.raises(gh.SandboxViolation) as denied:
+        sandbox.execute("inspect_args", pathspecs=(read_path,))
+    assert denied.value.code == gh.ErrorCode.SANDBOX_COMMAND_INVALID
+
+    sandbox.register_trusted_command(
+        gh.TrustedCommandSpec(
+            command_id="inspect_args_allowed",
+            argv=(
+                "python",
+                "-c",
+                "import json,sys; print(json.dumps(sys.argv[1:]))",
+                "--",
+            ),
+            effect_class=gh.CommandEffectClass.READ_ONLY,
+            allow_pathspecs=True,
+        )
+    )
+    write_path = sandbox.check_write("README.md")
+    with pytest.raises(gh.SandboxViolation):
+        sandbox.execute("inspect_args_allowed", pathspecs=(write_path,))
+    with pytest.raises(gh.SandboxViolation):
+        sandbox.execute("inspect_args_allowed", pathspecs=(read_path, read_path))
+
+
+def test_pathspec_execution_uses_validated_read_paths(
+    tmp_path: Path,
+    fixed_clock: object,
+) -> None:
+    sandbox, _, _ = _sandbox(tmp_path, fixed_clock=fixed_clock)
+    sandbox.register_trusted_command(
+        gh.TrustedCommandSpec(
+            command_id="inspect_args",
+            argv=(
+                "python",
+                "-c",
+                "import json,sys; print(json.dumps(sys.argv[1:]))",
+                "--",
+            ),
+            effect_class=gh.CommandEffectClass.READ_ONLY,
+            allow_pathspecs=True,
+        )
+    )
+    read_path = sandbox.check_read("src/app.py")
+    result = sandbox.execute("inspect_args", pathspecs=(read_path,))
+    assert result.status == gh.SandboxProcessStatus.SUCCEEDED
+    assert json.loads(result.stdout) == ["--", "src/app.py"]
+
+    legacy = sandbox.execute("inspect_args")
+    assert legacy.status == gh.SandboxProcessStatus.SUCCEEDED
+    assert json.loads(legacy.stdout) == ["--"]

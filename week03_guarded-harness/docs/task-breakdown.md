@@ -585,6 +585,10 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 ### WP-05 只读仓库能力包
 
+**包内文档**：[规格](work-packages/wp-05-readonly-repository-tools/spec.md)（v1.0.0 / frozen）、
+[完成计划](work-packages/wp-05-readonly-repository-tools/plan.md)（v1.0.0 / done）、
+[验收报告](work-packages/wp-05-readonly-repository-tools/acceptance-report.md)（v1.0.0 / accepted）。
+
 **目标**：将只读仓库操作接入 Gate，并产生可供完成验收使用的读取证据。
 
 **依赖**：WP-04。

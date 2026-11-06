@@ -6,13 +6,13 @@
 | --- | --- |
 | 工作包 | WP-03 Sandbox 边界 |
 | 文档状态 | frozen |
-| 规格版本 | 1.0.0 |
-| 冻结日期 | 2026-11-05 |
+| 规格版本 | 1.1.0 |
+| 冻结日期 | 2026-11-06 |
 | 依赖 | WP-00 v1.2.0（已冻结）；WP-01 v0.3.0、WP-02 v0.2.0 已验收，但本包不直接依赖其业务接口 |
 | 下游工作包 | WP-04、WP-05、WP-06、WP-07、WP-08、WP-09、WP-12 |
 | 对应需求 | `REQ-SANDBOX-001` 至 `REQ-SANDBOX-006`、`REQ-GATE-002`、`REQ-AUDIT-003`、`REQ-CHECKPOINT-004`、`REQ-TASK-001` |
 | 对应设计 | `design.md` 第 5.1、6.1、7.1、8、9.3、11.1、13、14 节 |
-| 已确认决策 | D-02、D-05、D-12、D-16、D-21、D-22、D-29 至 D-36 |
+| 已确认决策 | D-02、D-05、D-12、D-16、D-21、D-22、D-29 至 D-36、D-46、D-47 |
 | 飞书输入 | 作业文档 `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌表 revision 11 |
 
 本文是 WP-03 已冻结的行为与验收契约，不代表 Sandbox 已实现。`frozen` 表示规格决策已经关闭，
@@ -48,10 +48,12 @@ Gate 和后续 Harness 决定。
 - `domain.py` 和包根新增的 Sandbox 公共类型、稳定错误码与导出；
 - 工作区/Git 身份解析、路径规范化、真实落点判定和路径策略匹配；
 - 有界整文件安全读取和原子整文件写入；
+- 有界、真实落点复核的安全目录枚举和递归文件遍历；
 - 平台级敏感路径规则，以及任务级 `deny_read`、`deny_write`、`allow_write` 的执行语义；
 - 工作区 status/diff、仓库外围脏路径、HEAD 和 index 基线；
 - 受信命令注册、可执行文件检查、最小环境变量构造；
 - 子进程组、超时、取消、输出采集上限、截断和结果确定性；
+- 对可信只读命令提供只接受已校验 `SandboxPath` 的受限 pathspec 参数槽；
 - `tests/test_sandbox.py` 和必要的通用测试 Fixture 扩展；
 - WP-03 文档、索引、下游交接和最终验收报告。
 
@@ -120,6 +122,14 @@ Sandbox.check_read(path: str) -> SandboxPath
 Sandbox.check_write(path: str) -> SandboxPath
 Sandbox.revalidate_path(path: SandboxPath) -> SandboxPath
 Sandbox.read_file(path: str, *, max_bytes: int = 10_485_760) -> SandboxFile
+Sandbox.list_directory(path: str, *, max_entries: int = 500) -> SandboxDirectoryListing
+Sandbox.walk_readable_files(
+    path: str,
+    *,
+    max_files: int = 5_000,
+    max_bytes: int = 67_108_864,
+    max_entries: int = 20_000,
+) -> SandboxFileWalk
 Sandbox.write_file_atomic(
     path: str,
     data: bytes,
@@ -153,6 +163,40 @@ identity_digest: sha256:<64 hex>
 `absolute_path`、`workspace_relative` 和 `git_relative` 只保存规范化后的字符串，
 `workspace_relative` 使用 POSIX `/`，工作区根本身表示为 `"."`。`identity_digest` 绑定规范路径及
 检查时的文件类型/身份信息，用于下游写审计和最短复核；它不是内容证据。
+
+`SandboxDirectoryListing` 和 `SandboxFileWalk` 至少提供：
+
+```text
+SandboxDirectoryEntry
+  schema_version
+  name
+  path: SandboxPath
+  entry_type: DIRECTORY | FILE | SYMLINK | OTHER
+  size_bytes: int | null
+
+SandboxDirectoryListing
+  schema_version
+  root: SandboxPath
+  entries: tuple[SandboxDirectoryEntry, ...]
+  visible_count
+  returned_count
+  omitted_count
+  truncated
+
+SandboxFileWalk
+  schema_version
+  root: SandboxPath
+  files: tuple[SandboxPath, ...]
+  examined_entries
+  omitted_count
+  total_bytes
+  truncated
+  limit_reason: ENTRIES | FILES | BYTES | null
+```
+
+目录枚举只由 Sandbox 对真实目录执行。每个可见条目重新经过同一路径策略；敏感、越界、特殊文件
+和不允许跟随的目录符号链接只计入聚合 `omitted_count`，不向调用方返回名称或内容。递归遍历不跟随
+目录符号链接，使用稳定排序，并跳过 `.git/`、依赖/缓存目录和构建产物目录。
 
 ### 5.2 安全文件 I/O
 
@@ -246,19 +290,30 @@ TrustedCommandSpec
   - command_id
   - argv: tuple[str, ...]
   - effect_class: READ_ONLY | IDEMPOTENT | NON_IDEMPOTENT
+  - allow_pathspecs: bool = false
   - timeout_seconds
   - kill_grace_seconds
   - stdout_limit_bytes
   - stderr_limit_bytes
 
 Sandbox.register_trusted_command(spec: TrustedCommandSpec) -> None
-Sandbox.execute(command_id: str, cancellation: CancellationToken | None = None)
+Sandbox.execute(
+    command_id: str,
+    cancellation: CancellationToken | None = None,
+    *,
+    pathspecs: tuple[SandboxPath, ...] = (),
+)
     -> SandboxProcessResult
 ```
 
 `register_trusted_command` 只允许 Harness/工具装配层从已校验任务配置或代码内固定 allowlist 调用。
 模型请求最多携带 `command_id`；模型不得提交 argv、可执行文件路径、环境变量、工作目录或 shell
 片段。未知 `command_id`、未注册命令和随请求覆盖限制均拒绝。
+
+只有 `allow_pathspecs=true` 的命令可以接收非空 pathspec，且可信命令 argv 必须以 `--` 结束。
+每个 pathspec 必须是当前 Sandbox 生成的 READ `SandboxPath`，启动前再次复核并只以独立 argv 元素
+追加到 `--` 后。最多 1,000 个 pathspec；调用方不能在 pathspec 中注入 revision、shell 片段、
+Git pathspec magic、NUL 或额外命令选项。
 
 ### 5.5 进程结果
 
@@ -613,6 +668,10 @@ SANDBOX_RESULT_UNKNOWN
 | WP03-AC-032 | 平台能力 | POSIX 平台进入命令执行；模拟不支持平台返回 `SANDBOX_UNSUPPORTED_PLATFORM`，不调用 Popen |
 | WP03-AC-033 | 关闭外围保护 | `protect_other_git_changes=false` 记录 Git 身份但明确返回 `external_protection=DISABLED` |
 | WP03-AC-034 | 空仓库与特殊类型 | 空仓库使用 `UNBORN`；FIFO/设备/socket 在基线或 I/O 阶段失败关闭 |
+| WP03-AC-035 | 安全目录枚举 | 目录条目稳定排序；敏感、越界和特殊条目被省略且不泄露名称；目录 symlink 不被递归 |
+| WP03-AC-036 | 有界递归文件遍历 | 文件/字节/条目上限分别返回稳定截断原因，不继续无界扫描 |
+| WP03-AC-037 | 未授权 pathspec | 未开启参数槽、未复核路径、READ 以外的路径、过量路径和 `--` 后选项注入均拒绝 |
+| WP03-AC-038 | 授权 pathspec 执行 | 只追加当前 Sandbox 的 READ 路径；源文件中的 glob 字符按字面量处理；旧调用行为不变 |
 
 ## 13. 飞书“核心验收”吸收
 
@@ -637,6 +696,8 @@ WP-03 的测试可以证明 Sandbox 在测试 handler、文件访问或进程启
 ## 14. 兼容与迁移
 
 - Sandbox 结果模型显式带 `schema_version`；新增字段或语义变化必须提升版本并补契约测试；
+- `TrustedCommandSpec` 在 v1.1.0 升级为 schema v2，新增可选 `allow_pathspecs`；旧调用不传
+  pathspec 时行为和公开 `Sandbox.execute(command_id, cancellation)` 调用保持兼容；
 - 新错误码只能追加，不能复用旧值表达不同拒绝原因；
 - WP-00 的配置 schema、配置指纹和领域模型字段不变；WP-03 不新增任务配置字段；
 - POSIX/Linux/macOS 的路径大小写、Unicode 和符号链接行为必须用平台测试记录；不得用 macOS
@@ -662,8 +723,8 @@ WP-03 只有在以下条件全部满足时才能标记 `DONE`：
 
 ## 16. 已冻结决策
 
-2026-11-05 经需求方逐轮确认，WP-03 决策已登记为 D-29 至 D-36。实现必须遵循下表，不得在任务卡
-中重新解释。
+2026-11-05 经需求方逐轮确认 D-29 至 D-36；2026-11-06 的 WP-05 兼容评审追加 D-46、D-47。实现必须
+遵循下表，不得在任务卡中重新解释。
 
 | 决策 | 冻结结论 | 影响 |
 | --- | --- | --- |
@@ -675,5 +736,7 @@ WP-03 只有在以下条件全部满足时才能标记 `DONE`：
 | D-34 | 空白环境 + 固定 allowlist；任务配置不得追加 env | 环境依赖必须进入代码级安全评审，不继承宿主凭据/代理 |
 | D-35 | 外围保护关闭时身份仍记录，外围比较明确为 `DISABLED` | 恢复/完成不能把未监控状态报告为无变化 |
 | D-36 | 支持 `UNBORN`、精确初始脏基线、symlink/gitlink 摘要；特殊文件失败关闭 | 空仓库和 dirty-allowed 行为可确定测试 |
+| D-46 | 目录枚举和递归遍历必须由 Sandbox 公共接口执行 | WP-05/WP-06 handler 不得直接调用 `os.scandir`、`os.walk` 或 `Path.rglob` |
+| D-47 | 可信命令可显式开启受限 pathspec 槽 | 只追加已复核 READ `SandboxPath`；不支持任意 argv 或 Git revision |
 
 规格冻结后可以进入施工，但实现是否完成仍由测试、lint、格式和 `acceptance-report.md` 决定。

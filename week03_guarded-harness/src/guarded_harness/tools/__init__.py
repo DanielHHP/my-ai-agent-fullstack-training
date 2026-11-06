@@ -1,0 +1,222 @@
+"""Trusted read-only repository tool assembly."""
+
+from __future__ import annotations
+
+from ..domain import (
+    ApprovalRequirement,
+    ConcurrencyClass,
+    ErrorCode,
+    RetryPolicy,
+    ToolOutputKind,
+    ToolPermission,
+    ToolRisk,
+    ToolSpec,
+)
+from ..registry import ToolDefinition, ToolRegistry, ToolRegistryError
+from ..sandbox import Sandbox
+from .common import (
+    DIFF_OUTPUT_BYTES,
+    LIST_OUTPUT_BYTES,
+    READ_OUTPUT_BYTES,
+    SEARCH_OUTPUT_BYTES,
+    STATUS_OUTPUT_BYTES,
+    integer_schema,
+    normalize_git_diff,
+    normalize_list_files,
+    normalize_read_directory,
+    normalize_read_file,
+    normalize_search_code,
+    object_schema,
+    text_schema,
+)
+from .fs_read import (
+    list_files_handler,
+    read_directory_handler,
+    read_file_handler,
+    search_code_handler,
+)
+from .git import git_command_specs, git_diff_handler, git_status_handler
+
+_READ_PERMISSIONS = frozenset({ToolPermission.READ})
+_PATH_SCHEMA = text_schema(max_length=4_096)
+_EMPTY_SCHEMA = object_schema({}, ())
+
+
+def register_readonly_tools(
+    registry: ToolRegistry,
+    sandbox: Sandbox,
+) -> tuple[str, ...]:
+    """Register all trusted read-only tools and their fixed Git commands."""
+
+    definitions = _build_definitions(sandbox)
+    names = tuple(definition.spec.name for definition in definitions)
+    conflicts = [name for name in names if registry.contains(name)]
+    if conflicts:
+        raise ToolRegistryError(
+            ErrorCode.REGISTRY_TOOL_CONFLICT,
+            "one or more read-only tool names are already registered",
+        )
+    for command in git_command_specs():
+        sandbox.register_trusted_command(command)
+    for definition in definitions:
+        registry.register(definition)
+    return names
+
+
+def _build_definitions(sandbox: Sandbox) -> tuple[ToolDefinition, ...]:
+    definitions = (
+        ToolDefinition(
+            spec=_spec(
+                name="git_diff",
+                description=(
+                    "Show the current workspace diff, or the staged diff, limited to one "
+                    "workspace-relative path. Denied paths are omitted."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "staged": {"type": "boolean"},
+                    },
+                    ("path",),
+                ),
+                timeout_seconds=15,
+                path_arguments=("path",),
+                output_limit_bytes=DIFF_OUTPUT_BYTES + 4_096,
+            ),
+            handler=git_diff_handler(sandbox),
+            normalize_args=normalize_git_diff,
+        ),
+        ToolDefinition(
+            spec=_spec(
+                name="git_status",
+                description=(
+                    "Show bounded, policy-filtered Git workspace status without changing "
+                    "the index or workspace."
+                ),
+                input_schema=_EMPTY_SCHEMA,
+                timeout_seconds=10,
+                output_limit_bytes=STATUS_OUTPUT_BYTES + 4_096,
+            ),
+            handler=git_status_handler(sandbox),
+        ),
+        ToolDefinition(
+            spec=_spec(
+                name="list_files",
+                description=(
+                    "List regular repository files matching a workspace-relative glob. "
+                    "Dependency, cache, build and denied directories are skipped."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "pattern": text_schema(),
+                        "limit": integer_schema(minimum=1, maximum=500),
+                    },
+                    ("path", "pattern"),
+                ),
+                timeout_seconds=8,
+                path_arguments=("path",),
+                output_limit_bytes=LIST_OUTPUT_BYTES + 4_096,
+            ),
+            handler=list_files_handler(sandbox),
+            normalize_args=normalize_list_files,
+        ),
+        ToolDefinition(
+            spec=_spec(
+                name="read_directory",
+                description=(
+                    "List one directory level with stable ordering. Directory symlinks "
+                    "are not followed and denied entries are omitted."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "limit": integer_schema(minimum=1, maximum=500),
+                    },
+                    ("path",),
+                ),
+                timeout_seconds=5,
+                path_arguments=("path",),
+                output_limit_bytes=LIST_OUTPUT_BYTES + 4_096,
+            ),
+            handler=read_directory_handler(sandbox),
+            normalize_args=normalize_read_directory,
+        ),
+        ToolDefinition(
+            spec=_spec(
+                name="read_file",
+                description=(
+                    "Read a bounded UTF-8 text window with line numbers and a content "
+                    "digest. Use next_offset to continue."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "offset": integer_schema(minimum=1, maximum=2_147_483_647),
+                        "limit": integer_schema(minimum=1, maximum=2_000),
+                    },
+                    ("path",),
+                ),
+                timeout_seconds=5,
+                path_arguments=("path",),
+                output_limit_bytes=READ_OUTPUT_BYTES + 4_096,
+            ),
+            handler=read_file_handler(sandbox),
+            normalize_args=normalize_read_file,
+        ),
+        ToolDefinition(
+            spec=_spec(
+                name="search_code",
+                description=(
+                    "Search text files using a literal string and optional case folding. "
+                    "Returns bounded matches with line numbers, context and content digests."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "pattern": text_schema(),
+                        "glob": text_schema(),
+                        "ignore_case": {"type": "boolean"},
+                        "context": integer_schema(minimum=0, maximum=10),
+                        "limit": integer_schema(minimum=1, maximum=200),
+                    },
+                    ("path", "pattern"),
+                ),
+                timeout_seconds=15,
+                path_arguments=("path",),
+                output_limit_bytes=SEARCH_OUTPUT_BYTES + 4_096,
+            ),
+            handler=search_code_handler(sandbox),
+            normalize_args=normalize_search_code,
+        ),
+    )
+    return tuple(sorted(definitions, key=lambda definition: definition.spec.name))
+
+
+def _spec(
+    *,
+    name: str,
+    description: str,
+    input_schema: dict,
+    timeout_seconds: int,
+    output_limit_bytes: int,
+    path_arguments: tuple[str, ...] = (),
+) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        description=description,
+        input_schema=input_schema,
+        output_kind=ToolOutputKind.JSON,
+        risk=ToolRisk.READ,
+        required_permissions=_READ_PERMISSIONS,
+        timeout_seconds=timeout_seconds,
+        retry_policy=RetryPolicy.SAFE_READ_ONLY,
+        idempotent=True,
+        path_arguments=path_arguments,
+        output_limit_bytes=output_limit_bytes,
+        approval_requirement=ApprovalRequirement.NEVER,
+        concurrency_class=ConcurrencyClass.SERIAL,
+    )
+
+
+__all__ = ["register_readonly_tools"]

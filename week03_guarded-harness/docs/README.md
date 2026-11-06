@@ -8,7 +8,7 @@
 | --- | --- |
 | [requirements.md](requirements.md) | 项目整体需求、职责边界、必须交付物与整体验收标准 |
 | [design.md](design.md) | 系统概要设计：模块划分、运行链路、安全边界、状态与恢复、验收策略 |
-| [decisions.md](decisions.md) | 已确认的 D-01 至 D-36 设计决策及约束 |
+| [decisions.md](decisions.md) | 已确认的 D-01 至 D-47 设计决策及约束 |
 | [task-breakdown.md](task-breakdown.md) | 按里程碑和能力工作包组织的 P0 开发计划、执行规程、`spec.md`/`plan.md`/`acceptance-report.md` 包内文档模式、依赖、验收条件与文件任务追溯 |
 | [work-packages/index.md](work-packages/index.md) | 已进入详细设计的工作包规格、计划、当前状态和冻结版本索引 |
 | [WP-00 验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md) | WP-00 工程与契约内核的实测证据、场景覆盖、限制和验收结论 |
@@ -24,5 +24,8 @@
 | [WP-04 规格](work-packages/wp-04-governed-execution/spec.md) | Registry、Policy、Gate 固定检查链、审批/执行生命周期、飞书验收映射和 D-37 至 D-44 |
 | [WP-04 计划](work-packages/wp-04-governed-execution/plan.md) | WP-04 详细设计、事务边界、任务卡、测试矩阵、风险和回滚计划 |
 | [WP-04 验收报告](work-packages/wp-04-governed-execution/acceptance-report.md) | Gate 实现、目标/全量测试、故障/并发证据、限制和验收结论 |
+| [WP-05 规格](work-packages/wp-05-readonly-repository-tools/spec.md) | 已冻结的只读文件、搜索、目录与 Git 工具行为、证据语义和飞书验收映射 |
+| [WP-05 计划](work-packages/wp-05-readonly-repository-tools/plan.md) | WP-05 详细设计、兼容前置、任务卡、测试矩阵、风险和回滚计划 |
+| [WP-05 验收报告](work-packages/wp-05-readonly-repository-tools/acceptance-report.md) | 六工具实现、196 项全量测试、安全/截断/Evidence 证据、限制和验收结论 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

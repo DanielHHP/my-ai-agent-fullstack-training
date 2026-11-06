@@ -6,13 +6,13 @@
 | --- | --- |
 | 工作包 | WP-03 Sandbox 边界 |
 | 文档状态 | done |
-| 计划版本 | 1.0.0 |
+| 计划版本 | 1.1.0 |
 | 批准日期 | 2026-11-05 |
-| 完成日期 | 2026-11-05 |
-| 对应规格 | `spec.md` v1.0.0 / frozen |
+| 完成日期 | 2026-11-06 |
+| 对应规格 | `spec.md` v1.1.0 / frozen |
 | 前置依赖 | WP-00 v1.2.0 已冻结；WP-01/WP-02 已验收但不直接参与本包公共接口 |
-| 施工前置 | 已满足：D-29 至 D-36 已确认，规格已冻结 |
-| 当前结论 | T01 至 T09 已完成，验收报告 accepted |
+| 施工前置 | 已满足：D-29 至 D-36、D-46、D-47 已确认，规格已冻结 |
+| 当前结论 | T01 至 T11 已完成，兼容修订验收待复跑 |
 | 下游影响 | WP-04 Gate、WP-05 只读工具、WP-06 写入/命令、WP-07 恢复、WP-08/09 Completion |
 
 本计划不重新定义规格。若施工中发现规格冲突，必须停止并先修改、评审 `spec.md`。涉及配置 schema
@@ -540,6 +540,26 @@ classify_process_result(returncode, timed_out, cancelled, group_terminated,
 | 拒绝路径 | 关键测试失败、skip、未知结果未记录、P1 结果冒充 P0 时不得 accepted |
 | 完成条件 | 验收报告实际复跑、复核并标记 accepted 后，工作包才允许 DONE |
 
+### WP03-T10 安全目录枚举（v1.1 兼容修订）
+
+| 项目 | 内容 |
+| --- | --- |
+| 目标 | 新增 `list_directory`、`walk_readable_files` 及其公共结果类型，避免下游直接遍历真实仓库 |
+| 前置 | D-46 已确认 |
+| 涉及文件 | `sandbox.py`、`__init__.py`、`tests/test_sandbox.py` |
+| 对应规格 | 第 5.1、12、16 节；WP03-AC-035、WP03-AC-036 |
+| 完成条件 | 稳定排序、省略敏感名称、目录 symlink 不递归、各类上限与截断原因测试通过 |
+
+### WP03-T11 受限 pathspec（v1.1 兼容修订）
+
+| 项目 | 内容 |
+| --- | --- |
+| 目标 | `TrustedCommandSpec` schema v2 增加 `allow_pathspecs`，`Sandbox.execute` 只追加已复核 READ 路径 |
+| 前置 | D-47 已确认 |
+| 涉及文件 | `sandbox.py`、`__init__.py`、`tests/test_sandbox.py` |
+| 对应规格 | 第 5.4、12、16 节；WP03-AC-037、WP03-AC-038 |
+| 完成条件 | 未授权、跨工作区、非 READ、过量 pathspec 在 Popen 前拒绝；旧命令调用保持兼容 |
+
 ## 6. 施工顺序与可提交增量
 
 ```text
@@ -646,6 +666,10 @@ Fixture 不得把本机绝对用户路径写进测试断言，不访问网络、
 | WP03-AC-032 | `test_unsupported_platform_fails_before_popen` | 平台错误、Popen 计数 0 |
 | WP03-AC-033 | `test_disabled_external_protection_is_explicit` | identity 有值、`external_protection=DISABLED` |
 | WP03-AC-034 | `test_unborn_and_special_git_entries` | `UNBORN`、gitlink/symlink、特殊文件拒绝 |
+| WP03-AC-035 | `test_list_directory_is_safe_sorted_and_bounded` | 敏感/越界条目省略、目录 symlink 不递归 |
+| WP03-AC-036 | `test_walk_readable_files_reports_limit_reasons` | ENTRY/FILE/BYTE 上限稳定且无无界扫描 |
+| WP03-AC-037 | `test_pathspec_execution_rejects_untrusted_paths` | Popen 前拒绝未授权、非 READ、过量 pathspec |
+| WP03-AC-038 | `test_pathspec_execution_uses_validated_read_paths` | argv 独立追加、旧调用兼容、无 shell 展开 |
 
 场景映射只指向测试类别；具体函数名可在施工时稳定化，但不得删除场景或把它改成只检查模块存在。
 
@@ -719,7 +743,8 @@ python -m pip check
 
 ## 12. 已确认决策与实施约束
 
-D-29 至 D-36 已写入 `decisions.md`，并在冻结规格第 16 节形成行为契约。实施时按以下方式落地：
+D-29 至 D-36、D-46、D-47 已写入 `decisions.md`，并在冻结规格第 16 节形成行为契约。实施时按以下
+方式落地：
 
 | 决策 | 实施约束 | 主要任务 |
 | --- | --- | --- |
@@ -731,6 +756,8 @@ D-29 至 D-36 已写入 `decisions.md`，并在冻结规格第 16 节形成行�
 | D-34 | 空白环境 + 固定 allowlist，任务配置不得追加 env | T06 |
 | D-35 | 外围保护关闭时仍记录身份，但明确返回 `external_protection=DISABLED` | T05 |
 | D-36 | 支持 `UNBORN` 与精确脏基线；symlink/gitlink 摘要；特殊文件失败关闭 | T05 |
+| D-46 | 目录枚举和递归遍历只通过 Sandbox 公共接口，敏感条目聚合省略 | T10 |
+| D-47 | 可信命令只追加已复核 READ pathspec，不接受任意 argv/revision | T11 |
 
 这些是已批准计划的一部分，不再是待确认项。若施工发现需要改变，必须停止并先提升规格版本，
 不能通过任务卡或测试约定静默改变行为。
@@ -757,11 +784,11 @@ WP-03 验收后必须向 WP-04、WP-05、WP-06、WP-07 交付：
 
 | 项目 | 状态 |
 | --- | --- |
-| 规格 | `spec.md` v1.0.0 / frozen |
-| 计划 | `plan.md` v1.0.0 / done |
-| 决策 | D-29 至 D-36 已确认并同步 `decisions.md`/`design.md` |
+| 规格 | `spec.md` v1.1.0 / frozen |
+| 计划 | `plan.md` v1.1.0 / done |
+| 决策 | D-29 至 D-36、D-46、D-47 已确认并同步 `decisions.md`/`design.md` |
 | `sandbox.py` | 路径、10 MiB 安全 I/O、Git 基线、命令、环境和 POSIX 进程组已实现 |
-| 测试 | 目标 `52 passed`；全量 `145 passed`；无 skip/error |
-| 验收报告 | [acceptance-report.md](acceptance-report.md) v1.0.0 / accepted |
+| 测试 | v1.1 目标 `56 passed`；全量 `196 passed`；无 skip/error |
+| 验收报告 | [acceptance-report.md](acceptance-report.md) v1.1.0 / accepted |
 
 WP-03 已完成。Gate、真实工具、恢复和 Completion 仍由后续工作包负责。

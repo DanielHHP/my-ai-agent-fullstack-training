@@ -109,11 +109,16 @@ from .sandbox import (
     ExternalProtection,
     Sandbox,
     SandboxAccess,
+    SandboxDirectoryEntry,
+    SandboxDirectoryListing,
+    SandboxEntryType,
     SandboxFile,
+    SandboxFileWalk,
     SandboxPath,
     SandboxProcessResult,
     SandboxProcessStatus,
     SandboxViolation,
+    SandboxWalkLimitReason,
     SandboxWriteMode,
     SandboxWriteResult,
     TrustedCommandSpec,
@@ -123,6 +128,7 @@ from .sandbox import (
 )
 from .state_store import StateStore, StateStoreError
 from .storage import IntegrityReport, SQLiteStorage, StorageError
+from .tools import register_readonly_tools
 
 __all__ = [
     "AcceptanceStatus",
@@ -189,6 +195,7 @@ __all__ = [
     "RedactionLimits",
     "RedactionResult",
     "Redactor",
+    "register_readonly_tools",
     "Run",
     "RunBudget",
     "RunLease",
@@ -197,11 +204,16 @@ __all__ = [
     "RunStatus",
     "Sandbox",
     "SandboxAccess",
+    "SandboxDirectoryEntry",
+    "SandboxDirectoryListing",
+    "SandboxEntryType",
     "SandboxFile",
+    "SandboxFileWalk",
     "SandboxPath",
     "SandboxProcessResult",
     "SandboxProcessStatus",
     "SandboxViolation",
+    "SandboxWalkLimitReason",
     "SandboxWriteMode",
     "SandboxWriteResult",
     "Step",

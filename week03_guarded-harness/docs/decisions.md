@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-44 |
+| 决策范围 | 已确认的 D-01 至 D-47 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -60,3 +60,6 @@
 | D-42 | Gate 自动重试 | WP-04 不自动重试 handler；仅校验 retry metadata 并返回 `retryable`。安全重试必须由 WP-06 在真实进程结果和幂等证据下重新经过 Gate。 |
 | D-43 | 角色与权限装配 | WP-04 通过可信代码构造的 `PolicyEngine` 接收任务工具白名单、角色权限和审批角色；本包不新增 YAML 字段，Harness 配置装配由 WP-10 负责。 |
 | D-44 | 前置拒绝持久化 | 前置拒绝不创建 ToolInvocation，只写带 `run_id`、`tool_call_id`、actor、phase、rule 和 decision 的 Gate 审计事实；Invocation 仅表示已进入执行意图的候选。 |
+| D-45 | 只读搜索语义 | P0 `search_code` 只接受字面量模式和可选大小写折叠，不把模型输入交给正则引擎。未来开放正则必须单独评审，并使用有硬超时或线性匹配保证的实现。 |
+| D-46 | Sandbox 安全目录枚举 | Sandbox 新增 `list_directory` 与 `walk_readable_files` 公共兼容接口。目录枚举、条目类型检查和递归遍历都在 Sandbox 内完成，工具 handler 不得直接调用 `os.scandir`、`os.walk` 或 `Path.rglob`。 |
+| D-47 | 受限 Git pathspec | 可信命令规格可显式开启 pathspec 参数槽；调用只能提交当前 Sandbox 生成并复核的 `SandboxPath`，这些路径只作为 `--` 后的独立 argv 元素追加。Git 只读查询固定启用 `--no-optional-locks` 与 `--literal-pathspecs`，拒绝 revision、shell 和 pathspec magic 注入。 |

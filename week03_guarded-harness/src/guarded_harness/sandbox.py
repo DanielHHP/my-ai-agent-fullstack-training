@@ -42,6 +42,8 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 20.0
 DEFAULT_KILL_GRACE_SECONDS = 2.0
 DEFAULT_STDOUT_LIMIT_BYTES = 1024 * 1024
 DEFAULT_STDERR_LIMIT_BYTES = 1024 * 1024
+MAX_PATHSPECS = 1_000
+MAX_DIRECTORY_SCAN_ENTRIES = 20_000
 MAX_COMMAND_TIMEOUT_SECONDS = 3600.0
 MAX_KILL_GRACE_SECONDS = 30.0
 _READ_CHUNK_BYTES = 64 * 1024
@@ -67,6 +69,24 @@ _DEPENDENCY_SEGMENTS = frozenset(
         ".tox",
         ".venv",
         "__pypackages__",
+        "node_modules",
+        "site-packages",
+        "venv",
+    }
+)
+_TRAVERSAL_IGNORED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "__pypackages__",
+        "build",
+        "dist",
         "node_modules",
         "site-packages",
         "venv",
@@ -141,6 +161,23 @@ class SandboxProcessStatus(str, Enum):
     UNKNOWN_RESULT = "UNKNOWN_RESULT"
 
 
+class SandboxEntryType(str, Enum):
+    """Safe directory entry categories visible to downstream tools."""
+
+    DIRECTORY = "DIRECTORY"
+    FILE = "FILE"
+    SYMLINK = "SYMLINK"
+    OTHER = "OTHER"
+
+
+class SandboxWalkLimitReason(str, Enum):
+    """Stable reason explaining why a filesystem walk stopped early."""
+
+    ENTRIES = "ENTRIES"
+    FILES = "FILES"
+    BYTES = "BYTES"
+
+
 @runtime_checkable
 class CancellationToken(Protocol):
     """Minimal cancellation source accepted by command execution."""
@@ -200,6 +237,44 @@ class SandboxWriteResult:
     previous_content_digest: str | None
     content_digest: str
     byte_count: int
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class SandboxDirectoryEntry:
+    """One directory entry that passed Sandbox read policy."""
+
+    name: str
+    path: SandboxPath
+    entry_type: SandboxEntryType
+    size_bytes: int | None
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class SandboxDirectoryListing:
+    """Bounded and policy-filtered immediate directory listing."""
+
+    root: SandboxPath
+    entries: tuple[SandboxDirectoryEntry, ...]
+    visible_count: int
+    returned_count: int
+    omitted_count: int
+    truncated: bool
+    schema_version: int = 1
+
+
+@dataclass(frozen=True)
+class SandboxFileWalk:
+    """Bounded and policy-filtered recursive file discovery."""
+
+    root: SandboxPath
+    files: tuple[SandboxPath, ...]
+    examined_entries: int
+    omitted_count: int
+    total_bytes: int
+    truncated: bool
+    limit_reason: SandboxWalkLimitReason | None
     schema_version: int = 1
 
 
@@ -287,7 +362,8 @@ class TrustedCommandSpec:
     kill_grace_seconds: float = DEFAULT_KILL_GRACE_SECONDS
     stdout_limit_bytes: int = DEFAULT_STDOUT_LIMIT_BYTES
     stderr_limit_bytes: int = DEFAULT_STDERR_LIMIT_BYTES
-    schema_version: int = 1
+    schema_version: int = 2
+    allow_pathspecs: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argv", tuple(self.argv))
@@ -305,6 +381,14 @@ class TrustedCommandSpec:
             raise ValueError("argv must contain non-empty strings without NUL")
         if not isinstance(self.effect_class, CommandEffectClass):
             raise ValueError("effect_class must be explicit")
+        if type(self.allow_pathspecs) is not bool:
+            raise ValueError("allow_pathspecs must be a boolean")
+        if self.schema_version not in {1, 2}:
+            raise ValueError("schema_version must be 1 or 2")
+        if self.allow_pathspecs and self.schema_version != 2:
+            raise ValueError("pathspec commands require schema_version 2")
+        if self.allow_pathspecs and self.argv[-1] != "--":
+            raise ValueError("pathspec commands must end their trusted argv with '--'")
         if not math.isfinite(self.timeout_seconds) or not (
             0 < self.timeout_seconds <= MAX_COMMAND_TIMEOUT_SECONDS
         ):
@@ -650,6 +734,223 @@ class Sandbox:
             byte_count=len(data),
         )
 
+    def list_directory(
+        self,
+        path: str,
+        *,
+        max_entries: int = 500,
+    ) -> SandboxDirectoryListing:
+        """List one directory level through the Sandbox read boundary."""
+
+        if type(max_entries) is not int or not 1 <= max_entries <= 500:
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_PATH_INVALID,
+                "list_directory",
+                "max_entries must be between 1 and 500",
+                _safe_relative_path(path),
+            )
+        root = self.check_read(path)
+        target = Path(root.absolute_path)
+        try:
+            target_stat = os.stat(target, follow_symlinks=False)
+        except OSError as exc:
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_IO_ERROR,
+                "list_directory",
+                "directory metadata cannot be inspected",
+                root.workspace_relative,
+            ) from exc
+        if not stat.S_ISDIR(target_stat.st_mode):
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_UNSUPPORTED_FILE_TYPE,
+                "list_directory",
+                "path must be a directory",
+                root.workspace_relative,
+            )
+
+        names: list[str] = []
+        scan_truncated = False
+        try:
+            with os.scandir(target) as entries:
+                for entry in entries:
+                    names.append(entry.name)
+                    if len(names) >= MAX_DIRECTORY_SCAN_ENTRIES:
+                        scan_truncated = True
+                        break
+        except OSError as exc:
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_IO_ERROR,
+                "list_directory",
+                "directory cannot be enumerated",
+                root.workspace_relative,
+            ) from exc
+
+        visible: list[SandboxDirectoryEntry] = []
+        omitted = 0
+        for name in sorted(names):
+            relative = _join_relative(root.workspace_relative, name)
+            candidate = Path(target) / name
+            try:
+                checked = self.check_read(relative)
+                is_link = candidate.is_symlink()
+                target_metadata = os.stat(checked.absolute_path)
+            except (SandboxViolation, OSError):
+                omitted += 1
+                continue
+            if stat.S_ISDIR(target_metadata.st_mode):
+                entry_type = SandboxEntryType.SYMLINK if is_link else SandboxEntryType.DIRECTORY
+                size_bytes = None
+            elif stat.S_ISREG(target_metadata.st_mode):
+                entry_type = SandboxEntryType.SYMLINK if is_link else SandboxEntryType.FILE
+                size_bytes = target_metadata.st_size
+            else:
+                omitted += 1
+                continue
+            visible.append(
+                SandboxDirectoryEntry(
+                    name=name,
+                    path=checked,
+                    entry_type=entry_type,
+                    size_bytes=size_bytes,
+                )
+            )
+
+        visible.sort(
+            key=lambda entry: (
+                entry.entry_type != SandboxEntryType.DIRECTORY,
+                entry.name,
+            )
+        )
+        returned = tuple(visible[:max_entries])
+        truncated = scan_truncated or len(visible) > max_entries
+        return SandboxDirectoryListing(
+            root=root,
+            entries=returned,
+            visible_count=len(visible),
+            returned_count=len(returned),
+            omitted_count=omitted,
+            truncated=truncated,
+        )
+
+    def walk_readable_files(
+        self,
+        path: str,
+        *,
+        max_files: int = 5_000,
+        max_bytes: int = 64 * 1024 * 1024,
+        max_entries: int = 20_000,
+    ) -> SandboxFileWalk:
+        """Recursively discover readable regular files without following directory links."""
+
+        for name, value, maximum in (
+            ("max_files", max_files, MAX_DIRECTORY_SCAN_ENTRIES),
+            ("max_entries", max_entries, MAX_DIRECTORY_SCAN_ENTRIES),
+            ("max_bytes", max_bytes, 1024 * 1024 * 1024),
+        ):
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise SandboxViolation(
+                    ErrorCode.SANDBOX_PATH_INVALID,
+                    "walk",
+                    f"{name} must be between 1 and {maximum}",
+                    _safe_relative_path(path),
+                )
+
+        root = self.check_read(path)
+        root_path = Path(root.absolute_path)
+        try:
+            root_metadata = os.stat(root_path)
+        except OSError as exc:
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_IO_ERROR,
+                "walk",
+                "path metadata cannot be inspected",
+                root.workspace_relative,
+            ) from exc
+
+        if stat.S_ISREG(root_metadata.st_mode):
+            if root_metadata.st_size > max_bytes:
+                return SandboxFileWalk(
+                    root=root,
+                    files=(),
+                    examined_entries=1,
+                    omitted_count=0,
+                    total_bytes=0,
+                    truncated=True,
+                    limit_reason=SandboxWalkLimitReason.BYTES,
+                )
+            return SandboxFileWalk(
+                root=root,
+                files=(root,),
+                examined_entries=1,
+                omitted_count=0,
+                total_bytes=root_metadata.st_size,
+                truncated=False,
+                limit_reason=None,
+            )
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_UNSUPPORTED_FILE_TYPE,
+                "walk",
+                "path must be a regular file or directory",
+                root.workspace_relative,
+            )
+
+        pending: deque[SandboxPath] = deque((root,))
+        files: list[SandboxPath] = []
+        examined = 0
+        omitted = 0
+        total_bytes = 0
+        limit_reason: SandboxWalkLimitReason | None = None
+
+        while pending and limit_reason is None:
+            directory = pending.popleft()
+            directory_path = Path(directory.absolute_path)
+            try:
+                with os.scandir(directory_path) as iterator:
+                    entries = sorted(iterator, key=lambda item: item.name)
+            except OSError:
+                omitted += 1
+                continue
+            for entry in entries:
+                if examined >= max_entries:
+                    limit_reason = SandboxWalkLimitReason.ENTRIES
+                    break
+                examined += 1
+                relative = _join_relative(directory.workspace_relative, entry.name)
+                try:
+                    checked = self.check_read(relative)
+                    metadata = os.stat(checked.absolute_path)
+                except (SandboxViolation, OSError):
+                    omitted += 1
+                    continue
+                is_link = entry.is_symlink()
+                if stat.S_ISDIR(metadata.st_mode):
+                    if is_link or entry.name.casefold() in _TRAVERSAL_IGNORED_DIRECTORIES:
+                        continue
+                    pending.append(checked)
+                    continue
+                if not stat.S_ISREG(metadata.st_mode):
+                    omitted += 1
+                    continue
+                if len(files) >= max_files:
+                    limit_reason = SandboxWalkLimitReason.FILES
+                    break
+                if total_bytes + metadata.st_size > max_bytes:
+                    limit_reason = SandboxWalkLimitReason.BYTES
+                    break
+                files.append(checked)
+                total_bytes += metadata.st_size
+
+        return SandboxFileWalk(
+            root=root,
+            files=tuple(sorted(files, key=lambda item: item.workspace_relative)),
+            examined_entries=examined,
+            omitted_count=omitted,
+            total_bytes=total_bytes,
+            truncated=limit_reason is not None,
+            limit_reason=limit_reason,
+        )
+
     def write_file_atomic(
         self,
         path: str,
@@ -948,6 +1249,8 @@ class Sandbox:
         self,
         command_id: str,
         cancellation: CancellationToken | None = None,
+        *,
+        pathspecs: tuple[SandboxPath, ...] = (),
     ) -> SandboxProcessResult:
         """Execute one trusted command using a bounded POSIX process group."""
 
@@ -970,8 +1273,46 @@ class Sandbox:
                 "execute",
                 "command_id is not registered",
             )
+        if type(pathspecs) is not tuple or len(pathspecs) > MAX_PATHSPECS:
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_COMMAND_INVALID,
+                "execute",
+                f"pathspecs must be a tuple of at most {MAX_PATHSPECS} paths",
+            )
+        if pathspecs and not spec.allow_pathspecs:
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_COMMAND_INVALID,
+                "execute",
+                "command does not accept pathspecs",
+            )
+        normalized_pathspecs: list[str] = []
+        for pathspec in pathspecs:
+            if not isinstance(pathspec, SandboxPath) or pathspec.access != SandboxAccess.READ:
+                raise SandboxViolation(
+                    ErrorCode.SANDBOX_COMMAND_INVALID,
+                    "execute",
+                    "pathspecs must be SandboxPath values with READ access",
+                )
+            try:
+                current = self.revalidate_path(pathspec)
+            except SandboxViolation as exc:
+                raise SandboxViolation(
+                    ErrorCode.SANDBOX_COMMAND_INVALID,
+                    "execute",
+                    "pathspec no longer satisfies the read boundary",
+                    pathspec.workspace_relative,
+                ) from exc
+            normalized_pathspecs.append(current.workspace_relative)
+        if len(set(normalized_pathspecs)) != len(normalized_pathspecs):
+            raise SandboxViolation(
+                ErrorCode.SANDBOX_COMMAND_INVALID,
+                "execute",
+                "pathspecs must not contain duplicates",
+            )
         executable = self._resolve_executable(spec.argv[0])
         argv = (str(executable), *spec.argv[1:])
+        if normalized_pathspecs:
+            argv = (*argv, *normalized_pathspecs)
         with tempfile.TemporaryDirectory(prefix="guarded-harness-process-", dir="/tmp") as temp_dir:
             environment = self._minimal_environment(Path(temp_dir))
             raw = self._run_process(
@@ -2079,6 +2420,12 @@ def _has_unsafe_filename_component(path: str) -> bool:
 
 def _digest_bytes(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _join_relative(parent: str, name: str) -> str:
+    if parent == ".":
+        return name
+    return f"{parent}/{name}"
 
 
 def _digest_json(value: object) -> str:

@@ -593,10 +593,17 @@ paths:
 内容摘要，创建写入默认要求目标不存在；只有可信工具规格可以开启逐级受检的父目录创建。既有
 文件权限保持不变，新文件使用受控 umask 结果。handler 不得绕过 Sandbox 自行打开目标仓库文件。
 
+目录列表与递归文件发现同样属于真实仓库 I/O，必须使用 Sandbox 的 `list_directory` 和
+`walk_readable_files` 公共接口。目录符号链接不被递归；敏感、越界和特殊条目只做聚合计数，
+不得向模型回显其敏感名称或内容。枚举结果带稳定排序、条目数、文件数、总字节和显式截断原因。
+
 ### 8.3 命令边界
 
 - 模型只能提交可信 `command_id`；可执行文件、完整 argv、超时和输出限制来自任务配置或固定
   allowlist，模型不得提交 argv、env、`cwd` 或限制字段；
+- 只读 Git 子命令可在可信规格中显式开启 pathspec 参数槽；调用方只能传当前 Sandbox 已复核的
+  READ `SandboxPath`，这些值仅作为 `--` 后的独立 argv 元素追加，不支持 Git revision 或 pathspec
+  magic。Git 查询固定使用 `--no-optional-locks` 和 `--literal-pathspecs`；
 - 使用 `subprocess.Popen(..., shell=False)` 或等价 API；
 - `cwd` 固定为规范化 `workspace_root`，不接受模型传入；
 - 环境变量从空白映射构造，只注入受控 PATH、locale、`TZ=UTC`、隔离 HOME/TMPDIR、Python 和
