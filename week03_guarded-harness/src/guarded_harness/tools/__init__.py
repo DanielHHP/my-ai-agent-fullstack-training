@@ -1,7 +1,8 @@
-"""Trusted read-only repository tool assembly."""
+"""Trusted repository tool assembly."""
 
 from __future__ import annotations
 
+from ..config import ResolvedHarnessConfig, TestRepairAcceptance
 from ..domain import (
     ApprovalRequirement,
     ConcurrencyClass,
@@ -20,6 +21,9 @@ from .common import (
     READ_OUTPUT_BYTES,
     SEARCH_OUTPUT_BYTES,
     STATUS_OUTPUT_BYTES,
+    TEST_OUTPUT_BYTES,
+    WRITE_OUTPUT_BYTES,
+    file_content_schema,
     integer_schema,
     normalize_git_diff,
     normalize_list_files,
@@ -27,13 +31,21 @@ from .common import (
     normalize_read_file,
     normalize_search_code,
     object_schema,
+    patch_edit_schema,
     text_schema,
 )
+from .exec import ACCEPTANCE_TEST_COMMAND_ID, run_test_handler
 from .fs_read import (
     list_files_handler,
     read_directory_handler,
     read_file_handler,
     search_code_handler,
+)
+from .fs_write import (
+    apply_patch_handler,
+    apply_patch_normalizer,
+    write_file_handler,
+    write_file_normalizer,
 )
 from .git import git_command_specs, git_diff_handler, git_status_handler
 
@@ -219,4 +231,141 @@ def _spec(
     )
 
 
-__all__ = ["register_readonly_tools"]
+def register_side_effect_tools(
+    registry: ToolRegistry,
+    sandbox: Sandbox,
+    config: ResolvedHarnessConfig,
+) -> tuple[str, ...]:
+    """Register trusted write and command tools for the configured task."""
+
+    definitions = _build_side_effect_definitions(sandbox, config)
+    names = tuple(definition.spec.name for definition in definitions)
+    conflicts = [name for name in names if registry.contains(name)]
+    if conflicts:
+        raise ToolRegistryError(
+            ErrorCode.REGISTRY_TOOL_CONFLICT,
+            "one or more side-effect tool names are already registered",
+        )
+    for definition in definitions:
+        registry.register(definition)
+    return names
+
+
+def _build_side_effect_definitions(
+    sandbox: Sandbox,
+    config: ResolvedHarnessConfig,
+) -> tuple[ToolDefinition, ...]:
+    definitions: list[ToolDefinition] = [
+        ToolDefinition(
+            spec=_side_effect_spec(
+                name="apply_patch",
+                description=(
+                    "Apply one or more exact text replacements to one existing UTF-8 file. "
+                    "Every oldText must match once; the whole batch succeeds or writes nothing."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "edits": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 100,
+                            "items": patch_edit_schema(),
+                        },
+                    },
+                    ("path", "edits"),
+                ),
+                risk=ToolRisk.WRITE,
+                permission=ToolPermission.WRITE,
+                timeout_seconds=5,
+                path_arguments=("path",),
+                output_limit_bytes=WRITE_OUTPUT_BYTES,
+            ),
+            handler=apply_patch_handler(sandbox, config),
+            normalize_args=apply_patch_normalizer(sandbox, config),
+        ),
+        ToolDefinition(
+            spec=_side_effect_spec(
+                name="write_file",
+                description=(
+                    "Atomically create or replace one task-authorized UTF-8 text file. "
+                    "Prefer apply_patch when changing an existing file."
+                ),
+                input_schema=object_schema(
+                    {
+                        "path": _PATH_SCHEMA,
+                        "content": file_content_schema(),
+                    },
+                    ("path", "content"),
+                ),
+                risk=ToolRisk.WRITE,
+                permission=ToolPermission.WRITE,
+                timeout_seconds=5,
+                path_arguments=("path",),
+                output_limit_bytes=WRITE_OUTPUT_BYTES,
+            ),
+            handler=write_file_handler(sandbox, config),
+            normalize_args=write_file_normalizer(sandbox, config),
+        ),
+    ]
+    if isinstance(config.config.task.acceptance, TestRepairAcceptance):
+        definitions.append(
+            ToolDefinition(
+                spec=_side_effect_spec(
+                    name="run_test",
+                    description=(
+                        "Run only the task's configured acceptance test command. "
+                        "The command argv, cwd, environment, timeout and limits are trusted."
+                    ),
+                    input_schema=object_schema(
+                        {
+                            "command_id": {
+                                "type": "string",
+                                "const": ACCEPTANCE_TEST_COMMAND_ID,
+                            }
+                        },
+                        ("command_id",),
+                    ),
+                    risk=ToolRisk.EXECUTE,
+                    permission=ToolPermission.EXECUTE,
+                    timeout_seconds=3_635,
+                    path_arguments=(),
+                    output_limit_bytes=TEST_OUTPUT_BYTES + 4_096,
+                ),
+                handler=run_test_handler(sandbox),
+            )
+        )
+    return tuple(sorted(definitions, key=lambda definition: definition.spec.name))
+
+
+def _side_effect_spec(
+    *,
+    name: str,
+    description: str,
+    input_schema: dict,
+    risk: ToolRisk,
+    permission: ToolPermission,
+    timeout_seconds: int,
+    path_arguments: tuple[str, ...],
+    output_limit_bytes: int,
+) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        description=description,
+        input_schema=input_schema,
+        output_kind=ToolOutputKind.JSON,
+        risk=risk,
+        required_permissions=frozenset({permission}),
+        timeout_seconds=timeout_seconds,
+        retry_policy=RetryPolicy.NEVER,
+        idempotent=False,
+        path_arguments=path_arguments,
+        output_limit_bytes=output_limit_bytes,
+        approval_requirement=(
+            ApprovalRequirement.REQUIRED if risk == ToolRisk.WRITE else ApprovalRequirement.NEVER
+        ),
+        concurrency_class=ConcurrencyClass.SERIAL,
+    )
+
+
+__all__ = ["register_readonly_tools", "register_side_effect_tools"]

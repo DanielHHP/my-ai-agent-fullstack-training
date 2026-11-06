@@ -860,6 +860,20 @@ def test_cancellation_kills_process_group(
     assert sandbox.execute("cancel", cancellation=pre_cancelled).cancelled is True
 
 
+def test_configured_acceptance_test_command_is_available(tmp_path: Path) -> None:
+    sandbox, _, workspace = _sandbox(
+        tmp_path,
+        kind="test_repair",
+        test_command=("python", "-c", "print('acceptance-ok')"),
+    )
+
+    result = sandbox.execute("acceptance_test")
+    assert result.status == gh.SandboxProcessStatus.SUCCEEDED
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "acceptance-ok"
+    assert result.process_group_terminated is True
+
+
 def test_start_failure_is_structured(
     tmp_path: Path,
     fixed_clock: object,

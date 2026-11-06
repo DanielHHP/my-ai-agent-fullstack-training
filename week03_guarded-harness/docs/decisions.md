@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-47 |
+| 决策范围 | 已确认的 D-01 至 D-52 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -63,3 +63,8 @@
 | D-45 | 只读搜索语义 | P0 `search_code` 只接受字面量模式和可选大小写折叠，不把模型输入交给正则引擎。未来开放正则必须单独评审，并使用有硬超时或线性匹配保证的实现。 |
 | D-46 | Sandbox 安全目录枚举 | Sandbox 新增 `list_directory` 与 `walk_readable_files` 公共兼容接口。目录枚举、条目类型检查和递归遍历都在 Sandbox 内完成，工具 handler 不得直接调用 `os.scandir`、`os.walk` 或 `Path.rglob`。 |
 | D-47 | 受限 Git pathspec | 可信命令规格可显式开启 pathspec 参数槽；调用只能提交当前 Sandbox 生成并复核的 `SandboxPath`，这些路径只作为 `--` 后的独立 argv 元素追加。Git 只读查询固定启用 `--no-optional-locks` 与 `--literal-pathspecs`，拒绝 revision、shell 和 pathspec magic 注入。 |
+| D-48 | WP-06 单文件 patch 语义 | `apply_patch` 第一版只修改一个已有普通 UTF-8 文件，输入为 `{path, edits:[{oldText,newText}]}`。每段 `oldText` 必须在前序编辑后的文本中恰好出现一次，编辑按数组顺序应用，全部计算成功后通过一次 Sandbox 原子替换提交；空、缺失、歧义、无变化或超限均整批拒绝。不支持统一 diff、多文件、文件创建/删除/重命名或二进制 patch。 |
+| D-49 | WP-06 测试命令模型输入 | `run_test` 的严格 schema 只接受 `{"command_id":"acceptance_test"}`。完整 argv、可执行文件、cwd、env、shell、超时、输出限制和重试策略全部来自可信任务配置或固定策略；第一版不接受测试文件子集参数。 |
+| D-50 | WP-06 写入 no-op 语义 | `apply_patch` 拒绝所有 no-op，包括每段 `oldText == newText` 及按顺序应用后内容不变。`write_file` 在目标内容与提交内容完全相同时返回成功且 `changed=false`，不进行第二次物理替换，不改变文件内容或 mtime。 |
+| D-51 | WP-06 副作用工具审批策略 | `write_file` 与 `apply_patch` 的 `ToolSpec.approval_requirement` 固定为 `REQUIRED`。`run_test` 默认不固定必审，但任务 `approval.required_tools` 命中时必须提升为必审；审批仍绑定规范化参数、工作区、Run、任务和配置指纹。 |
+| D-52 | WP-06 测试命令效果分类 | `run_test` 固定使用 `CommandEffectClass.NON_IDEMPOTENT`，不假设测试命令不会写缓存、报告或其他文件。超时、取消、进程组终止失败或采集失败均产生 `UNKNOWN_RESULT`，不得自动重试、消费为成功或生成完整命令 Evidence。 |

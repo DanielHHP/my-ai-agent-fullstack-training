@@ -619,6 +619,10 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 ### WP-06 写入与命令能力包
 
+**包内文档**：[规格](work-packages/wp-06-write-and-command/spec.md)（v1.0.0 / frozen）、
+[完成计划](work-packages/wp-06-write-and-command/plan.md)（v1.0.0 / done）、
+[验收报告](work-packages/wp-06-write-and-command/acceptance-report.md)（v1.0.0 / accepted）。
+
 **目标**：完成真实写操作和受控命令执行，并验证审批、超时和未知结果语义。
 
 **依赖**：WP-04、WP-05。
@@ -1197,6 +1201,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | D-21 状态文件权限 | WP-01、WP-03、WP-11 |
 | D-22 Evidence 单一生产者 | WP-01、WP-04、WP-05、WP-08、WP-09 |
 | D-29 至 D-36 Sandbox 边界 | WP-03、WP-04、WP-05、WP-06、WP-07、WP-09、WP-12 |
+| D-48 至 D-52 WP-06 写入与命令语义 | WP-06、WP-07、WP-09、WP-10、WP-12 |
 
 ## 14. 全局完成定义
 

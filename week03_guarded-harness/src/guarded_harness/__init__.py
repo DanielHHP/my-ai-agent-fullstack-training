@@ -128,7 +128,7 @@ from .sandbox import (
 )
 from .state_store import StateStore, StateStoreError
 from .storage import IntegrityReport, SQLiteStorage, StorageError
-from .tools import register_readonly_tools
+from .tools import register_readonly_tools, register_side_effect_tools
 
 __all__ = [
     "AcceptanceStatus",
@@ -196,6 +196,7 @@ __all__ = [
     "RedactionResult",
     "Redactor",
     "register_readonly_tools",
+    "register_side_effect_tools",
     "Run",
     "RunBudget",
     "RunLease",

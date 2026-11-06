@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import socket
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -234,6 +236,291 @@ def _fixture(tmp_path: Path) -> ToolFixture:
         context=context,
         root=root,
         workspace=workspace,
+    )
+
+
+@dataclass
+class SideEffectFixture:
+    storage: gh.SQLiteStorage
+    sandbox: gh.Sandbox
+    registry: gh.ToolRegistry
+    policy: gh.PolicyEngine
+    gate: gh.Gate
+    lease_token: str
+    context: gh.ToolExecutionContext
+    root: Path
+    workspace: Path
+    config: gh.ResolvedHarnessConfig
+    task_kind: gh.TaskKind
+    next_call: int = 0
+
+    def request(
+        self,
+        tool: str,
+        arguments: dict,
+        *,
+        call_id: str | None = None,
+    ) -> gh.ToolCallRequest:
+        if call_id is None:
+            self.next_call += 1
+            call_id = f"side-effect-{self.next_call}"
+        return gh.ToolCallRequest(
+            tool_call_id=call_id,
+            tool_name=tool,
+            args=arguments,
+            context=self.context,
+            lease_token=self.lease_token,
+        )
+
+    def invoke(self, tool: str, arguments: dict) -> gh.ToolObservation:
+        return self.gate.invoke(self.request(tool, arguments))
+
+    def approve(self, approval_id: str) -> None:
+        with self.storage.transaction(actor="operator") as unit:
+            current = gh.ApprovalStore(unit).load(
+                approval_id,
+                lease_token=self.lease_token,
+            )
+            gh.ApprovalStore(unit).approve(
+                approval_id,
+                expected_revision=current.revision,
+                approver=gh.Approver(actor="operator", roles=("operator",)),
+                lease_token=self.lease_token,
+            )
+
+    def invoke_approved(
+        self,
+        tool: str,
+        arguments: dict,
+        *,
+        call_id: str | None = None,
+    ) -> gh.ToolObservation:
+        request = self.request(tool, arguments, call_id=call_id)
+        waiting = self.gate.invoke(request)
+        assert waiting.status == gh.ObservationStatus.WAITING_APPROVAL
+        assert waiting.approval_id is not None
+        self.approve(waiting.approval_id)
+        return self.gate.invoke(request)
+
+    def snapshot(self) -> gh.RunSnapshot:
+        with self.storage.transaction(actor="agent") as unit:
+            return unit.state.get_run_snapshot(RUN_ID)
+
+
+def _side_effect_fixture(
+    tmp_path: Path,
+    *,
+    task_kind: gh.TaskKind = gh.TaskKind.CODE_UNDERSTANDING,
+    test_command: tuple[str, ...] = ("python", "-c", "print('ok')"),
+    command_timeout: float = 5.0,
+    stdout_limit: int = 4096,
+    stderr_limit: int = 4096,
+    fault_injector: object | None = None,
+) -> SideEffectFixture:
+    root = tmp_path / "repo"
+    workspace = root / "task"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "tests").mkdir()
+    (workspace / "artifacts").mkdir()
+    (workspace / "src" / "app.py").write_text(
+        "VALUE = 1\nprint(VALUE)\n",
+        encoding="utf-8",
+    )
+    (workspace / "tests" / "test_app.py").write_text(
+        "def test_app():\n    assert True\n",
+        encoding="utf-8",
+    )
+    (workspace / "artifacts" / "report.md").write_text("# report\n", encoding="utf-8")
+    _git(root.parent, "init", "-q", str(root))
+    _git(root, "config", "user.email", "tests@example.invalid")
+    _git(root, "config", "user.name", "Harness Tests")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "baseline")
+
+    state_dir = tmp_path / "state"
+    if task_kind == gh.TaskKind.CODE_UNDERSTANDING:
+        acceptance = gh.CodeUnderstandingAcceptance(
+            strategy="code_understanding",
+            deliverables=("artifacts/report.md",),
+        )
+        allowed_tools = ("read_file", "write_file", "apply_patch")
+        paths = gh.PathPolicyConfig(
+            deny_read=("tests/**",),
+            deny_write=("src/**", "tests/**"),
+            allow_write=("artifacts/report.md",),
+        )
+        task_id = "understand_app"
+    else:
+        acceptance = gh.TestRepairAcceptance(
+            strategy="test_repair",
+            test_command=test_command,
+            baseline_required=True,
+        )
+        allowed_tools = ("read_file", "write_file", "apply_patch", "run_test")
+        paths = gh.PathPolicyConfig(
+            deny_write=("tests/**",),
+            allow_write=("src/**", "tests/generated/**"),
+        )
+        task_id = "repair_app"
+    required_tools = ["write_file", "apply_patch"]
+    if task_kind == gh.TaskKind.TEST_REPAIR:
+        required_tools.append("run_test")
+    config = gh.HarnessConfig(
+        version=1,
+        state_dir=str(state_dir),
+        workspace=gh.WorkspaceConfig(
+            root=str(workspace),
+            require_clean_workspace=True,
+            protect_other_git_changes=True,
+        ),
+        budget=gh.BudgetConfig(
+            max_steps=10,
+            max_tool_calls=60,
+            max_token_cost=Decimal("10"),
+            max_wall_time_seconds=3600,
+        ),
+        task=gh.TaskConfig(
+            id=task_id,
+            kind=task_kind,
+            description="Exercise WP-06 side effects",
+            allowed_tools=allowed_tools,
+            paths=paths,
+            acceptance=acceptance,
+            approval=gh.ApprovalConfig(
+                required_tools=tuple(required_tools),
+                approver_roles=("operator",),
+                ttl_seconds=900,
+                channel="local_cli",
+            ),
+        ),
+    )
+    resolved = gh.ResolvedHarnessConfig(
+        config=config,
+        workspace_root=str(workspace),
+        state_dir=str(state_dir),
+        deliverables=("artifacts/report.md",)
+        if task_kind == gh.TaskKind.CODE_UNDERSTANDING
+        else (),
+        fingerprint=DIGEST,
+    )
+    resolved = resolved.model_copy(update={"fingerprint": gh.config_fingerprint(resolved)})
+    clock = ConstantClock()
+    storage = gh.SQLiteStorage(
+        state_dir / "harness.sqlite3",
+        workspace,
+        clock,
+        fault_injector=fault_injector,
+    )
+    storage.initialize()
+    command_policy = gh.CommandPolicy(
+        allowed_executables=("python", "git"),
+        default_timeout_seconds=command_timeout,
+        default_kill_grace_seconds=0.2,
+        default_stdout_limit_bytes=stdout_limit,
+        default_stderr_limit_bytes=stderr_limit,
+    )
+    sandbox = gh.Sandbox.from_resolved_config(
+        resolved,
+        command_policy=command_policy,
+        clock=clock,
+        fault_injector=fault_injector,
+    )
+    registry = gh.ToolRegistry()
+    gh.register_readonly_tools(registry, sandbox)
+    gh.register_side_effect_tools(registry, sandbox, resolved)
+    policy = gh.PolicyEngine(
+        allowed_tool_names=registry.names(),
+        role_permissions={
+            "developer": {
+                gh.ToolPermission.READ,
+                gh.ToolPermission.WRITE,
+                gh.ToolPermission.EXECUTE,
+            }
+        },
+        task_approval_tools=tuple(required_tools),
+        approval_roles=("operator",),
+    )
+    run = gh.Run(
+        run_id=RUN_ID,
+        trace_id=TRACE_ID,
+        task_id=task_id,
+        task_kind=task_kind,
+        task_description="Exercise WP-06 side effects",
+        config_fingerprint=resolved.fingerprint,
+        workspace=gh.WorkspaceIdentity(
+            git_root=str(sandbox.git_root),
+            workspace_root=str(sandbox.workspace_root),
+            workspace_prefix=sandbox.workspace_prefix,
+            baseline_fingerprint=DIGEST,
+            external_dirty_baseline_fingerprint=DIGEST,
+        ),
+        budget=gh.RunBudget(
+            max_steps=10,
+            max_tool_calls=60,
+            max_token_cost=Decimal("10"),
+            max_wall_time_seconds=3600,
+        ),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    with storage.transaction(actor="agent") as unit:
+        lease = unit.state.create_run(run, owner_id="agent", lease_policy=gh.LeasePolicy())
+        unit.state.create_step(
+            gh.Step(
+                step_id=STEP_ID,
+                run_id=RUN_ID,
+                ordinal=0,
+                summary="apply change",
+                started_at=NOW,
+            ),
+            expected_run_revision=0,
+            lease_token=lease.token,
+        )
+        unit.state.transition_step(
+            STEP_ID,
+            expected_status=gh.StepStatus.PLANNED,
+            expected_revision=0,
+            target=gh.StepStatus.RUNNING,
+            ended_at=None,
+            lease_token=lease.token,
+        )
+        unit.state.transition_run(
+            RUN_ID,
+            expected_status=gh.RunStatus.NEW,
+            expected_revision=2,
+            target=gh.RunStatus.RUNNING,
+            stop_reason=None,
+            ended_at=None,
+            acceptance_status=None,
+            lease_token=lease.token,
+        )
+    context = gh.ToolExecutionContext(
+        run_id=RUN_ID,
+        step_id=STEP_ID,
+        task_id=task_id,
+        task_kind=task_kind,
+        mode=gh.ExecutionMode.EXECUTE,
+        actor="agent",
+        roles=("developer",),
+    )
+    return SideEffectFixture(
+        storage=storage,
+        sandbox=sandbox,
+        registry=registry,
+        policy=policy,
+        gate=gh.Gate(
+            storage=storage,
+            registry=registry,
+            policy=policy,
+            sandbox=sandbox,
+            clock=clock,
+        ),
+        lease_token=lease.token,
+        context=context,
+        root=root,
+        workspace=workspace,
+        config=resolved,
+        task_kind=task_kind,
     )
 
 
@@ -645,3 +932,576 @@ def test_traversal_omits_symlink_and_sensitive_targets(tmp_path: Path) -> None:
     assert ".env" not in names
     assert "outside-link" not in names
     assert listing.output["omitted_count"] == 2
+
+
+def test_side_effect_factory_registers_stable_snapshot(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+
+    assert tuple(
+        name
+        for name in fixture.registry.names()
+        if name in {"apply_patch", "run_test", "write_file"}
+    ) == ("apply_patch", "run_test", "write_file")
+    snapshot = {
+        spec.name: spec for spec in fixture.registry.snapshot(fixture.context, fixture.policy)
+    }
+    assert snapshot["write_file"].risk == gh.ToolRisk.WRITE
+    assert snapshot["write_file"].approval_requirement == gh.ApprovalRequirement.REQUIRED
+    assert snapshot["apply_patch"].risk == gh.ToolRisk.WRITE
+    assert snapshot["apply_patch"].retry_policy == gh.RetryPolicy.NEVER
+    assert snapshot["run_test"].risk == gh.ToolRisk.EXECUTE
+    assert snapshot["run_test"].approval_requirement == gh.ApprovalRequirement.NEVER
+    for spec in snapshot.values():
+        serialized = spec.model_dump_json()
+        assert "handler" not in serialized
+        assert str(fixture.workspace) not in serialized
+        assert "python" not in serialized
+
+
+def test_side_effect_schemas_reject_before_handler(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+
+    cases = (
+        ("write_file", {"path": "src/app.py"}),
+        ("write_file", {"path": "src/app.py", "content": "x", "argv": ["sh"]}),
+        ("apply_patch", {"path": "src/app.py", "edits": []}),
+        ("apply_patch", {"path": "src/app.py", "edits": [{"oldText": "x"}]}),
+        ("run_test", {"command_id": "not_acceptance"}),
+        ("run_test", {"command_id": "acceptance_test", "timeout": 1}),
+    )
+    for tool, arguments in cases:
+        observation = fixture.invoke(tool, arguments)
+        assert observation.status == gh.ObservationStatus.DENIED
+        assert observation.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+        assert observation.phase == gh.GatePhase.SCHEMA
+    assert fixture.snapshot().invocations == ()
+
+
+def test_write_scope_path_escape_and_platform_denials(tmp_path: Path) -> None:
+    code_fixture = _side_effect_fixture(tmp_path / "code")
+
+    escape = code_fixture.invoke(
+        "write_file",
+        {"path": "artifacts/../../.env", "content": "TOKEN=bad\n"},
+    )
+    assert escape.status == gh.ObservationStatus.DENIED
+    assert escape.phase == gh.GatePhase.SEMANTIC
+
+    undeclared = code_fixture.invoke(
+        "write_file",
+        {"path": "artifacts/other.md", "content": "no\n"},
+    )
+    assert undeclared.code == gh.ErrorCode.GATE_WRITE_NOT_ALLOWED.value
+    assert not (code_fixture.workspace / "artifacts" / "other.md").exists()
+
+    repair_fixture = _side_effect_fixture(
+        tmp_path / "repair",
+        task_kind=gh.TaskKind.TEST_REPAIR,
+    )
+    outside = repair_fixture.invoke(
+        "write_file",
+        {"path": "README.md", "content": "no\n"},
+    )
+    assert outside.code == gh.ErrorCode.GATE_WRITE_NOT_ALLOWED.value
+    protected = repair_fixture.invoke(
+        "write_file",
+        {"path": ".git/config", "content": "no\n"},
+    )
+    assert protected.code == gh.ErrorCode.SANDBOX_PATH_PROTECTED.value
+    denied_test = repair_fixture.invoke(
+        "write_file",
+        {"path": "tests/test_app.py", "content": "weakened\n"},
+    )
+    assert denied_test.code == gh.ErrorCode.SANDBOX_PATH_DENY_WRITE.value
+    assert (
+        (repair_fixture.workspace / "tests" / "test_app.py")
+        .read_text(encoding="utf-8")
+        .startswith("def test_app")
+    )
+
+
+def test_write_symlink_escape_is_denied_and_audited(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path)
+    outside = fixture.root / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    target = fixture.workspace / "artifacts" / "report.md"
+    target.unlink()
+    os.symlink(outside, target)
+
+    request = fixture.request(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "overwritten\n"},
+        call_id="write-symlink-escape",
+    )
+    observation = fixture.gate.invoke(request)
+    assert observation.status == gh.ObservationStatus.DENIED
+    assert observation.code == gh.ErrorCode.SANDBOX_PATH_OUT_OF_WORKSPACE.value
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+    with fixture.storage.transaction(actor="agent") as unit:
+        events = unit.audit.list_tool_events(RUN_ID, "write-symlink-escape")
+    denied = [event for event in events if event.decision == gh.AuditDecision.DENY]
+    assert denied
+    assert denied[-1].rule_id
+    assert denied[-1].actor == "agent"
+    assert denied[-1].tool_call_id == "write-symlink-escape"
+
+
+def test_unapproved_write_waits_without_side_effect(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path)
+    target = fixture.workspace / "artifacts" / "report.md"
+    original = target.read_bytes()
+    request = fixture.request(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# approved report\n"},
+    )
+
+    waiting = fixture.gate.invoke(request)
+    assert waiting.status == gh.ObservationStatus.WAITING_APPROVAL
+    assert waiting.approval_id is not None
+    assert target.read_bytes() == original
+
+    fixture.approve(waiting.approval_id)
+    result = fixture.gate.invoke(request)
+    assert result.status == gh.ObservationStatus.ALLOWED
+    assert target.read_text(encoding="utf-8") == "# approved report\n"
+    assert result.evidence_ids
+
+
+def test_unapproved_patch_waits_without_side_effect(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    target = fixture.workspace / "src" / "app.py"
+    original = target.read_bytes()
+    waiting = fixture.invoke(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "VALUE = 1", "newText": "VALUE = 2"}],
+        },
+    )
+    assert waiting.status == gh.ObservationStatus.WAITING_APPROVAL
+    assert target.read_bytes() == original
+
+
+def test_approved_write_is_suppressed_after_external_change(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    target = fixture.workspace / "src" / "app.py"
+    request = fixture.request(
+        "write_file",
+        {"path": "src/app.py", "content": "VALUE = 2\n"},
+    )
+    waiting = fixture.gate.invoke(request)
+    fixture.approve(waiting.approval_id)
+    first = fixture.gate.invoke(request)
+    assert first.status == gh.ObservationStatus.ALLOWED
+    original_evidence = first.evidence_ids
+
+    target.write_text("external change\n", encoding="utf-8")
+    repeated = fixture.gate.invoke(request)
+    assert repeated.code == gh.ErrorCode.GATE_REPLAY_SUPPRESSED.value
+    assert repeated.evidence_ids == original_evidence
+    assert target.read_text(encoding="utf-8") == "external change\n"
+    assert len(fixture.snapshot().invocations) == 1
+
+
+def test_changed_write_content_invalidates_existing_approval(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path)
+    request = fixture.request(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# approved\n"},
+        call_id="changed-write",
+    )
+    waiting = fixture.gate.invoke(request)
+    fixture.approve(waiting.approval_id)
+    changed = gh.ToolCallRequest(
+        tool_call_id="changed-write",
+        tool_name="write_file",
+        args={"path": "artifacts/report.md", "content": "# changed\n"},
+        context=fixture.context,
+        lease_token=fixture.lease_token,
+    )
+    observation = fixture.gate.invoke(changed)
+    assert observation.code == gh.ErrorCode.GATE_TOOL_CALL_ID_CONFLICT.value
+    assert (fixture.workspace / "artifacts" / "report.md").read_text(
+        encoding="utf-8"
+    ) == "# report\n"
+
+
+def test_write_file_create_replace_and_noop(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    created_path = fixture.workspace / "tests" / "generated" / "new_test.py"
+    created = fixture.invoke_approved(
+        "write_file",
+        {
+            "path": "tests/generated/new_test.py",
+            "content": "def test_new():\n    assert True\n",
+        },
+    )
+    assert created.status == gh.ObservationStatus.ALLOWED
+    assert created.output["created"] is True
+    assert created.output["changed"] is True
+    assert created_path.exists()
+
+    replaced = fixture.invoke_approved(
+        "write_file",
+        {"path": "src/app.py", "content": "VALUE = 3\n"},
+    )
+    assert replaced.status == gh.ObservationStatus.ALLOWED
+    assert replaced.output["mode"] == gh.SandboxWriteMode.REPLACE.value
+    assert replaced.output["previous_content_digest"] != replaced.output["content_digest"]
+
+    noop_fixture = _side_effect_fixture(tmp_path / "noop")
+    noop = noop_fixture.invoke_approved(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# report\n"},
+    )
+    assert noop.status == gh.ObservationStatus.ALLOWED
+    assert noop.output["changed"] is False
+    assert noop.evidence_ids == ()
+
+
+def test_write_rejects_oversize_and_special_targets(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    oversized = fixture.invoke(
+        "write_file",
+        {"path": "src/large.py", "content": "x" * (10 * 1024 * 1024 + 1)},
+    )
+    assert oversized.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+
+    special_dir = fixture.workspace / "src" / "generated_dir"
+    special_dir.mkdir()
+    directory = fixture.invoke_approved(
+        "write_file",
+        {"path": "src/generated_dir", "content": "x\n"},
+    )
+    assert directory.status == gh.ObservationStatus.FAILED
+    assert directory.code in {
+        gh.ErrorCode.SANDBOX_UNSUPPORTED_FILE_TYPE.value,
+        gh.ErrorCode.GATE_WRITE_NOT_ALLOWED.value,
+    }
+
+    invalid = fixture.workspace / "src" / "invalid.py"
+    invalid.write_bytes(b"\xff\xfe")
+    non_text = fixture.invoke_approved(
+        "write_file",
+        {"path": "src/invalid.py", "content": "valid\n"},
+    )
+    assert non_text.status == gh.ObservationStatus.FAILED
+    assert non_text.code == gh.ErrorCode.TOOL_TEXT_ENCODING_INVALID.value
+    assert invalid.read_bytes() == b"\xff\xfe"
+
+
+def test_patch_empty_and_noop_rejected_before_handler(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    empty = fixture.invoke("apply_patch", {"path": "src/app.py", "edits": []})
+    assert empty.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+
+    noop = fixture.invoke(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "VALUE", "newText": "VALUE"}],
+        },
+    )
+    assert noop.code == gh.ErrorCode.TOOL_PATCH_NO_CHANGE.value
+    assert fixture.snapshot().invocations == ()
+    assert (
+        (fixture.workspace / "src" / "app.py").read_text(encoding="utf-8").startswith("VALUE = 1")
+    )
+
+
+def test_patch_context_missing_and_ambiguous(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    target = fixture.workspace / "src" / "app.py"
+
+    missing = fixture.invoke_approved(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "NOT PRESENT", "newText": "replacement"}],
+        },
+    )
+    assert missing.status == gh.ObservationStatus.FAILED
+    assert missing.code == gh.ErrorCode.TOOL_PATCH_CONTEXT_NOT_FOUND.value
+    original = target.read_bytes()
+
+    target.write_text("same\nsame\n", encoding="utf-8")
+    ambiguous = fixture.invoke_approved(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "same", "newText": "changed"}],
+        },
+    )
+    assert ambiguous.status == gh.ObservationStatus.FAILED
+    assert ambiguous.code == gh.ErrorCode.TOOL_PATCH_AMBIGUOUS.value
+    assert target.read_text(encoding="utf-8") == "same\nsame\n"
+    assert original != target.read_bytes()
+
+
+def test_patch_later_failure_does_not_commit_earlier_edits(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    target = fixture.workspace / "src" / "app.py"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    before = target.read_bytes()
+
+    failed = fixture.invoke_approved(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [
+                {"oldText": "alpha", "newText": "ALPHA"},
+                {"oldText": "missing", "newText": "value"},
+            ],
+        },
+    )
+    assert failed.status == gh.ObservationStatus.FAILED
+    assert failed.code == gh.ErrorCode.TOOL_PATCH_CONTEXT_NOT_FOUND.value
+    assert target.read_bytes() == before
+
+
+def test_patch_sequential_edits_and_versioned_evidence(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    result = fixture.invoke_approved(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [
+                {"oldText": "VALUE = 1", "newText": "VALUE = 2"},
+                {"oldText": "print(VALUE)", "newText": "print(VALUE + 1)"},
+            ],
+        },
+    )
+    assert result.status == gh.ObservationStatus.ALLOWED
+    assert result.output["edits_applied"] == 2
+    assert (fixture.workspace / "src" / "app.py").read_text(encoding="utf-8") == (
+        "VALUE = 2\nprint(VALUE + 1)\n"
+    )
+    evidence = next(
+        item for item in fixture.snapshot().evidence if item.evidence_id == result.evidence_id
+    )
+    assert evidence.kind == gh.EvidenceKind.DIFF
+    assert evidence.path == "src/app.py"
+    assert evidence.content_digest == result.output["content_digest"]
+
+
+def test_run_test_rejects_command_injection_before_popen(tmp_path: Path) -> None:
+    marker = tmp_path / "repo" / "task" / "should-not-exist"
+    fixture = _side_effect_fixture(
+        tmp_path,
+        task_kind=gh.TaskKind.TEST_REPAIR,
+        test_command=(
+            "python",
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+        ),
+    )
+    wrong = fixture.invoke("run_test", {"command_id": "shell"})
+    assert wrong.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+    injected = fixture.invoke(
+        "run_test",
+        {"command_id": "acceptance_test", "argv": ["sh", "-c", "touch marker"]},
+    )
+    assert injected.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+    assert not marker.exists()
+
+
+def test_run_test_reports_success_and_nonzero_exit(tmp_path: Path) -> None:
+    success_fixture = _side_effect_fixture(
+        tmp_path / "success",
+        task_kind=gh.TaskKind.TEST_REPAIR,
+    )
+    success = success_fixture.invoke_approved(
+        "run_test",
+        {"command_id": "acceptance_test"},
+    )
+    assert success.status == gh.ObservationStatus.ALLOWED
+    assert success.output["exit_code"] == 0
+    assert success.evidence_ids
+    success_evidence = next(
+        item
+        for item in success_fixture.snapshot().evidence
+        if item.evidence_id == success.evidence_id
+    )
+    assert success_evidence.kind == gh.EvidenceKind.COMMAND
+    assert success_evidence.command_id == "acceptance_test"
+
+    failed_fixture = _side_effect_fixture(
+        tmp_path / "failed",
+        task_kind=gh.TaskKind.TEST_REPAIR,
+        test_command=("python", "-c", "print('failure'); raise SystemExit(3)"),
+    )
+    failed = failed_fixture.invoke_approved(
+        "run_test",
+        {"command_id": "acceptance_test"},
+    )
+    assert failed.status == gh.ObservationStatus.FAILED
+    assert failed.code == gh.ErrorCode.TOOL_TEST_FAILED.value
+    assert failed.output["exit_code"] == 3
+    assert "failure" in failed.output["stdout"]
+    assert failed.evidence_ids
+
+
+def test_run_test_timeout_is_unknown_and_not_retried(tmp_path: Path) -> None:
+    marker = "starts.txt"
+    fixture = _side_effect_fixture(
+        tmp_path,
+        task_kind=gh.TaskKind.TEST_REPAIR,
+        test_command=(
+            "python",
+            "-c",
+            (
+                "from pathlib import Path; import time; "
+                f"p=Path({marker!r}); p.write_text(p.read_text()+'x' if p.exists() else 'x'); "
+                "print('started', flush=True); time.sleep(30)"
+            ),
+        ),
+        command_timeout=0.3,
+    )
+    request = fixture.request("run_test", {"command_id": "acceptance_test"})
+    waiting = fixture.gate.invoke(request)
+    fixture.approve(waiting.approval_id)
+    result = fixture.gate.invoke(request)
+    assert result.status == gh.ObservationStatus.UNKNOWN_RESULT
+    assert result.code == gh.ErrorCode.SANDBOX_COMMAND_TIMEOUT.value
+    assert result.output["timed_out"] is True
+    assert result.output["process_group_terminated"] is True
+    assert not result.evidence_ids
+    assert (fixture.workspace / marker).read_text(encoding="utf-8") == "x"
+
+    repeated = fixture.gate.invoke(request)
+    assert repeated.status == gh.ObservationStatus.DENIED
+    assert (fixture.workspace / marker).read_text(encoding="utf-8") == "x"
+
+
+def test_run_test_cancellation_maps_unknown(tmp_path: Path, monkeypatch) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    cancelled = gh.SandboxProcessResult(
+        command_id="acceptance_test",
+        status=gh.SandboxProcessStatus.CANCELLED,
+        exit_code=None,
+        signal=15,
+        stdout="",
+        stderr="",
+        stdout_truncated=False,
+        stderr_truncated=False,
+        timed_out=False,
+        cancelled=True,
+        process_group_terminated=True,
+        duration_ms=5,
+        result_code=gh.ErrorCode.SANDBOX_COMMAND_CANCELLED,
+    )
+    monkeypatch.setattr(fixture.sandbox, "execute", lambda *args, **kwargs: cancelled)
+    result = fixture.invoke_approved("run_test", {"command_id": "acceptance_test"})
+    assert result.status == gh.ObservationStatus.UNKNOWN_RESULT
+    assert result.code == gh.ErrorCode.SANDBOX_COMMAND_CANCELLED.value
+    assert result.evidence_ids == ()
+
+
+def test_command_output_is_bounded_and_redacted(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(
+        tmp_path,
+        task_kind=gh.TaskKind.TEST_REPAIR,
+        test_command=(
+            "python",
+            "-c",
+            "print('access_token=super-secret-token'); print('x' * 4096)",
+        ),
+        stdout_limit=256,
+    )
+    result = fixture.invoke_approved("run_test", {"command_id": "acceptance_test"})
+    assert result.status == gh.ObservationStatus.ALLOWED
+    assert result.output["stdout_truncated"] is True
+    assert "super-secret-token" not in str(result.output)
+    assert result.evidence_ids == ()
+    with fixture.storage.transaction(actor="agent") as unit:
+        events = unit.audit.list_tool_events(RUN_ID, result.tool_call_id)
+    assert all("super-secret-token" not in str(event.model_dump()) for event in events)
+
+
+def test_result_persistence_failure_never_claims_success(
+    tmp_path: Path,
+    monkeypatch,
+    fault_injector,
+) -> None:
+    fixture = _side_effect_fixture(tmp_path, fault_injector=fault_injector)
+    target = fixture.workspace / "artifacts" / "report.md"
+    original = fixture.sandbox.write_file_atomic
+
+    def write_then_fail(*args, **kwargs):
+        result = original(*args, **kwargs)
+        fault_injector.arm("audit:before-insert")
+        return result
+
+    monkeypatch.setattr(fixture.sandbox, "write_file_atomic", write_then_fail)
+    request = fixture.request(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# changed\n"},
+    )
+    waiting = fixture.gate.invoke(request)
+    fixture.approve(waiting.approval_id)
+    response = fixture.gate.invoke(request)
+    assert response.status != gh.ObservationStatus.ALLOWED
+    assert target.read_text(encoding="utf-8") == "# changed\n"
+    with fixture.storage.transaction(actor="agent") as unit:
+        invocation = unit.state.get_run_snapshot(RUN_ID).invocations[0]
+        assert invocation.status == gh.InvocationStatus.STARTED
+
+
+def test_later_file_change_invalidates_old_write_evidence(tmp_path: Path) -> None:
+    fixture = _side_effect_fixture(tmp_path)
+    result = fixture.invoke_approved(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# first\n"},
+    )
+    evidence = next(
+        item for item in fixture.snapshot().evidence if item.evidence_id == result.evidence_id
+    )
+    (fixture.workspace / "artifacts" / "report.md").write_text("# second\n", encoding="utf-8")
+    current = fixture.invoke("read_file", {"path": "artifacts/report.md"})
+    assert current.status == gh.ObservationStatus.ALLOWED
+    assert evidence.content_digest != current.output["content_digest"]
+
+
+def test_parallel_writes_are_serialized(tmp_path: Path, monkeypatch) -> None:
+    fixture = _side_effect_fixture(tmp_path)
+    physical_writes: list[str] = []
+    original = fixture.sandbox.write_file_atomic
+
+    def counted_write(*args, **kwargs):
+        result = original(*args, **kwargs)
+        physical_writes.append(result.mode.value)
+        return result
+
+    monkeypatch.setattr(fixture.sandbox, "write_file_atomic", counted_write)
+    request = fixture.request(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# concurrent\n"},
+        call_id="parallel-write",
+    )
+    waiting = fixture.gate.invoke(request)
+    fixture.approve(waiting.approval_id)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        observations = list(executor.map(fixture.gate.invoke, (request, request)))
+    assert sum(item.status == gh.ObservationStatus.ALLOWED for item in observations) == 1
+    assert sum(item.status == gh.ObservationStatus.DENIED for item in observations) == 1
+    assert physical_writes == [gh.SandboxWriteMode.REPLACE.value]
+
+
+def test_write_command_suite_is_offline_and_repeatable(tmp_path: Path, monkeypatch) -> None:
+    def deny_network(*_args, **_kwargs):
+        raise AssertionError("WP-06 tests must not access the network")
+
+    monkeypatch.setattr(socket, "create_connection", deny_network)
+    first = _side_effect_fixture(tmp_path / "first")
+    second = _side_effect_fixture(tmp_path / "second")
+    first_result = first.invoke_approved(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# deterministic\n"},
+    )
+    second_result = second.invoke_approved(
+        "write_file",
+        {"path": "artifacts/report.md", "content": "# deterministic\n"},
+    )
+    assert first_result.status == gh.ObservationStatus.ALLOWED
+    assert second_result.status == gh.ObservationStatus.ALLOWED
+    assert first_result.output["content_digest"] == second_result.output["content_digest"]

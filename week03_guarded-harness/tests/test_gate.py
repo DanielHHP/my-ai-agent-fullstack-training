@@ -56,6 +56,7 @@ from guarded_harness import (
     ToolSpec,
     WorkspaceConfig,
     WorkspaceIdentity,
+    register_side_effect_tools,
 )
 
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -763,6 +764,60 @@ def test_g3_wait_and_g4_one_time_execution(tmp_path: Path) -> None:
         invocations = unit.state.get_run_snapshot(RUN_ID).invocations
         assert len(invocations) == 1
         assert invocations[0].status == InvocationStatus.SUCCEEDED
+
+
+def test_real_write_tool_is_approval_gated_once(tmp_path: Path) -> None:
+    fixture = _gate_fixture(tmp_path)
+    registry = ToolRegistry()
+    resolved = _resolved_config(
+        tmp_path,
+        tmp_path / "repo",
+        fixture.sandbox.workspace_root,
+    )
+    assert register_side_effect_tools(registry, fixture.sandbox, resolved) == (
+        "apply_patch",
+        "write_file",
+    )
+    policy = PolicyEngine(
+        allowed_tool_names=registry.names(),
+        role_permissions={
+            "developer": {
+                ToolPermission.READ,
+                ToolPermission.WRITE,
+            }
+        },
+        task_approval_tools=("write_file",),
+        approval_roles=("operator",),
+    )
+    gate = Gate(
+        storage=fixture.storage,
+        registry=registry,
+        policy=policy,
+        sandbox=fixture.sandbox,
+        clock=fixture.output["clock"],
+    )
+    request = ToolCallRequest(
+        tool_call_id="real-write",
+        tool_name="write_file",
+        args={"path": "artifacts/out.md", "content": "# real write\n"},
+        context=fixture.context,
+        lease_token=fixture.lease_token,
+    )
+    target = fixture.sandbox.workspace_root / "artifacts" / "out.md"
+    waiting = gate.invoke(request)
+    assert waiting.status == ObservationStatus.WAITING_APPROVAL
+    assert not target.exists()
+
+    _approve(fixture, waiting.approval_id)
+    first = gate.invoke(request)
+    assert first.status == ObservationStatus.ALLOWED
+    assert target.read_text(encoding="utf-8") == "# real write\n"
+    assert first.evidence_ids
+
+    target.write_text("external\n", encoding="utf-8")
+    replay = gate.invoke(request)
+    assert replay.code == ErrorCode.GATE_REPLAY_SUPPRESSED.value
+    assert target.read_text(encoding="utf-8") == "external\n"
 
 
 def test_g2_third_equivalent_read_is_denied(tmp_path: Path) -> None:

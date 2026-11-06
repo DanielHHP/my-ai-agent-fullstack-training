@@ -8,13 +8,16 @@ import re
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from ..config import ResolvedHarnessConfig
 from ..domain import (
     ErrorCode,
     HandlerResult,
     HandlerResultStatus,
     JsonValue,
+    TaskKind,
     ToolExecutionContext,
 )
+from ..sandbox import SandboxViolation
 
 TOOL_SCHEMA_VERSION = 1
 MAX_PATTERN_CHARS = 512
@@ -26,6 +29,11 @@ SEARCH_OUTPUT_BYTES = 48 * 1024
 LIST_OUTPUT_BYTES = 32 * 1024
 STATUS_OUTPUT_BYTES = 32 * 1024
 DIFF_OUTPUT_BYTES = 60 * 1024
+WRITE_OUTPUT_BYTES = 8 * 1024
+TEST_OUTPUT_BYTES = 60 * 1024
+MAX_WRITE_CHARS = 10 * 1024 * 1024
+MAX_PATCH_EDIT_CHARS = 1024 * 1024
+MAX_PATCH_EDITS = 100
 
 _CONTROL_FREE_STRING = r"^[^\u0000-\u001f\u007f]+$"
 
@@ -63,6 +71,49 @@ def integer_schema(*, minimum: int, maximum: int) -> dict[str, JsonValue]:
         "minimum": minimum,
         "maximum": maximum,
     }
+
+
+def file_content_schema(*, max_length: int = MAX_WRITE_CHARS) -> dict[str, JsonValue]:
+    """Return a bounded text schema that permits layout whitespace but rejects NUL."""
+
+    return {
+        "type": "string",
+        "maxLength": max_length,
+        "pattern": r"^[^\u0000]*$",
+    }
+
+
+def patch_edit_schema() -> dict[str, JsonValue]:
+    """Return the strict schema for one exact text replacement."""
+
+    return object_schema(
+        {
+            "oldText": text_schema(max_length=MAX_PATCH_EDIT_CHARS),
+            "newText": file_content_schema(max_length=MAX_PATCH_EDIT_CHARS),
+        },
+        ("oldText", "newText"),
+    )
+
+
+def require_task_write_path(config: ResolvedHarnessConfig, workspace_relative: str) -> None:
+    """Require a normalized path to be explicitly writable for the configured task."""
+
+    task = config.config.task
+    if task.kind == TaskKind.CODE_UNDERSTANDING:
+        allowed = workspace_relative in config.deliverables
+    elif task.kind == TaskKind.TEST_REPAIR:
+        allowed = any(
+            glob_matches(pattern, workspace_relative) for pattern in task.paths.allow_write
+        )
+    else:
+        allowed = False
+    if not allowed:
+        raise SandboxViolation(
+            ErrorCode.GATE_WRITE_NOT_ALLOWED,
+            "write",
+            "path is not declared as a task deliverable or allow_write target",
+            workspace_relative,
+        )
 
 
 def normalize_list_files(

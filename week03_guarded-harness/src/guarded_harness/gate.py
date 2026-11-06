@@ -322,6 +322,13 @@ class Gate:
                     "trusted normalizer produced schema-invalid arguments",
                     "GATE_SEMANTIC_V1",
                 ) from exc
+            except SandboxViolation as exc:
+                raise _GateDenial(
+                    exc.code,
+                    GatePhase.SEMANTIC,
+                    exc.message,
+                    "GATE_SEMANTIC_V1",
+                ) from exc
             except Exception as exc:
                 raise _GateDenial(
                     ErrorCode.GATE_SEMANTIC_INVALID,

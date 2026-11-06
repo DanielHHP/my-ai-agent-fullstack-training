@@ -588,6 +588,11 @@ paths:
 这是首期明确接受的参考项目语义。目录外既有测试仍不可写，目录内写入仍须经过 Gate、审批、
 执行意图审计和最终 diff/测试覆盖验收。
 
+WP-06 的 `write_file` 以单文件 CREATE/REPLACE 原子提交；`apply_patch` 只修改一个已有普通
+UTF-8 文件，接受 `{path, edits:[{oldText,newText}]}`，每段必须唯一匹配并按数组顺序应用，
+整批计算成功后才执行一次原子替换。空 patch、上下文缺失、歧义、no-op 或超限均整批拒绝。
+`write_file` 内容与目标相同时返回 `changed=false`，不进行第二次物理替换。
+
 路径判定不是最终 I/O 授权。真实文件访问必须通过 Sandbox 提供的整文件安全 I/O：读取和写入
 上限均为 10 MiB，读取超限拒绝；写入使用同目录临时文件、`fsync` 和原子替换。覆盖写入支持预期
 内容摘要，创建写入默认要求目标不存在；只有可信工具规格可以开启逐级受检的父目录创建。既有
@@ -613,6 +618,12 @@ paths:
 - stdout/stderr 分开采集，各以 1 MiB 为上限；保留头部和尾部并显式标记截断，进入模型前再次
   做字符上限裁剪；
 - 返回结构必须包含退出码、信号、是否超时、是否截断、耗时和已采集输出。
+
+WP-06 的 `run_test` 第一版只接受 `{"command_id":"acceptance_test"}`，完整 argv 来自任务
+`acceptance.test_command`，不接受测试文件子集、额外 argv、env、cwd、shell 或模型 timeout。
+该命令固定按非幂等处理；超时或取消必须终止进程组并进入 `UNKNOWN_RESULT`，不得自动重试。
+`write_file` 和 `apply_patch` 固定必审，`run_test` 由任务 `approval.required_tools` 决定
+是否必审。
 
 超时只表示“本地停止等待”。非幂等命令超时或无法确认副作用时写入
 `UNKNOWN_RESULT`，禁止自动重试和验收通过。只有只读或明确幂等、且上一次确定无副作用的操作
