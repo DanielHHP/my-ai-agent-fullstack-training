@@ -1024,22 +1024,54 @@ class CompletionChecker:
                 if not any(glob_matches(pattern, path) for pattern in allow_write)
             )
         )
+        comparison = self._sandbox.compare_workspace(startup_workspace)
+        identity_changed = comparison.identity_changed
+        external_changed = comparison.external_changed is True
         scope = _Check(
             "workspace_scope",
-            not outside and not current_workspace.entries_truncated,
+            not outside
+            and not identity_changed
+            and not external_changed
+            and not current_workspace.entries_truncated,
             (
                 "OK"
-                if not outside and not current_workspace.entries_truncated
+                if not outside
+                and not identity_changed
+                and not external_changed
+                and not current_workspace.entries_truncated
                 else (
-                    ErrorCode.COMPLETION_TEST_WORKSPACE_OUT_OF_SCOPE
-                    if outside
-                    else ErrorCode.COMPLETION_TEST_WORKSPACE_UNSTABLE
+                    ErrorCode.COMPLETION_IDENTITY_CHANGED
+                    if identity_changed
+                    else (
+                        ErrorCode.COMPLETION_EXTERNAL_WORKSPACE_CHANGED
+                        if external_changed
+                        else (
+                            ErrorCode.COMPLETION_TEST_WORKSPACE_OUT_OF_SCOPE
+                            if outside
+                            else ErrorCode.COMPLETION_TEST_WORKSPACE_UNSTABLE
+                        )
+                    )
                 )
             ),
             (
-                "workspace changes are within allow_write"
-                if not outside and not current_workspace.entries_truncated
-                else "workspace changes are outside allow_write or were truncated"
+                "workspace changes are within allow_write and identity/external scope"
+                if not outside
+                and not identity_changed
+                and not external_changed
+                and not current_workspace.entries_truncated
+                else (
+                    "workspace identity changed"
+                    if identity_changed
+                    else (
+                        "Git-visible content outside the workspace changed"
+                        if external_changed
+                        else (
+                            "workspace changes are outside allow_write"
+                            if outside
+                            else "workspace snapshot was truncated"
+                        )
+                    )
+                )
             ),
             unverifiable=current_workspace.entries_truncated,
         )
@@ -1202,6 +1234,8 @@ class CompletionChecker:
             )
         run, snapshot = self._load_preflight(run_id, lease_token)
         self._validate_startup_workspace(run.workspace, startup_workspace)
+        if snapshot.completion is not None:
+            return snapshot.completion
         self._ensure_internal_step(
             run_id,
             lease_token,

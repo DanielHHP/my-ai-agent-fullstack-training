@@ -1,0 +1,39 @@
+version: 1
+state_dir: ../.wp12-state/test-repair
+workspace:
+  root: ../workspaces/test-repair
+  require_clean_workspace: true
+  protect_other_git_changes: true
+budget:
+  max_steps: 20
+  max_tool_calls: 40
+  max_token_cost: 1
+  max_wall_time_seconds: 900
+task:
+  id: wp12_test_repair
+  kind: test_repair
+  description: Repair the calculator defect without modifying existing tests.
+  allowed_tools:
+    - read_file
+    - apply_patch
+  paths:
+    deny_write:
+      - tests/**
+    allow_write:
+      - src/**
+  acceptance:
+    strategy: test_repair
+    test_command:
+      - python
+      - -m
+      - pytest
+      - -q
+    baseline_required: true
+    report_format: pytest_junit_xml
+  approval:
+    required_tools:
+      - apply_patch
+    approver_roles:
+      - local_operator
+    ttl_seconds: 900
+    channel: local_cli

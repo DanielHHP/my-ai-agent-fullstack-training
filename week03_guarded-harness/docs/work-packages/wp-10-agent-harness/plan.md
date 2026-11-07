@@ -673,9 +673,9 @@ WP-11 负责 CLI 参数、退出码、审批命令和 `--wait-for-approval`；WP
 
 - `python -m pip install -e '.[dev]'`：成功；
 - `tests/test_harness_loop.py`：23 passed；
-- `python -m pytest -q`：293 passed；
+- `python -m pytest -q`：372 passed；
 - `python -m ruff check .`：通过；
-- `python -m ruff format --check .`：79 files formatted。
+- `python -m ruff format --check .`：105 files formatted。
 
 基于上述结果的 [acceptance-report.md](acceptance-report.md) 已生成，状态为 `review`，等待上游
 WP-08/WP-09 验收与 WP-11 下游接口评审。

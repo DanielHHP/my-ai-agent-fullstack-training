@@ -842,6 +842,12 @@ WP09-Q01 至 Q08 已由 D-65 至 D-72 关闭；先完成 WP-08 依赖，再继�
 
 **依赖**：WP-00 至 WP-11。
 
+**包内文档**：[冻结规格](work-packages/wp-12-fault-hardening-delivery/spec.md)（v1.0.0 / frozen）、
+[实施计划](work-packages/wp-12-fault-hardening-delivery/plan.md)（v1.0.0 / approved）、
+[验收报告](work-packages/wp-12-fault-hardening-delivery/acceptance-report.md)（blocked，等待上游
+WP-08 至 WP-11 accepted）。
+跨包人工操作步骤见 [WP-08 至 WP-11 手动验收说明](manual-acceptance-wp08-wp11.md)。
+
 **主要范围**：
 
 - `tests/fault_injection.py`、`tests/test_fault_recovery.py`；

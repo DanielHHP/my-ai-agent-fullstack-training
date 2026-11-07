@@ -15,6 +15,8 @@ from typing import Any
 
 from fake_model import FakeScriptedModel, ScriptedResponse, final_answer, tool_call
 
+import guarded_harness as gh
+import guarded_harness.cli as cli_module
 from guarded_harness.cli import main
 from guarded_harness.domain import AcceptanceStatus, ErrorCode, RunStatus
 
@@ -232,6 +234,39 @@ def test_module_and_console_entrypoints_start_the_same_main() -> None:
     assert "guarded-harness" in module.stdout
 
 
+def test_manual_acceptance_runner_prepares_and_waits(
+    tmp_path: Path,
+) -> None:
+    runner = Path(__file__).with_name("manual_acceptance_runner.py")
+    root = tmp_path / "manual-acceptance"
+    prepared = subprocess.run(
+        [sys.executable, str(runner), "prepare", str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert prepared.returncode == 0, prepared.stderr
+
+    started = subprocess.run(
+        [sys.executable, str(runner), "start-code", str(root)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert started.returncode == 3, started.stderr
+    payload = json.loads(started.stdout)
+    assert payload["data"]["status"] == "WAITING_APPROVAL"
+    assert not (
+        root
+        / "examples"
+        / "workspaces"
+        / "code-understanding"
+        / "artifacts"
+        / "code-understanding.md"
+    ).exists()
+
+
 def test_usage_errors_are_strict_and_json(
     tmp_path: Path,
 ) -> None:
@@ -431,6 +466,48 @@ def test_new_process_resume_executes_once_after_console_approval(tmp_path: Path)
     assert repeated.returncode == 0, repeated.stderr
     assert fixture.report_path.read_text(encoding="utf-8") == _valid_document()
     assert fixture.report_path.stat().st_mtime_ns == first_mtime
+
+
+def test_concurrent_resume_processes_execute_write_once(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _code, waiting = _start_waiting(fixture)
+    _approve(fixture, waiting["approval_id"])
+    runner = Path(__file__).with_name("cli_model_runner.py")
+    command = [
+        sys.executable,
+        str(runner),
+        str(fixture.config_path),
+        waiting["run_id"],
+    ]
+    first = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    second = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    first_stdout, first_stderr = first.communicate(timeout=60)
+    second_stdout, second_stderr = second.communicate(timeout=60)
+
+    exit_codes = sorted((first.returncode, second.returncode))
+    assert exit_codes in ([0, 0], [0, 9])
+    if exit_codes == [0, 9]:
+        loser_output = first_stdout if first.returncode != 0 else second_stdout
+        loser_payload = json.loads(loser_output)
+        assert loser_payload["ok"] is False
+        assert loser_payload["error"]["code"] == ErrorCode.STATE_LEASE_HELD.value
+    assert fixture.report_path.read_text(encoding="utf-8") == _valid_document()
+    with sqlite3.connect(fixture.database_path) as connection:
+        write_calls = connection.execute(
+            "SELECT COUNT(*) FROM tool_calls WHERE run_id = ? AND tool_name = 'write_file'",
+            (waiting["run_id"],),
+        ).fetchone()[0]
+    assert write_calls == 1
 
 
 def test_reject_stops_run_without_executing_handler(tmp_path: Path) -> None:
@@ -744,6 +821,78 @@ def test_inspect_rejects_unknown_run_and_does_not_touch_workspace(tmp_path: Path
     assert payload is not None
     assert payload["error"]["code"] == ErrorCode.STATE_NOT_FOUND.value
     assert fixture.report_path.stat().st_mtime_ns == before.st_mtime_ns
+
+
+def test_inspect_corrupt_audit_chain_returns_internal_failure(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    _code, waiting = _start_waiting(fixture)
+    with sqlite3.connect(fixture.database_path) as connection:
+        connection.execute("DROP TRIGGER audit_events_no_update")
+        connection.execute(
+            "UPDATE audit_events SET event_hash = ? WHERE sequence = 1",
+            (f"sha256:{'0' * 64}",),
+        )
+        connection.commit()
+
+    code, payload, _text, _stderr = _invoke(
+        fixture,
+        ["inspect", waiting["run_id"], "--json"],
+    )
+
+    assert code == 9
+    assert payload is not None
+    assert payload["error"]["code"] == ErrorCode.AUDIT_CHAIN_INVALID.value
+
+
+def test_cli_candidate_output_redacts_secret_values(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    secret = "super-secret-token-value"
+    factory = SequenceModelFactory(((final_answer(f"token={secret}"),),))
+
+    code, payload, text, _stderr = _invoke(
+        fixture,
+        ["run", "--json"],
+        model_factory=factory,
+    )
+
+    assert code == 7
+    assert payload is not None
+    assert secret not in text
+    assert secret not in json.dumps(payload)
+
+
+def test_cli_unverifiable_result_returns_exit_8(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    result = gh.RunResult(
+        run_id=f"run_{'1' * 32}",
+        trace_id="2" * 32,
+        status=RunStatus.COMPLETED,
+        acceptance_status=AcceptanceStatus.UNVERIFIABLE,
+        last_audit_sequence=1,
+    )
+
+    class FakeHarness:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def run(self, _request) -> gh.RunResult:
+            return result
+
+    monkeypatch.setattr(cli_module, "Harness", FakeHarness)
+    code, payload, _text, _stderr = _invoke(
+        fixture,
+        ["run", "--json"],
+        model_factory=SequenceModelFactory(((final_answer("unused"),),)),
+    )
+
+    assert code == 8
+    assert payload is not None
+    assert payload["data"]["acceptance_status"] == "UNVERIFIABLE"
 
 
 def test_exit_code_mapping_covers_all_terminal_results() -> None:

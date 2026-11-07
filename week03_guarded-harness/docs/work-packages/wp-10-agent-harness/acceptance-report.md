@@ -6,6 +6,7 @@
 | --- | --- |
 | 工作包 | WP-10 Agent 与 Harness |
 | 报告状态 | review |
+| 报告版本 | 1.1.0 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 对应计划 | [plan.md](plan.md) v1.0.0 / in-progress |
 | 代码基线 | `2e279af` + 本工作包未提交改动 |
@@ -62,7 +63,7 @@ python -m pytest tests/test_harness_loop.py -q \
   -W error::pytest.PytestUnraisableExceptionWarning
 ```
 
-结果：`23 passed in 36.47s`。
+结果：`23 passed`；WP-12 补测另增加 Harness 级故障与并发证据。
 
 全量测试：
 
@@ -70,7 +71,7 @@ python -m pytest tests/test_harness_loop.py -q \
 python -m pytest -q -W error::pytest.PytestUnraisableExceptionWarning
 ```
 
-结果：`293 passed in 141.10s`。
+结果：`372 passed in 257.41s`。
 
 静态检查：
 
@@ -83,7 +84,7 @@ python -m ruff format --check .
 
 ```text
 All checks passed!
-79 files already formatted
+105 files already formatted
 ```
 
 `git diff --check` 通过，无关键 skip，测试使用临时 Git 工作区与临时 SQLite，不访问网络或真实
@@ -109,12 +110,12 @@ All checks passed!
 | WP10-AC-014 Checkpoint | 实际观察到 RUN_STARTED、TOOL_SUCCEEDED、APPROVAL_REQUESTED、STEP_COMPLETED、APPROVAL_SETTLED、COMPLETION_RECORDED | PASS |
 | WP10-AC-015 PREPARED 重启 | 审批后新 Harness 通过 Gate reenter，不重复扣减工具调用 | PASS |
 | WP10-AC-016 STARTED 无结果 | synthetic unknown handler 进入 BLOCKED/UNKNOWN_RESULT；resume 不调用模型 | PASS |
-| WP10-AC-017 确定结果/缺 Checkpoint | 由 WP-07 既有 W6 测试覆盖；Harness 只消费恢复计划 | PASS（上游测试） |
+| WP10-AC-017 确定结果/缺 Checkpoint | `test_result_committed_before_checkpoint_resumes_without_replay`：结果已提交、TOOL_SUCCEEDED Checkpoint 未提交后，新进程复用结果且 read handler 仍只有一次 | PASS |
 | WP10-AC-018 工作区变化 | 审批后修改源码，resume 返回 BLOCKED/RECOVERY_WORKSPACE_CHANGED，审批失效，无 Agent | PASS |
 | WP10-AC-019 预算停止与完成声明 | 预算停止路径不进入 Completion，保持 NOT_EVALUATED | PASS |
 | WP10-AC-020 无交付物 final answer | candidate 被持久化，Completion REJECTED，`claim_without_evidence` 失败 | PASS |
 | WP10-AC-021 Candidate Audit 故障 | 候选回答事务回滚，Run FAILED，未进入 VERIFYING | PASS |
-| WP10-AC-022 并发 resume | 由 WP-07 lease/revision 并发测试覆盖；Harness 在数据库 lease 下执行 | PASS（上游测试） |
+| WP10-AC-022 并发 resume | `test_concurrent_resume_processes_execute_write_once`：两个真实 CLI 子进程并发 resume，只产生一次 write_file，另一进程获得稳定 lease 冲突或已终态 | PASS |
 | WP10-AC-023 smolagents 不兼容 | 版本检查在数据库/仓库写入前失败，模型调用为 0 | PASS |
 | WP10-AC-024 测试修复闭环 | 基线失败 -> 审批 patch -> 新进程 resume -> 最终 JUnit 全绿 -> ACCEPTED | PASS |
 | WP10-AC-025 离线确定性 | 目标测试和全量测试无网络、真实模型、凭据、关键 skip | PASS |
@@ -137,7 +138,7 @@ All checks passed!
 | H1 | 无交付物 final answer REJECTED | PASS |
 | H2 | 测试修复最终报告绑定当前工作区；WP-09 既有失效测试通过 | PASS（跨包） |
 | H3 | Step/token/wall-time 预算均明确 STOPPED/NOT_EVALUATED | PASS |
-| T1 | 293 项全量测试确定性通过 | PASS |
+| T1 | 372 项全量测试确定性通过 | PASS |
 
 P1 的 S2、S4、A2、T2 没有作为 WP-10 的独立完成门禁；其中依赖底层实现和真实模型的最终项目级
 证据仍属于 WP-12/P1。
@@ -160,8 +161,8 @@ P1 的 S2、S4、A2、T2 没有作为 WP-10 的独立完成门禁；其中依赖
    原始 draft 2020-12 schema 完成。
 4. P0 多调用全部串行，没有启用只读并发。
 5. 运行时 token-cost 是资源单位，不是某真实 Provider 的账单价格。
-6. WP-08/WP-09 已生成独立 review 报告，但仍有未闭合 AC；在这些依赖验收前，WP-10 不进入
-   `DONE`。
+6. WP-08/WP-09 的自动化 AC 已补齐，但人工语义和测试质量审查尚未完成；在这些依赖验收前，
+   WP-10 不进入 `DONE`。
 7. 当前报告为 `review`，需要与 WP-11 下游接口评审后再转为最终 accepted 证据。
 
 ## 8. 验收结论

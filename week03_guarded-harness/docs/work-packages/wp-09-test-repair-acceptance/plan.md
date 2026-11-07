@@ -736,17 +736,21 @@ WP-09 是增量扩展，回滚边界：
 - Agent 前基线捕获、最终复跑、节点守恒、skip/xfail、工作区稳定和 H2 Evidence 失效；
 - 跨数据库重开复用基线，不重跑非幂等基线命令；
 - `tests/test_completion.py` 的 WP-08/WP-09 目标测试，以及全量回归。
-- 2026-11-07 实际复跑：`tests/test_completion.py` 18 passed；
-  `python -m pytest -q` 269 passed；`python -m ruff check .` 和格式检查通过。
+- 后续补测复跑：`tests/test_completion.py` 62 passed；
+  `python -m pytest -q` 372 passed；`python -m ruff check .` 和格式检查通过。
+
+2026-11-07 自动化补测已完成：
+
+- 增加基线损坏/命令绑定、启动失败/超时、报告上限、空最终报告、节点守恒、测试文件
+  rename/symlink、允许生成测试、外围变化、输出截断、模型自述、写入故障和并发验收矩阵；
+- 修复测试修复 Completion 未检查仓库外围变化的问题；
+- WP09-AC-001 至 WP09-AC-032 均有直接或明确底层自动化证据；
+- `tests/test_completion.py` 62 passed；
+- 全量 `372 passed`；Ruff lint 和格式检查通过。
 
 尚未完成：
 
-- WP09-AC 中尚未单独覆盖的故障注入、并发和外部保护组合；
-- WP-08 全场景验收完成；
-- WP-09 [acceptance-report.md](acceptance-report.md) 已生成独立 `review` 版本，并完成逐场景映射；
-- 报告中标记为 `GAP` / `PARTIAL` 的 AC 仍需补自动化测试并复验。
+- 人工审查测试 diff 和断言弱化风险；
+- 独立复核人确认报告与 AC 映射。
 
-因此 WP-09 当前为 `IN_PROGRESS`，不能标记为 `DONE`；仍需完成 WP-08 全场景验收、WP-09
-剩余故障组合，并将 review 报告升级为 accepted。报告中的实际复跑结果：
-`tests/test_completion.py` 18 passed；相关契约/基础设施 136 passed；全量 293 passed；
-Ruff lint 和格式检查通过。
+因此 WP-09 当前为 `VERIFYING`，不能标记为 `DONE`。

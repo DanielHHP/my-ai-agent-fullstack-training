@@ -764,9 +764,9 @@ WP-12 负责：
 - 新增 `cli.py`、`__main__.py`、`control.py`、console script 和 `tests/test_cli.py`；
 - 增加 ApprovalStore 无 lease locate 和 effective-only 跨 Run 查询；
 - 完成 run/resume/approvals/inspect、wait、退出码和跨进程恢复；
-- `tests/test_cli.py`：`21 passed`；
-- 全量测试：`314 passed`；
-- Ruff lint 通过，Ruff format check 为 `89 files already formatted`；
+- `tests/test_cli.py`：`26 passed`；
+- 全量测试：`372 passed`；
+- Ruff lint 通过，Ruff format check 为 `105 files already formatted`；
 - 已生成 `acceptance-report.md`，状态为 review。
 
 WP-11 实现阶段结束，当前进入 VERIFYING。WP-10 accepted 前不能把验收报告转为 accepted 或把

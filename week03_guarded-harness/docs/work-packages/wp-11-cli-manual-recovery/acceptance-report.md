@@ -6,7 +6,7 @@
 | --- | --- |
 | 工作包 | WP-11 CLI 与人工恢复 |
 | 报告状态 | review |
-| 报告版本 | 1.0.0 |
+| 报告版本 | 1.1.0 |
 | 验收日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 对应计划 | [plan.md](plan.md) v1.1.0 / done |
@@ -69,10 +69,10 @@ append-only 业务数据。
 | 命令 | 结果 |
 | --- | --- |
 | `.venv/bin/python -m pip install -e '.[dev]'` | PASS；editable 安装成功，console script 已注册 |
-| `.venv/bin/python -m pytest tests/test_cli.py -q` | PASS；`21 passed in 40.02s` |
-| `.venv/bin/python -m pytest -q` | PASS；`314 passed in 158.44s` |
+| `.venv/bin/python -m pytest tests/test_cli.py -q` | PASS；`26 passed in 59.21s` |
+| `.venv/bin/python -m pytest -q` | PASS；`372 passed in 257.41s` |
 | `.venv/bin/python -m ruff check .` | PASS；无 lint 错误 |
-| `.venv/bin/python -m ruff format --check .` | PASS；`89 files already formatted` |
+| `.venv/bin/python -m ruff format --check .` | PASS；`105 files already formatted` |
 | `.venv/bin/guarded-harness --help` | PASS；退出码 0 |
 | `.venv/bin/python -m guarded_harness --help` | PASS；退出码 0，与 console 同一 usage |
 | `git diff --check` | PASS；无空白错误 |
@@ -157,12 +157,12 @@ append-only 业务数据。
 | WP11-AC-015 | PASS | WP-10 `test_unknown_result_blocks_resume_without_model_call` + control query status |
 | WP11-AC-016 | PASS | CLI exit mapper + WP-10 budget tests；STOPPED 为退出码 4 |
 | WP11-AC-017 | PASS | `test_inspect_exposes_denied_call_audit_without_raw_arguments`，REJECTED 为退出码 7 |
-| WP11-AC-018 | PASS | `test_exit_code_mapping_covers_all_terminal_results` |
+| WP11-AC-018 | PASS | `test_cli_unverifiable_result_returns_exit_8` + exit mapping |
 | WP11-AC-019 | PASS | A1 字段由 tool-call Audit 查询验证 |
 | WP11-AC-020 | PASS | `test_inspect_can_filter_approval_audit_and_mark_truncation` + inspect projection |
-| WP11-AC-021 | PASS | `test_strict_config_failure_keeps_config_code_and_redacts_value`；inspect 不输出原始参数 |
-| WP11-AC-022 | PASS | WP-01/WP-02 lease/claim concurrency tests；CLI 复用同一事务/lease 入口 |
-| WP11-AC-023 | PASS | `test_inspect_rejects_unknown_run_*` + WP-01 Audit chain tests |
+| WP11-AC-021 | PASS | `test_strict_config_failure_keeps_config_code_and_redacts_value`、`test_cli_candidate_output_redacts_secret_values` |
+| WP11-AC-022 | PASS | `test_concurrent_resume_processes_execute_write_once` + WP-01/WP-02 lease/claim tests |
+| WP11-AC-023 | PASS | `test_inspect_rejects_unknown_run_*`、`test_inspect_corrupt_audit_chain_returns_internal_failure` |
 | WP11-AC-024 | PASS | Darwin POSIX 子进程测试；未宣称 Windows 进程组支持 |
 | WP11-AC-025 | PASS | 全量测试离线运行，无真实模型、网络或凭据 |
 
@@ -182,7 +182,7 @@ append-only 业务数据。
 | T09 `inspect` | DONE | A1、approval filter、truncation、未知 Run |
 | T10 cross-process | DONE | console approve + module-equivalent runner |
 | T11 hardening | DONE | 脱敏、严格 parser、工作区变化、原子过期 |
-| T12 report | REVIEW | 本报告等待 WP-10 accepted |
+| T12 report | REVIEW | 本报告等待 WP-10 accepted；手动操作步骤已生成 |
 
 ## 9. 飞书核心验收映射
 

@@ -1,0 +1,39 @@
+version: 1
+state_dir: ../.wp12-state/code-understanding
+workspace:
+  root: ../workspaces/code-understanding
+  require_clean_workspace: true
+  protect_other_git_changes: true
+budget:
+  max_steps: 12
+  max_tool_calls: 20
+  max_token_cost: 1
+  max_wall_time_seconds: 600
+task:
+  id: wp12_code_understanding
+  kind: code_understanding
+  description: Explain the login status branch without changing source code.
+  allowed_tools:
+    - read_file
+    - write_file
+  paths:
+    deny_read:
+      - "**/.env"
+      - "**/*.pem"
+      - "**/*.key"
+    deny_write:
+      - src/**
+      - tests/**
+    allow_write:
+      - artifacts/code-understanding.md
+  acceptance:
+    strategy: code_understanding
+    deliverables:
+      - artifacts/code-understanding.md
+  approval:
+    required_tools:
+      - write_file
+    approver_roles:
+      - local_operator
+    ttl_seconds: 900
+    channel: local_cli

@@ -559,12 +559,17 @@ WP-08 是增量模块和窄接口扩展，回滚按以下边界：
 - 2026-11-07 实际复跑：`python -m pytest -q` 为 269 passed；
   `python -m ruff check .` 通过；`python -m ruff format --check .` 通过。
 
+2026-11-07 自动化补测已完成：
+
+- 增加交付物内容、Markdown 结构、引用图、Evidence provenance、分页并集、工作区范围、
+  Audit 故障和重复/并发 Completion 矩阵；
+- WP08-AC-001 至 WP08-AC-024 均有直接或明确底层自动化证据；
+- `tests/test_completion.py` 62 passed；
+- 全量 `372 passed`；Ruff lint 和格式检查通过。
+
 尚未完成：
 
-- WP08-AC 全量故障矩阵、截断和并发覆盖；
-- WP-08 [acceptance-report.md](acceptance-report.md) 已生成独立 `review` 版本，并完成逐场景映射；
-- 报告中标记为 `GAP` / `PARTIAL` 的 AC 仍需补自动化测试并复验。
+- 人工代码解释语义和文档质量审查；
+- 独立复核人确认报告与 AC 映射。
 
-当前工作包状态为 `IN_PROGRESS`，不能声明 WP-08 已 accepted。报告中的实际复跑结果：
-`tests/test_completion.py` 18 passed；相关契约/基础设施 136 passed；全量 293 passed；
-Ruff lint 和格式检查通过。
+当前工作包状态为 `VERIFYING`，不能提前声明 accepted。
