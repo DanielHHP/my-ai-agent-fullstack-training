@@ -33,5 +33,7 @@
 | [WP-07 规格](work-packages/wp-07-checkpoint-recovery/spec.md) | 已冻结的 Checkpoint 快照、恢复窗口、租约、续接上下文、飞书 C1-C4 映射和 D-53 至 D-58 |
 | [WP-07 计划](work-packages/wp-07-checkpoint-recovery/plan.md) | WP-07 migration v5、恢复设计、任务卡、测试矩阵、风险和回滚计划 |
 | [WP-07 验收报告](work-packages/wp-07-checkpoint-recovery/acceptance-report.md) | Checkpoint/恢复实现、101 项目标测试、249 项全量测试、场景映射和验收结论 |
+| [WP-08 规格](work-packages/wp-08-completion-code-understanding/spec.md) | 已冻结的验收引擎、内部只读控制面、代码理解文档结构、Evidence 追溯、工作区 diff、飞书 H1/H2/H3/A2/T1 映射和 D-59 至 D-64 |
+| [WP-08 计划](work-packages/wp-08-completion-code-understanding/plan.md) | 已批准的 Completion 内部控制面、解析与证据校验、任务卡、测试矩阵、风险和回滚计划 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

@@ -698,6 +698,10 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 **依赖**：WP-04、WP-05。
 
+**包内文档**：[规格](work-packages/wp-08-completion-code-understanding/spec.md) ·
+[计划](work-packages/wp-08-completion-code-understanding/plan.md)。规格已冻结、计划已批准，D-59
+至 D-64 已关闭；当前状态为 `DESIGNED`，尚未开始实现。
+
 **主要范围**：
 
 - `completion.py` 的验收框架和代码理解策略；

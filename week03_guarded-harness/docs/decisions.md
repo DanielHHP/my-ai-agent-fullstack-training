@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-58 |
+| 决策范围 | 已确认的 D-01 至 D-64 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -74,3 +74,9 @@
 | D-56 | WP-07 Evidence 失效 | 复用 `Evidence.is_valid`，新增受租约保护的单向 `true -> false` 状态操作并追加 `EVIDENCE_INVALIDATED` 审计。恢复上下文和后续 Completion 只能消费仍有效的 Evidence；不得把失效证据恢复为有效或删除原事实。 |
 | D-57 | WP-07 Checkpoint 上限与保留 | Checkpoint canonical snapshot 上限 1 MiB，continuation context 与渲染文本上限均为 64 KiB。P0 保留全部 Checkpoint 和 recovery record，不自动清理；超限失败关闭，不静默截断关键安全事实。 |
 | D-58 | WP-07 待审批 Checkpoint 边界 | 追加 `CheckpointBoundaryKind.APPROVAL_REQUESTED`，用于审批已创建且处于 PENDING、Run 已安全进入 `WAITING_APPROVAL` 的 Checkpoint；`APPROVAL_SETTLED` 继续表示批准、拒绝、过期、撤销、claim 恢复或消费等已落定状态。两者都必须在快照中保存完整审批与待执行调用。 |
+| D-59 | WP-08 Completion 内部控制面与预算 | Gate 新增 `invoke_internal` 可信入口，只接受独立内部 Registry 中固定的只读 Completion 工具定义；仅允许 `VERIFYING` Run，actor/role 固定为系统 Completion 身份，不由调用方或模型覆盖。内部工具不进入模型快照，经同一 Sandbox、Invocation、Evidence 和 Audit 边界执行；使用专门 Completion step/调用记录，并采用独立固定次数、超时和输出预算，不消耗 Agent 的 step 或 tool-call 预算。 |
+| D-60 | WP-08 分页读取证据覆盖 | 同一 Run、同一路径、同一完整文件摘要且由同一 Agent producer 产生的多个连续 `READ` Evidence 可以取行区间并集，完整覆盖一个文档引用范围；不同内容摘要、跨 Run、非 Agent 生产者或存在未读空洞时不得视为完整读取。 |
+| D-61 | WP-08 启动工作区基线 | 可信 Harness 在启动时保留完整的 `WorkspaceBaseline` 并显式注入 `CompletionChecker`。Completion 必须先校验其身份和 fingerprint 与 Run 一致，再比较当前工作区；不得从当前工作区反推启动基线。跨进程或 CLI 验收需要时再单独评审基线持久化。 |
+| D-62 | WP-08 交付物变更要求 | 代码理解任务的每个配置交付物必须在本次 Run 中新增或内容发生变化；交付物预先存在但未修改时不得 `ACCEPTED`。存在性、非空、路径和引用检查仍需同时满足。 |
+| D-63 | WP-08 陈旧 Evidence 失效 | Completion 发现引用源码读取后变化时，在持有有效租约的前提下调用 WP-07 的 Evidence 单向失效操作并追加 Audit，然后将对应检查判为 `REJECTED`。失效操作或审计失败时整体验收失败关闭，不得返回 `ACCEPTED`。 |
+| D-64 | WP-08 完成声明识别 | 对 Run 的 `candidate_final_answer` 使用有界、保守的中英文完成声明标记，否定表达不计为完成声明。检测只用于 `claim_without_evidence` 检查项和 Audit 诊断；最终验收仍完全由文件、引用、工作区 diff、Evidence 和 Audit 决定。 |

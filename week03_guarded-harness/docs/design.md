@@ -417,7 +417,10 @@ CLI 命令语义：
 ### 6.5 最终验收
 
 CompletionChecker 在 Agent 停止后运行，模型不能跳过、替换或覆盖它。验收过程与普通工具调用
-一样经过 Gate 内部控制面，使用独立的系统 actor，不会把该能力暴露给模型。
+一样经过 Gate 内部控制面，使用独立的系统 actor，不会把该能力暴露给模型。Gate 的
+`invoke_internal` 只接受可信内部 Registry 中固定的只读工具，仅允许 `VERIFYING` Run；
+内部工具不进入模型快照，使用专门 Completion step，并采用独立次数、超时和输出预算，不消耗
+Agent 的 step 或 tool-call 预算。
 
 验收输出至少包含：
 
@@ -425,6 +428,12 @@ CompletionChecker 在 Agent 停止后运行，模型不能跳过、替换或覆�
 - 交付物路径、工作区指纹、diff 摘要、测试运行 ID；
 - 关联的 audit event ID、tool result ID、checkpoint ID；
 - 失败原因、完成时间和是否检测到“模型声称完成但无证据”。
+
+代码理解验收必须接收 Harness 启动时保存的 `WorkspaceBaseline`，校验其 fingerprint 与 Run 一致
+后再比较当前工作区。每个声明交付物必须在本次 Run 中新增或变化。文档事实只能引用同一 Run、
+同一路径和同一文件摘要下由 Agent 读取产生且仍有效的 `READ` Evidence；同一内容版本的多段连续
+读取可以取并集覆盖引用范围。源码读取后变化时，Completion 在有效租约下将旧 Evidence 单向失效，
+并把验收判为拒绝。
 
 最终验收写 StateStore 和 Audit 失败时，Run 不得返回 accepted。
 
@@ -448,6 +457,10 @@ Gate 对每个调用按下列顺序检查，前一步失败后立即返回，不
 所有 Allow 与 Deny 都要写入 Audit。拒绝审计写失败时，拒绝结果仍可返回，但不得执行 handler；
 允许审计或执行意图写失败时直接拒绝执行。Sandbox 预检在执行前完成，handler 内部仍需复用同一
 边界对象完成实际落点校验，防止检查后目标变化。
+
+模型工具调用走普通 `invoke()`；Completion 只能走 `invoke_internal()`。后者不接受模型生成的
+工具名/args 组合作为执行授权，只查找独立内部 Registry 中已固定的只读定义，并以系统 actor
+重新执行 schema、Sandbox、Invocation、Evidence 和 Audit 检查。内部工具不出现在普通工具快照。
 
 ### 7.2 工具注册元数据
 
@@ -874,6 +887,11 @@ Gate、Sandbox 和 Harness 不包含 `understand`、`fix_tests` 等任务名分�
    工作区外的保护基线未变化；
 10. 如果模型声称完成但文件不存在、事实缺少证据、引用未定义或引用无法回溯到读取审计，记录
    `claim_without_evidence` 并拒绝。
+
+启动基线由可信 Harness 显式注入，不从当前工作区反推。每个交付物必须在本次 Run 中新增或变化。
+同一路径、同一完整文件摘要、同一 Agent producer 的多个连续 `READ` Evidence 可组成完整覆盖；
+Completion 自身读取产生的证据不能证明 Agent 已读。自然语言完成声明只作为诊断项，不能替代
+文件、引用、diff 和 Audit 事实。
 
 程序只能机械证明“引用位置被读过、路径合法、行号存在”，不能证明模型对代码语义的解释必然正确。
 因此代码理解交付物使用以下最小结构：
