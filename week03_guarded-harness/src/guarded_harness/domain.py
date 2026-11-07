@@ -21,6 +21,7 @@ from pydantic import (
     StringConstraints,
     ValidationError,
     field_serializer,
+    model_validator,
 )
 
 
@@ -42,6 +43,13 @@ class RunStatus(str, Enum):
     STOPPED = "STOPPED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
+
+
+class RunMode(str, Enum):
+    """Public entry mode for starting or resuming one harness run."""
+
+    START = "START"
+    RESUME = "RESUME"
 
 
 class StopReason(str, Enum):
@@ -70,6 +78,7 @@ class AcceptanceStatus(str, Enum):
 class CheckpointBoundaryKind(str, Enum):
     """Stable safety boundaries that may produce a checkpoint."""
 
+    RUN_STARTED = "RUN_STARTED"
     STEP_COMPLETED = "STEP_COMPLETED"
     TOOL_SUCCEEDED = "TOOL_SUCCEEDED"
     TOOL_FAILED = "TOOL_FAILED"
@@ -498,6 +507,24 @@ class ErrorCode(str, Enum):
     GATE_RESULT_WRITE_FAILED = "GATE_RESULT_WRITE_FAILED"
     GATE_OUTPUT_INVALID = "GATE_OUTPUT_INVALID"
     GATE_INTERNAL_ERROR = "GATE_INTERNAL_ERROR"
+
+    HARNESS_RUN_REQUEST_INVALID = "HARNESS_RUN_REQUEST_INVALID"
+    HARNESS_RUN_MODE_INVALID = "HARNESS_RUN_MODE_INVALID"
+    HARNESS_CONFIG_RELOAD_FAILED = "HARNESS_CONFIG_RELOAD_FAILED"
+    HARNESS_TOOL_ASSEMBLY_FAILED = "HARNESS_TOOL_ASSEMBLY_FAILED"
+    HARNESS_STEP_PERSIST_FAILED = "HARNESS_STEP_PERSIST_FAILED"
+    HARNESS_BUDGET_ACCOUNTING_FAILED = "HARNESS_BUDGET_ACCOUNTING_FAILED"
+    HARNESS_FINAL_ANSWER_INVALID = "HARNESS_FINAL_ANSWER_INVALID"
+    HARNESS_COMPLETION_FAILED = "HARNESS_COMPLETION_FAILED"
+    HARNESS_RESUME_NOT_ALLOWED = "HARNESS_RESUME_NOT_ALLOWED"
+    HARNESS_WORKSPACE_BASELINE_MISSING = "HARNESS_WORKSPACE_BASELINE_MISSING"
+    HARNESS_WORKSPACE_BASELINE_INVALID = "HARNESS_WORKSPACE_BASELINE_INVALID"
+    HARNESS_INTERNAL_ERROR = "HARNESS_INTERNAL_ERROR"
+
+    SMOLAGENTS_VERSION_MISMATCH = "SMOLAGENTS_VERSION_MISMATCH"
+    SMOLAGENTS_ADAPTER_INCOMPATIBLE = "SMOLAGENTS_ADAPTER_INCOMPATIBLE"
+    SMOLAGENTS_STREAM_CONTRACT_INVALID = "SMOLAGENTS_STREAM_CONTRACT_INVALID"
+    SMOLAGENTS_DUPLICATE_TOOL_CALL_ID = "SMOLAGENTS_DUPLICATE_TOOL_CALL_ID"
 
 
 def _validate_utc_datetime(value: datetime) -> datetime:
@@ -1123,6 +1150,43 @@ class CompletionCheck(StrictDomainModel):
                 raise ValueError("ACCEPTED requires at least one passing completion item")
             if self.failure_summary is not None:
                 raise ValueError("ACCEPTED cannot include a failure summary")
+
+
+class RunRequest(StrictDomainModel):
+    """Caller request to start a new run or resume an existing one."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    schema_version: Literal[1] = 1
+    mode: RunMode
+    run_id: RunId | None = None
+
+    @model_validator(mode="after")
+    def _validate_mode_and_run_id(self) -> RunRequest:
+        if self.mode == RunMode.START and self.run_id is not None:
+            raise ValueError("START requests must not include run_id")
+        if self.mode == RunMode.RESUME and self.run_id is None:
+            raise ValueError("RESUME requests require run_id")
+        return self
+
+
+class RunResult(StrictDomainModel):
+    """Immutable public result of one Harness start or resume operation."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    schema_version: Literal[1] = 1
+    run_id: RunId
+    trace_id: TraceId
+    status: RunStatus
+    stop_reason: StopReason | None = None
+    acceptance_status: AcceptanceStatus = AcceptanceStatus.NOT_EVALUATED
+    completion: CompletionCheck | None = None
+    candidate_final_answer: str | None = Field(default=None, max_length=16_000)
+    approval_id: ApprovalId | None = None
+    last_checkpoint_id: CheckpointId | None = None
+    last_audit_sequence: int = Field(ge=0)
+    error_code: StableErrorCode | None = None
 
 
 class TestExecutionRecord(StrictDomainModel):

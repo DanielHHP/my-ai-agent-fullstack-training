@@ -8,7 +8,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -65,7 +65,6 @@ from .sandbox import (
     SandboxViolation,
     TrustedCommandSpec,
     WorkspaceBaseline,
-    WorkspaceEntry,
 )
 from .state_store import StateStoreError
 from .storage import SQLiteStorage, StorageError
@@ -77,6 +76,10 @@ from .test_reports import (
     parse_junit_report,
 )
 from .tools.common import glob_matches
+from .workspace_baseline import (
+    workspace_baseline_from_json,
+    workspace_baseline_to_json,
+)
 
 _SECTION_FACTS = "事实"
 _SECTION_INFERENCE = "推断"
@@ -1975,87 +1978,6 @@ def detect_completion_claim(text: str | None) -> bool:
     if any(marker in normalized for marker in _NEGATED_MARKERS):
         return False
     return any(marker in normalized for marker in _COMPLETION_MARKERS)
-
-
-def workspace_baseline_to_json(baseline: WorkspaceBaseline) -> str:
-    """Serialize a WorkspaceBaseline into deterministic bounded JSON."""
-
-    payload = {
-        "schema_version": baseline.schema_version,
-        "identity": baseline.identity.model_dump(mode="json"),
-        "head_oid_or_unborn": baseline.head_oid_or_unborn,
-        "index_digest": baseline.index_digest,
-        "workspace_status_digest": baseline.workspace_status_digest,
-        "workspace_diff_digest": baseline.workspace_diff_digest,
-        "external_dirty_baseline_digest": baseline.external_dirty_baseline_digest,
-        "external_protection": baseline.external_protection.value,
-        "workspace_entries": [
-            {
-                "status": entry.status,
-                "path": entry.path,
-                "file_type": entry.file_type,
-                "content_digest": entry.content_digest,
-            }
-            for entry in baseline.workspace_entries
-        ],
-        "external_entries": [
-            {
-                "status": entry.status,
-                "path": entry.path,
-                "file_type": entry.file_type,
-                "content_digest": entry.content_digest,
-            }
-            for entry in baseline.external_entries
-        ],
-        "captured_at": baseline.captured_at.astimezone(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%S.%fZ"
-        ),
-    }
-    return json.dumps(
-        payload,
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def workspace_baseline_from_json(value: str) -> WorkspaceBaseline:
-    """Rebuild one WorkspaceBaseline from persisted canonical JSON."""
-
-    payload = json.loads(value)
-    return WorkspaceBaseline(
-        identity=WorkspaceIdentity.model_validate(payload["identity"], strict=True),
-        head_oid_or_unborn=str(payload["head_oid_or_unborn"]),
-        index_digest=str(payload["index_digest"]),
-        workspace_status_digest=str(payload["workspace_status_digest"]),
-        workspace_diff_digest=str(payload["workspace_diff_digest"]),
-        external_dirty_baseline_digest=str(payload["external_dirty_baseline_digest"]),
-        external_protection=ExternalProtection(str(payload["external_protection"])),
-        workspace_entries=tuple(
-            WorkspaceEntry(
-                status=str(item["status"]),
-                path=str(item["path"]),
-                file_type=str(item["file_type"]),
-                content_digest=str(item["content_digest"]),
-            )
-            for item in payload["workspace_entries"]
-        ),
-        external_entries=tuple(
-            WorkspaceEntry(
-                status=str(item["status"]),
-                path=str(item["path"]),
-                file_type=str(item["file_type"]),
-                content_digest=str(item["content_digest"]),
-            )
-            for item in payload["external_entries"]
-        ),
-        captured_at=datetime.strptime(
-            str(payload["captured_at"]),
-            "%Y-%m-%dT%H:%M:%S.%fZ",
-        ).replace(tzinfo=timezone.utc),
-        schema_version=int(payload["schema_version"]),
-    )
 
 
 def build_pytest_report_argv(

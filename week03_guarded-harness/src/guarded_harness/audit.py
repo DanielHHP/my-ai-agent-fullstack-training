@@ -68,6 +68,8 @@ class AuditEventType(str, Enum):
     COMPLETION_CHECKED = "COMPLETION_CHECKED"
     TEST_BASELINE_CAPTURED = "TEST_BASELINE_CAPTURED"
     TEST_EXECUTION_RECORDED = "TEST_EXECUTION_RECORDED"
+    WORKSPACE_BASELINE_RECORDED = "WORKSPACE_BASELINE_RECORDED"
+    FINAL_ANSWER_RECORDED = "FINAL_ANSWER_RECORDED"
     GATE_DECISION = "GATE_DECISION"
     APPROVAL_REQUESTED = "APPROVAL_REQUESTED"
     APPROVAL_DECIDED = "APPROVAL_DECIDED"
@@ -282,9 +284,9 @@ class AuditStore:
             prev_hash=prev_hash,
             event_hash=event_hash,
         )
-        if self._unit.storage.fault_injector is not None:
-            self._unit.storage.fault_injector.trigger("audit:before-insert")
         try:
+            if self._unit.storage.fault_injector is not None:
+                self._unit.storage.fault_injector.trigger("audit:before-insert")
             self._connection.execute(
                 """
                 INSERT INTO audit_events(
@@ -327,6 +329,14 @@ class AuditStore:
                 ErrorCode.AUDIT_SEQUENCE_CONFLICT,
                 operation="append",
                 message="audit sequence or event ID already exists",
+            ) from exc
+        except AuditStoreError:
+            raise
+        except Exception as exc:
+            raise AuditStoreError(
+                ErrorCode.AUDIT_WRITE_FAILED,
+                operation="append",
+                message="audit event could not be persisted",
             ) from exc
         return record
 

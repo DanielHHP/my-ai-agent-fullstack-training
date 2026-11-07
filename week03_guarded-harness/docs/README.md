@@ -37,5 +37,8 @@
 | [WP-08 计划](work-packages/wp-08-completion-code-understanding/plan.md) | Completion 核心实现已落地；解析、证据校验和任务卡正在补齐验收矩阵 |
 | [WP-09 规格](work-packages/wp-09-test-repair-acceptance/spec.md) | 已冻结的测试修复基线、JUnit 节点守恒、H2 证据失效、飞书核心验收映射和 D-65 至 D-72 |
 | [WP-09 计划](work-packages/wp-09-test-repair-acceptance/plan.md) | 测试报告、内部测试执行、migration v6、基线/最终验收核心实现已落地，待完成全场景验收报告 |
+| [WP-10 规格](work-packages/wp-10-agent-harness/spec.md) | 已冻结：原生 ToolCallingAgent 公开适配、Fake Model、唯一 Harness 入口、Run 生命周期、飞书核心验收映射和 D-73 至 D-77 |
+| [WP-10 计划](work-packages/wp-10-agent-harness/plan.md) | 已实施：Agent 适配、Harness 编排、预算/Checkpoint/恢复/Completion 任务卡、测试矩阵和风险清单 |
+| [WP-10 验收报告](work-packages/wp-10-agent-harness/acceptance-report.md) | 23 项目标测试、293 项全量测试、审批/恢复/预算/Completion 实际证据；状态 review，等待上游验收 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

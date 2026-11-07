@@ -50,7 +50,14 @@ from .domain import (
     canonical_json_dump,
 )
 from .redaction import Redactor
+from .sandbox import WorkspaceBaseline
 from .storage import StorageError
+from .workspace_baseline import (
+    MAX_WORKSPACE_BASELINE_BYTES,
+    workspace_baseline_digest,
+    workspace_baseline_from_json,
+    workspace_baseline_to_json,
+)
 
 if TYPE_CHECKING:
     from .storage import StorageUnitOfWork
@@ -82,6 +89,7 @@ _TERMINAL_RUN_STATUSES = frozenset(
 _TERMINAL_ACCEPTANCE = frozenset(
     {AcceptanceStatus.ACCEPTED, AcceptanceStatus.REJECTED, AcceptanceStatus.UNVERIFIABLE}
 )
+MAX_FINAL_ANSWER_CHARS = 16_000
 
 
 class StateStoreError(RuntimeError):
@@ -201,6 +209,197 @@ class StateStore:
         if row is None:
             self._raise(ErrorCode.STATE_NOT_FOUND, "get_run", "run does not exist")
         return _run_from_row(row)
+
+    def record_workspace_baseline(
+        self,
+        run_id: str,
+        baseline: WorkspaceBaseline,
+        *,
+        lease_token: str,
+    ) -> WorkspaceBaseline:
+        """Persist the single append-only startup workspace baseline for a run."""
+
+        self._ensure_active()
+        self._verify_lease(run_id, lease_token, self._now())
+        run = self.get_run(run_id)
+        if run.status in _TERMINAL_RUN_STATUSES or run.status not in {
+            RunStatus.NEW,
+            RunStatus.RUNNING,
+        }:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "record_workspace_baseline",
+                "workspace baseline can only be recorded before verification",
+            )
+        if baseline.identity != run.workspace:
+            self._raise(
+                ErrorCode.HARNESS_WORKSPACE_BASELINE_INVALID,
+                "record_workspace_baseline",
+                "workspace baseline identity does not match the run",
+            )
+        encoded = workspace_baseline_to_json(baseline)
+        encoded_bytes = encoded.encode("utf-8")
+        if not encoded_bytes or len(encoded_bytes) > MAX_WORKSPACE_BASELINE_BYTES:
+            self._raise(
+                ErrorCode.HARNESS_WORKSPACE_BASELINE_INVALID,
+                "record_workspace_baseline",
+                "workspace baseline is empty or exceeds 1 MiB",
+            )
+        digest = workspace_baseline_digest(encoded)
+        existing = self._workspace_baseline_row(run_id)
+        if existing is not None:
+            if (
+                str(existing["workspace_baseline_json"]) == encoded
+                and str(existing["workspace_baseline_digest"]) == digest
+            ):
+                return workspace_baseline_from_json(encoded)
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_workspace_baseline",
+                "workspace baseline already exists with different facts",
+            )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO run_workspace_baselines(
+                    run_id, schema_version, workspace_baseline_json,
+                    workspace_baseline_digest, config_fingerprint, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    baseline.schema_version,
+                    encoded,
+                    digest,
+                    run.config_fingerprint,
+                    _serialize_datetime(self._now()),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_workspace_baseline",
+                "workspace baseline already exists",
+            )
+        self._append_event(
+            run_id=run_id,
+            event_type=AuditEventType.WORKSPACE_BASELINE_RECORDED,
+            input_summary={"workspace_baseline_digest": digest},
+            output_summary={"captured_at": _serialize_datetime(baseline.captured_at)},
+        )
+        return baseline
+
+    def get_workspace_baseline(self, run_id: str) -> WorkspaceBaseline | None:
+        """Read and revalidate the persisted startup workspace baseline."""
+
+        self._ensure_active()
+        row = self._workspace_baseline_row(run_id)
+        if row is None:
+            return None
+        run = self.get_run(run_id)
+        encoded = str(row["workspace_baseline_json"])
+        digest = str(row["workspace_baseline_digest"])
+        if digest != workspace_baseline_digest(encoded):
+            self._raise(
+                ErrorCode.HARNESS_WORKSPACE_BASELINE_INVALID,
+                "get_workspace_baseline",
+                "workspace baseline digest does not match",
+            )
+        if str(row["config_fingerprint"]) != run.config_fingerprint:
+            self._raise(
+                ErrorCode.HARNESS_WORKSPACE_BASELINE_INVALID,
+                "get_workspace_baseline",
+                "workspace baseline config fingerprint does not match the run",
+            )
+        try:
+            baseline = workspace_baseline_from_json(encoded)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StateStoreError(
+                ErrorCode.HARNESS_WORKSPACE_BASELINE_INVALID,
+                operation="get_workspace_baseline",
+                message="workspace baseline payload is invalid",
+            ) from exc
+        if baseline.identity != run.workspace:
+            self._raise(
+                ErrorCode.HARNESS_WORKSPACE_BASELINE_INVALID,
+                "get_workspace_baseline",
+                "workspace baseline identity does not match the run",
+            )
+        return baseline
+
+    def set_candidate_final_answer(
+        self,
+        run_id: str,
+        text: str,
+        *,
+        expected_run_revision: int,
+        lease_token: str,
+    ) -> Run:
+        """Persist one bounded, redacted candidate final answer."""
+
+        self._ensure_active()
+        if not isinstance(text, str) or not text.strip() or "\x00" in text:
+            self._raise(
+                ErrorCode.HARNESS_FINAL_ANSWER_INVALID,
+                "set_candidate_final_answer",
+                "final answer must be non-empty text without NUL",
+            )
+        if len(text) > MAX_FINAL_ANSWER_CHARS:
+            self._raise(
+                ErrorCode.HARNESS_FINAL_ANSWER_INVALID,
+                "set_candidate_final_answer",
+                "final answer exceeds 16000 characters",
+            )
+        now = self._now()
+        self._verify_lease(run_id, lease_token, now)
+        run = self.get_run(run_id)
+        if run.status != RunStatus.RUNNING:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "set_candidate_final_answer",
+                "candidate final answer requires a RUNNING run",
+            )
+        if self._get_run_revision(run_id) != expected_run_revision:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "set_candidate_final_answer",
+                "run revision does not match",
+            )
+        redacted = self._redacted_text(text, "set_candidate_final_answer")
+        if len(redacted) > MAX_FINAL_ANSWER_CHARS:
+            self._raise(
+                ErrorCode.HARNESS_FINAL_ANSWER_INVALID,
+                "set_candidate_final_answer",
+                "redacted final answer exceeds 16000 characters",
+            )
+        if run.candidate_final_answer is not None:
+            if run.candidate_final_answer == redacted:
+                return run
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "set_candidate_final_answer",
+                "candidate final answer already exists with different content",
+            )
+        changed = self._connection.execute(
+            """
+            UPDATE runs
+            SET candidate_final_answer = ?, revision = revision + 1, updated_at = ?
+            WHERE run_id = ? AND revision = ? AND status = 'RUNNING'
+            """,
+            (redacted, _serialize_datetime(now), run_id, expected_run_revision),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "set_candidate_final_answer",
+                "run changed concurrently",
+            )
+        self._append_event(
+            run_id=run_id,
+            event_type=AuditEventType.FINAL_ANSWER_RECORDED,
+            input_summary={"character_count": len(redacted)},
+        )
+        return self.get_run(run_id)
 
     def put_plan(
         self,
@@ -1268,13 +1467,14 @@ class StateStore:
             """
             UPDATE runs
             SET status = ?, stop_reason = ?, acceptance_status = ?,
-                ended_at = ?, updated_at = ?, revision = revision + 1
+                started_at = ?, ended_at = ?, updated_at = ?, revision = revision + 1
             WHERE run_id = ? AND status = ? AND revision = ?
             """,
             (
                 updated.status.value,
                 updated.stop_reason.value if updated.stop_reason else None,
                 updated.acceptance_status.value,
+                _serialize_datetime(updated.started_at) if updated.started_at else None,
                 _serialize_datetime(updated.ended_at) if updated.ended_at else None,
                 _serialize_datetime(updated.updated_at),
                 run_id,
@@ -1422,6 +1622,22 @@ class StateStore:
                 ErrorCode.STATE_NOT_FOUND,
                 "get_invocation_revision",
                 "tool invocation does not exist",
+            )
+        return int(row["revision"])
+
+    def get_step_revision(self, step_id: str) -> int:
+        """Return the current optimistic-concurrency revision for one step."""
+
+        self._ensure_active()
+        row = self._connection.execute(
+            "SELECT revision FROM steps WHERE step_id = ?",
+            (step_id,),
+        ).fetchone()
+        if row is None:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "get_step_revision",
+                "step does not exist",
             )
         return int(row["revision"])
 
@@ -1742,6 +1958,12 @@ class StateStore:
             (run_id,),
         ).fetchone()
         return _plan_from_row(row) if row is not None else None
+
+    def _workspace_baseline_row(self, run_id: str) -> sqlite3.Row | None:
+        return self._connection.execute(
+            "SELECT * FROM run_workspace_baselines WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
 
     def _get_run_revision(self, run_id: str) -> int:
         row = self._connection.execute(

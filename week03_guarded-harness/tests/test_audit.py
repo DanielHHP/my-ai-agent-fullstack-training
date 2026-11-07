@@ -16,6 +16,7 @@ from guarded_harness import (
     AuditEventDraft,
     AuditEventType,
     AuditStatus,
+    AuditStoreError,
     ErrorCode,
     GatePhase,
     LeasePolicy,
@@ -214,9 +215,10 @@ def test_audit_failure_rolls_back_state(
     storage = _storage(tmp_path, fixed_clock, fault_injector=fault_injector)
     fault_injector.arm("audit:before-insert")
 
-    with pytest.raises(RuntimeError, match="injected fault"):
+    with pytest.raises(AuditStoreError) as audit_error:
         with storage.transaction(actor="test-harness") as unit:
             unit.state.create_run(_run(), owner_id="owner-1")
+    assert audit_error.value.code == ErrorCode.AUDIT_WRITE_FAILED
 
     with sqlite3.connect(storage.database_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0

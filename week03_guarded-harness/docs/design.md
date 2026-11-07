@@ -997,6 +997,28 @@ P0 只交付和验收 Fake Model 驱动的确定性测试。Harness API 按 `smo
 `candidate_final_answer`，不视为完成证据。Agent 停止后仍由 CompletionChecker 独立验收；
 `final_answer_checks` 即使通过也不能把 Run 标记为 accepted。
 
+### 12.4 Harness 编排与预算
+
+`Harness.run(RunRequest)` 是 Agent Run 的唯一编排入口。`START` 每次重新加载配置、构造当前 Run
+专属的 Sandbox、Gate、Checkpoint、Completion 和 Agent；`RESUME` 从 StateStore、Checkpoint
+和确定性 continuation context 重建新 Agent，不恢复旧 memory 或旧执行对象。
+
+Agent actor 固定为 `agent`，role 固定为 `developer`。该 role 的有效权限只取任务允许工具声明
+权限的并集；Registry 可见性和 Gate 权限检查仍独立执行。模型只能看到受控 `GovernedTool`
+和 smolagents 内置 `final_answer`，不能通过 `RunRequest` 或工具参数覆盖身份与授权。
+
+每个模型响应的多个工具调用默认按声明顺序串行执行。遇审批等待或未知结果后，同批后续调用不再
+执行。`step_callbacks` 只用于观测公开步骤和 token usage，预算、Checkpoint 与终态还必须由
+Harness 主循环检查并持久化。
+
+`TokenUsage.total_tokens` 通过可信 `TokenCostPolicy` 转为 Decimal token-cost。P0 默认费率为
+每 token `0.000001` 资源单位；费率策略版本进入审计。任一步骤后达到任一项预算上限时，不再发起
+下一次模型或工具调用。
+
+Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建 `RUN_STARTED` Checkpoint。
+最终回答原始长度超过 16,000 字符时失败关闭。最终回答写入、进入 `VERIFYING`、独立 Completion、
+终态更新和相应 Checkpoint 都必须失败关闭。
+
 ## 13. 错误与失败关闭
 
 错误码使用稳定命名空间，至少覆盖：

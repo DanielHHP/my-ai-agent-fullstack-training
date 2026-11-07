@@ -481,6 +481,18 @@ class CheckpointService:
                 if prepared:
                     invocation = prepared[0]
                     approval = _approval_for_invocation(snapshot, invocation)
+                    if latest is not None and comparison.workspace_changed:
+                        return self._block_recovery(
+                            unit,
+                            run_id,
+                            lease_token,
+                            reason_code=ErrorCode.RECOVERY_WORKSPACE_CHANGED,
+                            stop_reason=StopReason.WORKSPACE_CHANGED,
+                            invocation_id=invocation.tool_call_id,
+                            approval_id=(approval.approval_id if approval is not None else None),
+                            valid_evidence_ids=valid_ids,
+                            invalid_evidence_ids=invalid_ids,
+                        )
                     if approval is not None and approval.status == ApprovalStatus.PENDING:
                         if run.status != RunStatus.WAITING_APPROVAL:
                             return self._block_recovery(

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .audit import AuditStore
     from .state_store import StateStore
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -596,6 +596,30 @@ BEGIN
 END;
 """
 
+_MIGRATION_V7 = """
+CREATE TABLE run_workspace_baselines (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    workspace_baseline_json TEXT NOT NULL,
+    workspace_baseline_digest TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER run_workspace_baselines_no_update
+BEFORE UPDATE ON run_workspace_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'WORKSPACE_BASELINE_APPEND_ONLY');
+END;
+
+CREATE TRIGGER run_workspace_baselines_no_delete
+BEFORE DELETE ON run_workspace_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'WORKSPACE_BASELINE_APPEND_ONLY');
+END;
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -619,6 +643,7 @@ MIGRATIONS = (
     Migration(version=4, sql=_MIGRATION_V4),
     Migration(version=5, sql=_MIGRATION_V5),
     Migration(version=6, sql=_MIGRATION_V6),
+    Migration(version=7, sql=_MIGRATION_V7),
 )
 
 
@@ -894,6 +919,7 @@ class SQLiteStorage:
                     "test_executions",
                     "test_nodes",
                     "test_repair_baselines",
+                    "run_workspace_baselines",
                 }
                 tables = {
                     row["name"]

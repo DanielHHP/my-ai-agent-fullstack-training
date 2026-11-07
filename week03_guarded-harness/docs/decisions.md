@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-72 |
+| 决策范围 | 已确认的 D-01 至 D-77 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -88,3 +88,8 @@
 | D-70 | WP-09 skip/xfail 语义 | 基线已存在且最终保持的 `SKIPPED/XFAIL` 允许作为历史测试债务保留并显式审计；原本执行节点变为 skip/xfail，或新增节点为 skip/xfail，均拒绝。所有实际执行节点最终必须通过。 |
 | D-71 | WP-09 报告原文保留 | JUnit 报告只在独立私有临时目录中读取，完成解析后删除。State/Audit 只保留报告 SHA-256、字节数、parser 版本、计数、节点键/脱敏标签和脱敏有界失败摘要，不保存完整报告或断言正文。 |
 | D-72 | WP-09 资源上限 | 单份报告最大 8 MiB、最多 100,000 个测试节点、单字段原始长度 4,096 字符、持久化节点标签 512 字符、失败摘要 8 KiB。超过任一上限或 XML 含 DOCTYPE/ENTITY 时失败关闭。 |
+| D-73 | WP-10 token/cost 计量 | 使用可信注入的 `TokenCostPolicy` 将公开 `TokenUsage.total_tokens` 转为 Decimal token-cost；P0 默认费率为每 token `0.000001` 资源单位，费率版本随策略记录并进入审计。配置继续使用 `max_token_cost`，不从模型响应或环境读取价格。 |
+| D-74 | WP-10 启动工作区基线持久化 | 追加 migration v7，按 Run 通用保存一次完整 `WorkspaceBaseline` JSON、摘要、配置指纹和创建时间；两类任务都从该事实恢复启动基线。追加 `RUN_STARTED` Checkpoint boundary，在 Agent 首次调用模型前创建初始安全点。 |
+| D-75 | WP-10 最终回答上限 | `final_answer` 必须是可接受的有界文本，原始值超过 16,000 字符时以 `HARNESS_FINAL_ANSWER_INVALID` 失败关闭，不静默截断；未超限值先脱敏后以原子 State/Audit 写入，失败时不得进入 `VERIFYING`。 |
+| D-76 | WP-10 多工具批次终止 | P0 的同一模型响应内工具调用按声明顺序串行执行；遇到 `WAITING_APPROVAL` 或 `UNKNOWN_RESULT` 后不再执行同批后续调用，也不为其预先写 `STARTED`。此前已完成的确定调用事实和 Checkpoint 保留，resume 从持久化安全边界继续。 |
+| D-77 | WP-10 Agent 身份与权限装配 | Agent actor 固定为 `agent`、role 固定为 `developer`；该 role 的权限集合只取当前任务允许工具声明权限的并集。`RunRequest` 和模型不能覆盖 actor、role、权限、工作区、预算或审批角色。 |
