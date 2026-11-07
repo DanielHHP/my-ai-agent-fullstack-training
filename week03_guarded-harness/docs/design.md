@@ -1019,6 +1019,31 @@ Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建
 最终回答原始长度超过 16,000 字符时失败关闭。最终回答写入、进入 `VERIFYING`、独立 Completion、
 终态更新和相应 Checkpoint 都必须失败关闭。
 
+### 12.5 CLI 与人工恢复
+
+本地 CLI 是 Harness 和控制服务之上的薄入口，不是第二套执行运行时：
+
+- `guarded-harness` 与 `python -m guarded_harness` 调用同一个 `main`；
+- `run/resume` 只构造 `RunRequest` 并调用 `Harness.run()`；
+- `approvals approve/reject` 只通过 ApprovalStore 改变授权和规定 Run 终态，不执行 handler；
+- `approvals list` 默认跨 Run 有界查询，显示 persisted/effective status，不物化过期；
+- `inspect` 只读取 RunSnapshot、Checkpoint、Recovery、Completion 和有界 Audit 事件；
+- `approvals` 和 `inspect` 不启动模型、Gate 业务执行、handler 或子进程；
+- `--wait-for-approval SECONDS` 在同一进程有界轮询；批准后重建 Harness/Agent 并调用
+  `Harness.run(RESUME)`，本地超时只返回 WAITING_APPROVAL，不改变审批。
+
+`run/resume` 的模型通过可信 `model_factory` 注入。P0 不提供真实 Provider；标准入口在没有受控模型
+来源时返回 `CLI_MODEL_UNAVAILABLE`，测试通过注入 `smolagents.Model` 实现离线验收。CLI 不允许
+覆盖 workspace、task、工具 allowlist、预算、测试命令或审批配置。
+
+审批身份必须由调用者显式提供 actor 和至少一个 role。CLI 不读取隐式用户身份。审批、配置路径、
+Run ID、limit 和等待时长都做严格校验；stdout/stderr/JSON 先脱敏、限长再输出。
+
+`run/resume` 的退出码只读取持久化 `RunResult`：`ACCEPTED=0`、usage/config=2、
+`WAITING_APPROVAL=3`、`STOPPED=4`、`BLOCKED=5`、`FAILED=6`、`COMPLETED/REJECTED=7`、
+`UNVERIFIABLE=8`，内部查询失败=9。审批和只读控制命令成功完成返回 0，但其输出仍包含 Run 的
+真实终态。
+
 ## 13. 错误与失败关闭
 
 错误码使用稳定命名空间，至少覆盖：
@@ -1032,6 +1057,7 @@ Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建
 - `AUDIT_*`：append-only 违约、写入失败和链校验失败；
 - `COMPLETION_*`：交付物、引用、diff、测试和证据不足；
 - `SMOLAGENTS_*`：版本或公开适配契约不兼容。
+- `CLI_*`：usage、模型不可用、审批控制、检查结果和输出失败。
 
 基础设施异常遵循失败关闭：
 

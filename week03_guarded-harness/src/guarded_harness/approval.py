@@ -351,6 +351,59 @@ class ApprovalStore:
             lease_token=lease_token,
         )
 
+    def locate(self, approval_id: str) -> Approval:
+        """Read one approval without lease or expiry materialization."""
+
+        self._ensure_active()
+        return self._required_approval(approval_id, expire=False)
+
+    def list_all(
+        self,
+        *,
+        run_id: str | None = None,
+        effective_statuses: tuple[ApprovalStatus, ...] = (),
+        limit: int = 100,
+    ) -> tuple[Approval, ...]:
+        """List approvals across runs without mutating expiry state."""
+
+        self._ensure_active()
+        if not 1 <= limit <= 1000:
+            self._raise(
+                ErrorCode.APPROVAL_INVALID,
+                "list_all",
+                "approval list limit must be between 1 and 1000",
+            )
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            parameters.append(run_id)
+        if effective_statuses:
+            now_text = _serialize_datetime(self._now())
+            status_clauses: list[str] = []
+            for status in effective_statuses:
+                if status in _ACTIVE_APPROVAL_STATUSES:
+                    status_clauses.append("(status = ? AND expires_at > ?)")
+                    parameters.extend((status.value, now_text))
+                elif status == ApprovalStatus.EXPIRED:
+                    status_clauses.append("(status IN ('PENDING', 'APPROVED') AND expires_at <= ?)")
+                    parameters.append(now_text)
+                else:
+                    status_clauses.append("status = ?")
+                    parameters.append(status.value)
+            clauses.append(f"({' OR '.join(status_clauses)})")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit)
+        rows = self._connection.execute(
+            f"""
+            SELECT * FROM approvals
+            {where}
+            ORDER BY requested_at, approval_id LIMIT ?
+            """,
+            parameters,
+        ).fetchall()
+        return tuple(approval_from_row(row) for row in rows)
+
     def list_for_run(
         self,
         run_id: str,

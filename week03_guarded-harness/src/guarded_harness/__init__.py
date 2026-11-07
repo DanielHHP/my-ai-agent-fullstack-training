@@ -28,6 +28,7 @@ from .audit import (
     AuditStoreError,
 )
 from .checkpoint import CheckpointService, CheckpointServiceError
+from .cli import main
 from .completion import (
     CompletionChecker,
     CompletionCheckerError,
@@ -373,6 +374,7 @@ __all__ = [
     "compare_test_nodes",
     "detect_completion_claim",
     "load_config",
+    "main",
     "normalize_test_file",
     "parse_code_understanding_document",
     "parse_junit_report",

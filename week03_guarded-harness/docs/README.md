@@ -42,5 +42,8 @@
 | [WP-10 规格](work-packages/wp-10-agent-harness/spec.md) | 已冻结：原生 ToolCallingAgent 公开适配、Fake Model、唯一 Harness 入口、Run 生命周期、飞书核心验收映射和 D-73 至 D-77 |
 | [WP-10 计划](work-packages/wp-10-agent-harness/plan.md) | 已实施：Agent 适配、Harness 编排、预算/Checkpoint/恢复/Completion 任务卡、测试矩阵和风险清单 |
 | [WP-10 验收报告](work-packages/wp-10-agent-harness/acceptance-report.md) | 23 项目标测试、293 项全量测试、审批/恢复/预算/Completion 实际证据；状态 review，等待上游验收 |
+| [WP-11 规格](work-packages/wp-11-cli-manual-recovery/spec.md) | 已冻结：CLI run/resume/approvals/inspect、审批后跨进程恢复、等待模式、退出码、飞书核心验收映射和 D-78 至 D-83 |
+| [WP-11 计划](work-packages/wp-11-cli-manual-recovery/plan.md) | 已完成：入口、模型注入、控制面、运行链、任务卡、测试矩阵、风险和回滚计划 |
+| [WP-11 验收报告](work-packages/wp-11-cli-manual-recovery/acceptance-report.md) | 21 项 CLI 目标测试、314 项全量测试、跨进程恢复、只读查询和退出码证据；状态 review，等待 WP-10 accepted |
 
 新增设计、决策或测试文档后，应同步更新本索引。

@@ -17,6 +17,9 @@ dependencies = [
     "PyYAML>=6.0.0,<7.0.0",
 ]
 
+[project.scripts]
+guarded-harness = "guarded_harness.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.0,<10.0.0",

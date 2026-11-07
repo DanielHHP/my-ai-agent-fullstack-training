@@ -808,6 +808,10 @@ WP09-Q01 至 Q08 已由 D-65 至 D-72 关闭；先完成 WP-08 依赖，再继�
 
 **依赖**：WP-07、WP-10。
 
+**包内文档**：[规格](work-packages/wp-11-cli-manual-recovery/spec.md) ·
+[计划](work-packages/wp-11-cli-manual-recovery/plan.md) ·
+[验收报告](work-packages/wp-11-cli-manual-recovery/acceptance-report.md)。
+
 **主要范围**：
 
 - `cli.py`、`__main__.py`；

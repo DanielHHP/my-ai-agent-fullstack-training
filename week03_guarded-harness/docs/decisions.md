@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-77 |
+| 决策范围 | 已确认的 D-01 至 D-83 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -93,3 +93,9 @@
 | D-75 | WP-10 最终回答上限 | `final_answer` 必须是可接受的有界文本，原始值超过 16,000 字符时以 `HARNESS_FINAL_ANSWER_INVALID` 失败关闭，不静默截断；未超限值先脱敏后以原子 State/Audit 写入，失败时不得进入 `VERIFYING`。 |
 | D-76 | WP-10 多工具批次终止 | P0 的同一模型响应内工具调用按声明顺序串行执行；遇到 `WAITING_APPROVAL` 或 `UNKNOWN_RESULT` 后不再执行同批后续调用，也不为其预先写 `STARTED`。此前已完成的确定调用事实和 Checkpoint 保留，resume 从持久化安全边界继续。 |
 | D-77 | WP-10 Agent 身份与权限装配 | Agent actor 固定为 `agent`、role 固定为 `developer`；该 role 的权限集合只取当前任务允许工具声明权限的并集。`RunRequest` 和模型不能覆盖 actor、role、权限、工作区、预算或审批角色。 |
+| D-78 | WP-11 P0 模型来源 | CLI 只接受可信注入的 `model_factory`。标准 console/module 入口在没有 P1 Provider 或受控脚本模型时以 `CLI_MODEL_UNAVAILABLE` 失败关闭；自动化验收通过注入 Fake Model 的同一 `main` 完成，不从 argv 或环境加载任意 Python 实现。 |
+| D-79 | WP-11 CLI 入口与配置边界 | canonical console script 为 `guarded-harness`，`python -m guarded_harness` 必须调用同一 `main`；`--config PATH` 为全局参数。命令固定为 `run`、`resume`、`approvals list/approve/reject` 和 `inspect`，CLI 不得覆盖 workspace、task、工具、预算、测试命令或审批配置。 |
+| D-80 | WP-11 审批身份输入 | `approvals approve/reject` 必须显式提供 `--actor` 和至少一个可重复的 `--role`；不使用环境变量、操作系统用户或配置中的唯一角色作为隐式身份。Approver 仍须通过任务角色交集、自批和一次性审批检查。 |
+| D-81 | WP-11 审批列表语义 | `approvals list` 默认跨 Run、按 `requested_at, approval_id` 稳定排序并限制最多 1000 条；`--run-id`、`--status` 和 `--limit` 仅作窄过滤。列表只返回 persisted/effective status，不物化过期；wait、approve、reject 和 resume 才通过 ApprovalStore 受控物化到期并收口 Run。 |
+| D-82 | WP-11 退出码与 JSON | `run/resume` 仅 `ACCEPTED` 返回 0；2 为 usage/config，3 为 WAITING_APPROVAL，4 为 STOPPED，5 为 BLOCKED，6 为 FAILED，7 为 COMPLETED/REJECTED，8 为 UNVERIFIABLE，9 为内部查询失败。所有命令支持单一 JSON envelope；审批和只读控制命令成功完成返回 0。 |
+| D-83 | WP-11 等待审批超时 | `--wait-for-approval SECONDS` 必须显式给出 `1..86400` 的整数秒；本地超时保持 Run `WAITING_APPROVAL` 并返回退出码 3，不自动 approve、reject 或把等待超时写成审批过期。 |
