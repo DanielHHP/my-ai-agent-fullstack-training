@@ -562,7 +562,9 @@ WP-08 是增量模块和窄接口扩展，回滚按以下边界：
 尚未完成：
 
 - WP08-AC 全量故障矩阵、截断和并发覆盖；
-- WP-08 `acceptance-report.md`；
-- 针对全部 WP08-AC 的逐场景证据映射。
+- WP-08 [acceptance-report.md](acceptance-report.md) 已生成独立 `review` 版本，并完成逐场景映射；
+- 报告中标记为 `GAP` / `PARTIAL` 的 AC 仍需补自动化测试并复验。
 
-当前工作包状态为 `IN_PROGRESS`，不能声明 WP-08 已 accepted。
+当前工作包状态为 `IN_PROGRESS`，不能声明 WP-08 已 accepted。报告中的实际复跑结果：
+`tests/test_completion.py` 18 passed；相关契约/基础设施 136 passed；全量 293 passed；
+Ruff lint 和格式检查通过。

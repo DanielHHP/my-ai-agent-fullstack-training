@@ -743,7 +743,10 @@ WP-09 是增量扩展，回滚边界：
 
 - WP09-AC 中尚未单独覆盖的故障注入、并发和外部保护组合；
 - WP-08 全场景验收完成；
-- WP-09 `acceptance-report.md` 和逐场景证据定稿。
+- WP-09 [acceptance-report.md](acceptance-report.md) 已生成独立 `review` 版本，并完成逐场景映射；
+- 报告中标记为 `GAP` / `PARTIAL` 的 AC 仍需补自动化测试并复验。
 
 因此 WP-09 当前为 `IN_PROGRESS`，不能标记为 `DONE`；仍需完成 WP-08 全场景验收、WP-09
-剩余故障组合和包级验收报告。
+剩余故障组合，并将 review 报告升级为 accepted。报告中的实际复跑结果：
+`tests/test_completion.py` 18 passed；相关契约/基础设施 136 passed；全量 293 passed；
+Ruff lint 和格式检查通过。

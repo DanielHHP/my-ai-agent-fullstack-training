@@ -160,7 +160,8 @@ P1 的 S2、S4、A2、T2 没有作为 WP-10 的独立完成门禁；其中依赖
    原始 draft 2020-12 schema 完成。
 4. P0 多调用全部串行，没有启用只读并发。
 5. 运行时 token-cost 是资源单位，不是某真实 Provider 的账单价格。
-6. WP-08/WP-09 的独立 acceptance report 尚未完成；在这些依赖验收前，WP-10 不进入 `DONE`。
+6. WP-08/WP-09 已生成独立 review 报告，但仍有未闭合 AC；在这些依赖验收前，WP-10 不进入
+   `DONE`。
 7. 当前报告为 `review`，需要与 WP-11 下游接口评审后再转为最终 accepted 证据。
 
 ## 8. 验收结论
