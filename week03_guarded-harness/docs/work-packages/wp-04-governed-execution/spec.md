@@ -12,7 +12,7 @@
 | 下游工作包 | WP-05、WP-06、WP-07、WP-08、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-HARNESS-003` 至 `REQ-HARNESS-005`、`REQ-GATE-001` 至 `REQ-GATE-005`、`REQ-STATE-001` 至 `REQ-STATE-003`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-CHECKPOINT-003` |
 | 对应设计 | `design.md` 第 5.2 至 5.4、6.2、7、9.2、9.3、10、13 节 |
-| 已确认决策 | D-01、D-09、D-11、D-14、D-16 至 D-28、D-30、D-32、D-37 至 D-44 |
+| 已确认决策 | D-01、D-09、D-11、D-14、D-16 至 D-28、D-30、D-32、D-37 至 D-44、D-66、D-67 |
 | 飞书输入 | 作业文档 `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌表 revision 11 |
 
 本文是 WP-04 已冻结的行为契约。实现是否完成仍由自动化测试、故障证据、lint、格式检查和
@@ -38,6 +38,11 @@ WP-04 必须交付一个由程序控制、可审计、失败关闭的唯一工�
 
 WP-04 完成的是治理执行内核，不完成具体文件/进程工具、Agent 适配、Checkpoint、CLI、
 Completion 或端到端任务成功判定。
+
+D-66/D-67 在 WP-09 中为唯一执行入口增加一个受控例外：可信 Harness 可通过固定
+`invoke_test_verification(BASELINE|FINAL)` 执行任务配置中的验收命令。它不暴露给模型、
+不接受任意 argv，并继续使用 Gate 的 Invocation、Evidence、Audit、Sandbox 和租约边界；
+WP-04 本身不实现测试报告解析或验收规则。
 
 ## 3. 范围与非目标
 

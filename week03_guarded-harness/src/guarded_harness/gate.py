@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from collections.abc import Mapping
@@ -29,6 +30,7 @@ from .domain import (
     Clock,
     ErrorCode,
     Evidence,
+    ExecutionMode,
     GatePhase,
     HandlerResult,
     HandlerResultStatus,
@@ -38,6 +40,7 @@ from .domain import (
     Run,
     RunSnapshot,
     RunStatus,
+    TestExecutionPhase,
     ToolCallRequest,
     ToolExecutionContext,
     ToolInvocation,
@@ -61,6 +64,9 @@ _DETERMINISTIC_STATUSES = frozenset(
     }
 )
 _TERMINAL_STATUSES = _DETERMINISTIC_STATUSES | {InvocationStatus.UNKNOWN_RESULT}
+_COMPLETION_ACTOR = "completion-checker"
+_COMPLETION_ROLE = "completion_verifier"
+TEST_VERIFICATION_TOOL = "test_verification"
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,7 @@ class Gate:
         sandbox: Sandbox,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
+        internal_registry: ToolRegistry | None = None,
     ) -> None:
         self._storage = storage
         self._registry = registry
@@ -101,8 +108,19 @@ class Gate:
         self._clock = clock or storage.clock
         self._ids = id_factory or Uuid4IdFactory()
         self._redactor = Redactor()
+        self._internal_registry = internal_registry
         self._lock_guard = threading.Lock()
         self._run_locks: dict[str, threading.Lock] = {}
+
+    def install_internal_registry(self, registry: ToolRegistry) -> None:
+        """Install one independent verifier registry without exposing it to models."""
+
+        if not isinstance(registry, ToolRegistry):
+            raise TypeError("registry must be a ToolRegistry")
+        with self._lock_guard:
+            if self._internal_registry is not None and self._internal_registry is not registry:
+                raise ValueError("an internal registry is already installed")
+            self._internal_registry = registry
 
     def invoke(self, request: ToolCallRequest) -> ToolObservation:
         """Run one candidate tool call through the fixed Gate chain."""
@@ -122,6 +140,203 @@ class Gate:
                     "GATE_INTERNAL_V1",
                 )
                 return self._deny_observation(request, denial)
+
+    def invoke_internal(
+        self,
+        run_id: str,
+        completion_step_id: str,
+        tool_name: str,
+        args: dict[str, JsonValue],
+        *,
+        lease_token: str,
+        expected_run_revision: int,
+    ) -> ToolObservation:
+        """Run one fixed read-only verifier tool outside the model tool surface."""
+
+        return self._invoke_internal_entry(
+            run_id=run_id,
+            step_id=completion_step_id,
+            tool_name=tool_name,
+            args=args,
+            lease_token=lease_token,
+            expected_run_revision=expected_run_revision,
+            allowed_statuses=frozenset({RunStatus.VERIFYING}),
+            require_read_only=True,
+        )
+
+    def invoke_test_verification(
+        self,
+        run_id: str,
+        completion_step_id: str,
+        phase: TestExecutionPhase,
+        *,
+        lease_token: str,
+        expected_run_revision: int,
+    ) -> ToolObservation:
+        """Run the one fixed verifier-owned test command for baseline or final phase."""
+
+        if not isinstance(phase, TestExecutionPhase):
+            raise TypeError("phase must be a TestExecutionPhase")
+        allowed = (
+            frozenset({RunStatus.RUNNING})
+            if phase == TestExecutionPhase.BASELINE
+            else frozenset({RunStatus.VERIFYING})
+        )
+        return self._invoke_internal_entry(
+            run_id=run_id,
+            step_id=completion_step_id,
+            tool_name=TEST_VERIFICATION_TOOL,
+            args={"phase": phase.value},
+            lease_token=lease_token,
+            expected_run_revision=expected_run_revision,
+            allowed_statuses=allowed,
+            require_read_only=False,
+        )
+
+    def _invoke_internal_entry(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        tool_name: str,
+        args: dict[str, JsonValue],
+        lease_token: str,
+        expected_run_revision: int,
+        allowed_statuses: frozenset[RunStatus],
+        require_read_only: bool,
+    ) -> ToolObservation:
+        if self._internal_registry is None:
+            raise RuntimeError("internal registry is not installed")
+        try:
+            with self._storage.transaction(actor=_COMPLETION_ACTOR) as unit:
+                unit.state.verify_lease(run_id, lease_token)
+                run = unit.state.get_run(run_id)
+                revision = unit.state.get_run_revision(run_id)
+        except Exception as exc:
+            raise RuntimeError("internal verifier preflight failed") from exc
+        if revision != expected_run_revision:
+            request = ToolCallRequest(
+                tool_call_id=_internal_call_id(step_id, tool_name, args),
+                tool_name=TEST_VERIFICATION_TOOL
+                if tool_name == TEST_VERIFICATION_TOOL
+                else tool_name,
+                args=args,
+                context=ToolExecutionContext(
+                    run_id=run_id,
+                    step_id=step_id,
+                    task_id=run.task_id,
+                    task_kind=run.task_kind,
+                    mode=ExecutionMode.EXECUTE,
+                    actor=_COMPLETION_ACTOR,
+                    roles=(_COMPLETION_ROLE,),
+                ),
+                lease_token=lease_token,
+            )
+            return self._deny_observation(
+                request,
+                _GateDenial(
+                    ErrorCode.COMPLETION_RUN_STATE_INVALID,
+                    GatePhase.VISIBILITY,
+                    "run revision changed before internal verification",
+                    "COMPLETION_INTERNAL_REVISION_V1",
+                ),
+            )
+        request = ToolCallRequest(
+            tool_call_id=_internal_call_id(step_id, tool_name, args),
+            tool_name=tool_name,
+            args=args,
+            context=ToolExecutionContext(
+                run_id=run_id,
+                step_id=step_id,
+                task_id=run.task_id,
+                task_kind=run.task_kind,
+                mode=ExecutionMode.EXECUTE,
+                actor=_COMPLETION_ACTOR,
+                roles=(_COMPLETION_ROLE,),
+            ),
+            lease_token=lease_token,
+        )
+        with self._run_lock(run_id):
+            try:
+                return self._invoke_internal_locked(
+                    request,
+                    allowed_statuses=allowed_statuses,
+                    require_read_only=require_read_only,
+                )
+            except _GateDenial as denial:
+                return self._deny_observation(request, denial)
+            except Exception as exc:
+                return self._deny_observation(
+                    request,
+                    _GateDenial(
+                        ErrorCode.GATE_INTERNAL_ERROR,
+                        GatePhase.EXECUTION,
+                        _safe_exception_message(exc),
+                        "COMPLETION_INTERNAL_V1",
+                    ),
+                )
+
+    def _invoke_internal_locked(
+        self,
+        request: ToolCallRequest,
+        *,
+        allowed_statuses: frozenset[RunStatus],
+        require_read_only: bool,
+    ) -> ToolObservation:
+        assert self._internal_registry is not None
+        try:
+            definition = self._internal_registry.get(request.tool_name)
+        except ToolRegistryError as exc:
+            raise _GateDenial(
+                ErrorCode.COMPLETION_INTERNAL_ACCESS_DENIED,
+                GatePhase.VISIBILITY,
+                exc.message,
+                "COMPLETION_INTERNAL_LOOKUP_V1",
+            ) from exc
+        if require_read_only and definition.spec.risk != ToolRisk.READ:
+            raise _GateDenial(
+                ErrorCode.COMPLETION_INTERNAL_ACCESS_DENIED,
+                GatePhase.RISK,
+                "internal Completion access must be read-only",
+                "COMPLETION_INTERNAL_READ_V1",
+            )
+        snapshot = self._read_snapshot(request)
+        run = snapshot.run
+        self._validate_context(request, run)
+        if run.status not in allowed_statuses:
+            raise _GateDenial(
+                ErrorCode.COMPLETION_RUN_STATE_INVALID,
+                GatePhase.VISIBILITY,
+                "run state does not permit this internal verification phase",
+                "COMPLETION_INTERNAL_STATE_V1",
+            )
+        prepared = self._validate_and_normalize(
+            request,
+            definition,
+            enforce_execute_shape=False,
+        )
+        existing = _invocation_by_call_id(snapshot, request.tool_call_id)
+        if existing is not None and (
+            existing.tool_name != request.tool_name or existing.args_digest != prepared.args_digest
+        ):
+            raise _GateDenial(
+                ErrorCode.GATE_TOOL_CALL_ID_CONFLICT,
+                GatePhase.VISIBILITY,
+                "internal call ID was reused with different arguments",
+                "COMPLETION_INTERNAL_BINDING_V1",
+            )
+        if existing is not None and existing.status == InvocationStatus.STARTED:
+            raise _GateDenial(
+                ErrorCode.GATE_RESULT_UNKNOWN,
+                GatePhase.EXECUTION,
+                "internal verification started without a confirmed result",
+                "COMPLETION_INTERNAL_UNKNOWN_V1",
+            )
+        if existing is not None and existing.status in _TERMINAL_STATUSES:
+            return self._duplicate_result_observation(request, existing)
+        self._prepare_internal_and_allow(request, prepared)
+        self._mark_started(request)
+        return self._execute(request, prepared, None)
 
     def reenter_prepared(
         self,
@@ -593,6 +808,8 @@ class Gate:
         self,
         request: ToolCallRequest,
         definition: ToolDefinition,
+        *,
+        enforce_execute_shape: bool = True,
     ) -> _PreparedCall:
         arguments = _normalize_json_object(request.args)
         try:
@@ -637,7 +854,11 @@ class Gate:
                 ) from exc
 
         self._normalize_paths(definition, arguments)
-        if definition.spec.risk == ToolRisk.EXECUTE and set(arguments) != {"command_id"}:
+        if (
+            enforce_execute_shape
+            and definition.spec.risk == ToolRisk.EXECUTE
+            and set(arguments) != {"command_id"}
+        ):
             raise _GateDenial(
                 ErrorCode.GATE_SEMANTIC_INVALID,
                 GatePhase.SEMANTIC,
@@ -939,6 +1160,39 @@ class Gate:
                 GatePhase.EXECUTION,
                 _safe_exception_message(exc),
                 "GATE_INTENT_V1",
+            ) from exc
+
+    def _prepare_internal_and_allow(
+        self,
+        request: ToolCallRequest,
+        prepared: _PreparedCall,
+    ) -> None:
+        try:
+            with self._storage.transaction(actor=_COMPLETION_ACTOR) as unit:
+                unit.state.verify_lease(request.context.run_id, request.lease_token)
+                unit.state.create_invocation(
+                    _new_invocation(request, prepared, self._clock.now()),
+                    expected_run_revision=unit.state.get_run_revision(request.context.run_id),
+                    lease_token=request.lease_token,
+                )
+                self._append_decision(
+                    unit,
+                    request,
+                    phase=GatePhase.EXECUTION,
+                    status=AuditStatus.ALLOWED,
+                    decision=AuditDecision.ALLOW,
+                    code=ErrorCode.GATE_ALLOWED,
+                    rule_id="COMPLETION_INTERNAL_ALLOW_V1",
+                    args_digest=prepared.args_digest,
+                )
+        except _GateDenial:
+            raise
+        except Exception as exc:
+            raise _GateDenial(
+                ErrorCode.COMPLETION_INTERNAL_ACCESS_DENIED,
+                GatePhase.EXECUTION,
+                _safe_exception_message(exc),
+                "COMPLETION_INTERNAL_INTENT_V1",
             ) from exc
 
     def _record_tool_budget(self, state: Any, request: ToolCallRequest) -> None:
@@ -1386,6 +1640,22 @@ def _new_invocation(
         created_at=now,
         updated_at=now,
     )
+
+
+def _internal_call_id(
+    step_id: str,
+    tool_name: str,
+    args: dict[str, JsonValue],
+) -> str:
+    payload = json.dumps(
+        {"step_id": step_id, "tool": tool_name, "args": args},
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()[:24]
+    return f"verify_{digest}"
 
 
 def _map_handler_result(

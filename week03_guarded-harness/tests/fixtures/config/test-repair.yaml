@@ -35,6 +35,7 @@ task:
       - pytest
       - -q
     baseline_required: true
+    report_format: pytest_junit_xml
   approval:
     required_tools:
       - write_file

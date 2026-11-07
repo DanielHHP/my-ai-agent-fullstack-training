@@ -6,7 +6,7 @@
 | --- | --- |
 | 工作包 | WP-00 工程与契约内核 |
 | 文档状态 | frozen |
-| 规格版本 | 1.3.0 |
+| 规格版本 | 1.4.0 |
 | 冻结日期 | 2026-11-05（WP-04 Observation v2 兼容修订） |
 | 依赖 | 无 |
 | 下游工作包 | WP-01、WP-03、WP-04、WP-07、WP-08、WP-09、WP-10、WP-11、WP-12 |
@@ -429,10 +429,11 @@ task:
 ```
 
 `test_repair` 任务使用独立 discriminated acceptance 结构，至少包含受控 `test_command` 的 argv
-列表和与 `code_understanding` 不同的 `strategy`。只读/可写测试目录的唯一权威来源是
+列表、`report_format=pytest_junit_xml` 和与 `code_understanding` 不同的 `strategy`。
+只读/可写测试目录的唯一权威来源是
 `task.paths.deny_write` 与 `task.paths.allow_write`，不在 acceptance 中重复声明。两类任务的
-`kind` 与 `strategy` 必须一一匹配。测试报告格式留给 WP-09 在其规格中冻结；WP-00 不得用自由
-字符串隐藏该未决契约。
+`kind` 与 `strategy` 必须一一匹配。测试报告格式已由 D-65 冻结为严格枚举；WP-00 不得用自由
+字符串隐藏该契约。
 
 ### 8.3 字段约束
 
@@ -450,6 +451,8 @@ task:
 - `deliverables` 非空、无规范化后重复项，必须直接位于/位于工作区内且满足任务路径策略；
 - `test_command` 非空、元素为非空字符串，属于可信配置而非模型参数；具体可执行文件策略由
   WP-03/WP-06 再校验；
+- `report_format` 在 `test_repair` 中必填，首期只允许 `pytest_junit_xml`；不得在命令中自行
+  覆盖 JUnit 报告路径或 family；
 - `channel` 首期只接受 `local_cli`；
 - 未声明的任务类型、验收策略、审批通道和字段全部拒绝。
 
@@ -642,8 +645,8 @@ UUIDv4；`run_id` 与 `trace_id` 必须不同，`trace_id` 使用 32 位小写�
 
 ### OD-04 测试修复配置的验收字段深度
 
-WP-00 只冻结 `test_command` argv、基线要求和路径/预算/审批字段。测试报告格式与测试节点证据
-留给 WP-09 的规格，不在 WP-00 中提前实现或伪造。
+WP-00 冻结 `test_command` argv、基线要求、`report_format` 和路径/预算/审批字段。测试节点
+提取、报告解析和验收规则仍由 WP-09 负责，不在 WP-00 中提前实现或伪造。
 
 ### OD-05 公共模型扩展
 

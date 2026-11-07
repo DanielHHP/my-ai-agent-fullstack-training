@@ -933,6 +933,17 @@ Completion 自身读取产生的证据不能证明 Agent 已读。自然语言�
 8. P0 不执行 Agent 不可见的额外隐藏测试；Completion 只使用任务配置声明的公开验收命令、
    交付物检查和程序化 diff/测试证据检查。
 
+WP-09 固定使用 pytest JUnit XML。可信适配器只向任务配置的基础命令追加固定
+`junit_family=xunit2` 和 `--junitxml` 参数，报告写入与 State 数据库分离的私有临时目录。
+解析器拒绝 DOCTYPE/ENTITY，报告上限 8 MiB、最多 100,000 节点。State 只保存报告摘要、
+计数、节点键和脱敏摘要，不保存报告原文。
+
+基线和最终测试均通过独立的 `Gate.invoke_test_verification` 执行：基线只允许 Agent 启动前的
+`RUNNING` 相位，最终只允许 `VERIFYING`；内部工具不进入模型快照，不消耗 Agent 预算。
+基线、测试执行和节点使用 migration v6 追加式持久化，审批后新进程直接复用基线。
+基线必须至少有一个失败/错误节点。已存在且保持不变的 skip/xfail 允许记录，新增 skip/xfail
+拒绝；所有实际执行节点最终必须通过。
+
 参考项目语义允许覆盖 `allow_write` 目录中已经存在的测试文件，因此 P0 不提供 `create_only`
 模式。Completion 通过基线测试节点清单、最终执行报告、退出码和 diff 范围检测覆盖减少、节点
 丢失或跳过；自然语言层面无法机械证明的断言弱化仍属于剩余风险。

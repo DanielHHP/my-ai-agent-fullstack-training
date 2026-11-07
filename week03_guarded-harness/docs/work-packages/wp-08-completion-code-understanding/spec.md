@@ -13,7 +13,7 @@
 | 下游工作包 | WP-09、WP-10、WP-12 |
 | 对应需求 | `REQ-HARNESS-003`、`REQ-HARNESS-004`、`REQ-GATE-002`、`REQ-STATE-001`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-TASK-001`、`REQ-TASK-002`、`REQ-TASK-004`、`REQ-COMPLETE-001` 至 `REQ-COMPLETE-005` |
 | 对应设计 | `design.md` 第 5、6.1、6.5、9、10、11.1、11.2、13 节 |
-| 已确认决策 | D-02 至 D-04、D-14、D-20、D-22、D-33、D-56、D-59 至 D-64 |
+| 已确认决策 | D-02 至 D-04、D-14、D-20、D-22、D-33、D-56、D-59 至 D-72 |
 | 飞书输入 | 作业文档 `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌工作簿 revision 11 |
 | 原文件任务 | P4-01、P4-02 的代码理解部分 |
 
@@ -24,6 +24,8 @@
 
 文档冲突时按 `requirements.md / design.md / decisions.md > 本文 > plan.md > 任务卡` 的顺序处理。
 WP08-Q01 至 WP08-Q06 已按 D-59 至 D-64 关闭，本文无阻塞性未决问题。
+
+D-65 至 D-72 扩展同一 Gate 的 WP-09 测试验收用途，但不放宽本规格的只读代码理解内部控制面。
 
 ## 2. 目标
 
@@ -529,9 +531,8 @@ WP-09/WP-10 计划。
 
 ## 15. 当前结论
 
-WP-08 规格已冻结，计划已批准，工作包进入 `DESIGNED`。当前尚未实施：
+WP-08 规格已冻结，计划已批准，工作包当前为 `IN_PROGRESS`。已实现
+`completion.py`、Gate `invoke_internal`、内部 Registry、Markdown/Evidence 校验和核心
+Completion 测试；全场景故障矩阵和 `acceptance-report.md` 尚未完成。
 
-- `completion.py`、Gate `invoke_internal` 和内部 Registry 尚未实现；
-- Markdown/Evidence 校验尚无代码和测试；
-- `acceptance-report.md` 尚未创建；
-- 只有 `acceptance-report.md` 状态为 `accepted` 后才能把工作包标记为 `DONE`。
+只有 `acceptance-report.md` 状态为 `accepted` 后才能把工作包标记为 `DONE`。

@@ -700,7 +700,7 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 
 **包内文档**：[规格](work-packages/wp-08-completion-code-understanding/spec.md) ·
 [计划](work-packages/wp-08-completion-code-understanding/plan.md)。规格已冻结、计划已批准，D-59
-至 D-64 已关闭；当前状态为 `DESIGNED`，尚未开始实现。
+至 D-64 已关闭；Completion 核心实现已落地，当前状态为 `IN_PROGRESS`，全场景验收报告待完成。
 
 **主要范围**：
 
@@ -728,6 +728,11 @@ D-28 已关闭全部审批契约问题；T01-T08 已完成。
 **不在本包内**：测试修复策略、测试命令基线、Agent 和 CLI。
 
 ### WP-09 测试修复验收
+
+**包内文档**：[冻结规格](work-packages/wp-09-test-repair-acceptance/spec.md)（v1.0.0 / frozen）、
+[实施计划](work-packages/wp-09-test-repair-acceptance/plan.md)（v1.0.0 / in-progress）。
+WP09-Q01 至 Q08 已由 D-65 至 D-72 关闭；先完成 WP-08 依赖，再继续运行时施工，状态为
+`IN_PROGRESS`。
 
 **目标**：建立基线测试、修复后复跑、测试节点和 diff 范围的程序化验收闭环。
 

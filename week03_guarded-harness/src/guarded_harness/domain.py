@@ -238,6 +238,34 @@ class EvidenceKind(str, Enum):
     AUDIT = "AUDIT"
 
 
+class TestExecutionPhase(str, Enum):
+    """Verifier-owned test execution phases."""
+
+    BASELINE = "BASELINE"
+    FINAL = "FINAL"
+
+
+class TestExecutionStatus(str, Enum):
+    """Confirmed lifecycle of one verifier test execution."""
+
+    CAPTURED = "CAPTURED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    UNKNOWN_RESULT = "UNKNOWN_RESULT"
+
+
+class TestNodeStatus(str, Enum):
+    """Normalized JUnit testcase outcome."""
+
+    PASSED = "PASSED"
+    FAILED = "FAILED"
+    ERROR = "ERROR"
+    SKIPPED = "SKIPPED"
+    XFAIL = "XFAIL"
+    XPASS = "XPASS"
+    UNKNOWN = "UNKNOWN"
+
+
 class BudgetSourceKind(str, Enum):
     """Trusted source categories for idempotent budget updates."""
 
@@ -386,6 +414,63 @@ class ErrorCode(str, Enum):
     TOOL_PATCH_INPUT_TOO_LARGE = "TOOL_PATCH_INPUT_TOO_LARGE"
     TOOL_TEST_COMMAND_MISSING = "TOOL_TEST_COMMAND_MISSING"
     TOOL_TEST_FAILED = "TOOL_TEST_FAILED"
+
+    COMPLETION_UNSUPPORTED_TASK = "COMPLETION_UNSUPPORTED_TASK"
+    COMPLETION_RUN_STATE_INVALID = "COMPLETION_RUN_STATE_INVALID"
+    COMPLETION_CONFIG_MISMATCH = "COMPLETION_CONFIG_MISMATCH"
+    COMPLETION_LEASE_INVALID = "COMPLETION_LEASE_INVALID"
+    COMPLETION_INTERNAL_ACCESS_DENIED = "COMPLETION_INTERNAL_ACCESS_DENIED"
+    COMPLETION_DELIVERABLE_MISSING = "COMPLETION_DELIVERABLE_MISSING"
+    COMPLETION_DELIVERABLE_EMPTY = "COMPLETION_DELIVERABLE_EMPTY"
+    COMPLETION_DELIVERABLE_TOO_LARGE = "COMPLETION_DELIVERABLE_TOO_LARGE"
+    COMPLETION_DELIVERABLE_NOT_CHANGED = "COMPLETION_DELIVERABLE_NOT_CHANGED"
+    COMPLETION_DOCUMENT_INVALID = "COMPLETION_DOCUMENT_INVALID"
+    COMPLETION_SECTION_MISSING = "COMPLETION_SECTION_MISSING"
+    COMPLETION_SECTION_DUPLICATE = "COMPLETION_SECTION_DUPLICATE"
+    COMPLETION_FACT_WITHOUT_EVIDENCE = "COMPLETION_FACT_WITHOUT_EVIDENCE"
+    COMPLETION_EVIDENCE_UNDEFINED = "COMPLETION_EVIDENCE_UNDEFINED"
+    COMPLETION_EVIDENCE_DUPLICATE = "COMPLETION_EVIDENCE_DUPLICATE"
+    COMPLETION_EVIDENCE_MALFORMED = "COMPLETION_EVIDENCE_MALFORMED"
+    COMPLETION_EVIDENCE_PATH_INVALID = "COMPLETION_EVIDENCE_PATH_INVALID"
+    COMPLETION_EVIDENCE_LINE_OUT_OF_RANGE = "COMPLETION_EVIDENCE_LINE_OUT_OF_RANGE"
+    COMPLETION_EVIDENCE_NOT_READ = "COMPLETION_EVIDENCE_NOT_READ"
+    COMPLETION_EVIDENCE_PARTIAL = "COMPLETION_EVIDENCE_PARTIAL"
+    COMPLETION_EVIDENCE_STALE = "COMPLETION_EVIDENCE_STALE"
+    COMPLETION_EVIDENCE_INVALID = "COMPLETION_EVIDENCE_INVALID"
+    COMPLETION_WORKSPACE_OUT_OF_SCOPE = "COMPLETION_WORKSPACE_OUT_OF_SCOPE"
+    COMPLETION_WORKSPACE_CHANGED = "COMPLETION_WORKSPACE_CHANGED"
+    COMPLETION_EXTERNAL_WORKSPACE_CHANGED = "COMPLETION_EXTERNAL_WORKSPACE_CHANGED"
+    COMPLETION_IDENTITY_CHANGED = "COMPLETION_IDENTITY_CHANGED"
+    COMPLETION_AUDIT_INVALID = "COMPLETION_AUDIT_INVALID"
+    COMPLETION_CLAIM_WITHOUT_EVIDENCE = "COMPLETION_CLAIM_WITHOUT_EVIDENCE"
+    COMPLETION_RESULT_WRITE_FAILED = "COMPLETION_RESULT_WRITE_FAILED"
+    COMPLETION_TEST_BASELINE_MISSING = "COMPLETION_TEST_BASELINE_MISSING"
+    COMPLETION_TEST_BASELINE_INVALID = "COMPLETION_TEST_BASELINE_INVALID"
+    COMPLETION_TEST_BASELINE_STALE = "COMPLETION_TEST_BASELINE_STALE"
+    COMPLETION_TEST_BASELINE_NOT_FAILING = "COMPLETION_TEST_BASELINE_NOT_FAILING"
+    COMPLETION_TEST_COMMAND_MISSING = "COMPLETION_TEST_COMMAND_MISSING"
+    COMPLETION_TEST_COMMAND_MISMATCH = "COMPLETION_TEST_COMMAND_MISMATCH"
+    COMPLETION_TEST_START_FAILED = "COMPLETION_TEST_START_FAILED"
+    COMPLETION_TEST_TIMEOUT = "COMPLETION_TEST_TIMEOUT"
+    COMPLETION_TEST_RESULT_UNKNOWN = "COMPLETION_TEST_RESULT_UNKNOWN"
+    COMPLETION_TEST_EXIT_NONZERO = "COMPLETION_TEST_EXIT_NONZERO"
+    COMPLETION_TEST_REPORT_MISSING = "COMPLETION_TEST_REPORT_MISSING"
+    COMPLETION_TEST_REPORT_EMPTY = "COMPLETION_TEST_REPORT_EMPTY"
+    COMPLETION_TEST_REPORT_TOO_LARGE = "COMPLETION_TEST_REPORT_TOO_LARGE"
+    COMPLETION_TEST_REPORT_MALFORMED = "COMPLETION_TEST_REPORT_MALFORMED"
+    COMPLETION_TEST_REPORT_UNSAFE_XML = "COMPLETION_TEST_REPORT_UNSAFE_XML"
+    COMPLETION_TEST_REPORT_TRUNCATED = "COMPLETION_TEST_REPORT_TRUNCATED"
+    COMPLETION_TEST_NODE_DUPLICATE = "COMPLETION_TEST_NODE_DUPLICATE"
+    COMPLETION_TEST_NODE_LOST = "COMPLETION_TEST_NODE_LOST"
+    COMPLETION_TEST_BASELINE_FAILURE_REMAINS = "COMPLETION_TEST_BASELINE_FAILURE_REMAINS"
+    COMPLETION_TEST_NEW_NODE_FAILED = "COMPLETION_TEST_NEW_NODE_FAILED"
+    COMPLETION_TEST_NEW_SKIP = "COMPLETION_TEST_NEW_SKIP"
+    COMPLETION_TEST_FILE_MODIFIED = "COMPLETION_TEST_FILE_MODIFIED"
+    COMPLETION_TEST_FILE_DELETED = "COMPLETION_TEST_FILE_DELETED"
+    COMPLETION_TEST_WORKSPACE_UNSTABLE = "COMPLETION_TEST_WORKSPACE_UNSTABLE"
+    COMPLETION_TEST_WORKSPACE_OUT_OF_SCOPE = "COMPLETION_TEST_WORKSPACE_OUT_OF_SCOPE"
+    COMPLETION_TEST_EVIDENCE_STALE = "COMPLETION_TEST_EVIDENCE_STALE"
+    COMPLETION_TEST_RESULT_WRITE_FAILED = "COMPLETION_TEST_RESULT_WRITE_FAILED"
 
     REGISTRY_INVALID_DEFINITION = "REGISTRY_INVALID_DEFINITION"
     REGISTRY_TOOL_CONFLICT = "REGISTRY_TOOL_CONFLICT"
@@ -1038,6 +1123,86 @@ class CompletionCheck(StrictDomainModel):
                 raise ValueError("ACCEPTED requires at least one passing completion item")
             if self.failure_summary is not None:
                 raise ValueError("ACCEPTED cannot include a failure summary")
+
+
+class TestExecutionRecord(StrictDomainModel):
+    """Append-only verifier-owned evidence for one baseline or final test run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    test_execution_id: str = Field(min_length=1, max_length=128)
+    run_id: RunId
+    phase: TestExecutionPhase
+    command_id: str = Field(min_length=1, max_length=256)
+    tool_call_id: ToolCallId | None = None
+    command_evidence_id: EvidenceId | None = None
+    report_evidence_id: EvidenceId
+    declared_argv: tuple[str, ...] = Field(min_length=1)
+    effective_argv_digest: Sha256Digest
+    cwd: str = Field(min_length=1, max_length=4096)
+    config_fingerprint: Sha256Digest
+    workspace_pre_digest: Sha256Digest
+    workspace_post_digest: Sha256Digest
+    execution_status: TestExecutionStatus
+    exit_code: int | None = None
+    report_digest: Sha256Digest
+    report_size_bytes: int = Field(ge=1)
+    report_truncated: bool = False
+    parser_version: Literal[1] = 1
+    total_count: int = Field(ge=0)
+    passed_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    skipped_count: int = Field(ge=0)
+    unknown_count: int = Field(ge=0)
+    failure_summary: str | None = Field(default=None, max_length=8192)
+    created_at: UtcDatetime
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.total_count != (
+            self.passed_count
+            + self.failed_count
+            + self.error_count
+            + self.skipped_count
+            + self.unknown_count
+        ):
+            raise ValueError("test execution counts must sum to total_count")
+        if self.report_truncated and self.execution_status != TestExecutionStatus.UNKNOWN_RESULT:
+            raise ValueError("truncated reports require UNKNOWN_RESULT")
+
+
+class TestBaseline(StrictDomainModel):
+    """Persisted startup baseline for one test-repair run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    schema_version: Literal[1] = 1
+    baseline_id: str = Field(min_length=1, max_length=128)
+    run_id: RunId
+    test_execution_id: str = Field(min_length=1, max_length=128)
+    command_id: str = Field(min_length=1, max_length=256)
+    declared_argv: tuple[str, ...] = Field(min_length=1)
+    effective_argv_digest: Sha256Digest
+    cwd: str = Field(min_length=1, max_length=4096)
+    config_fingerprint: Sha256Digest
+    workspace_baseline_digest: Sha256Digest
+    report_evidence_id: EvidenceId
+    created_at: UtcDatetime
+
+
+class TestNodeRecord(StrictDomainModel):
+    """One normalized persisted JUnit testcase."""
+
+    model_config = ConfigDict(frozen=True)
+
+    test_execution_id: str = Field(min_length=1, max_length=128)
+    node_key: Sha256Digest
+    label: str = Field(min_length=1, max_length=512)
+    file: RelativePath
+    status: TestNodeStatus
+    failure_code: str | None = Field(default=None, max_length=128)
+    failure_summary: str | None = Field(default=None, max_length=8192)
 
 
 class PlanItem(StrictDomainModel):

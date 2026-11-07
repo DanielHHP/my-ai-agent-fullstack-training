@@ -37,6 +37,12 @@ from .domain import (
     StepStatus,
     StopReason,
     TaskKind,
+    TestBaseline,
+    TestExecutionPhase,
+    TestExecutionRecord,
+    TestExecutionStatus,
+    TestNodeRecord,
+    TestNodeStatus,
     ToolInvocation,
     ToolPermission,
     ToolRisk,
@@ -1425,6 +1431,274 @@ class StateStore:
         self._ensure_active()
         self._verify_lease(run_id, lease_token, self._now())
 
+    def record_test_execution(
+        self,
+        execution: TestExecutionRecord,
+        nodes: tuple[TestNodeRecord, ...],
+        *,
+        lease_token: str,
+    ) -> TestExecutionRecord:
+        """Persist one append-only verifier test execution and its testcase set."""
+
+        self._ensure_active()
+        self._verify_lease(execution.run_id, lease_token, self._now())
+        self.get_run(execution.run_id)
+        if len(nodes) != execution.total_count:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "record_test_execution",
+                "test node count does not match execution totals",
+            )
+        if any(node.test_execution_id != execution.test_execution_id for node in nodes):
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "record_test_execution",
+                "test node belongs to a different execution",
+            )
+        existing = self.get_test_execution(execution.run_id, execution.phase)
+        if existing is not None:
+            if existing == execution and self.get_test_nodes(existing.test_execution_id) == (
+                tuple(sorted(nodes, key=lambda node: node.node_key))
+            ):
+                return existing
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_test_execution",
+                "test execution already exists with different facts",
+            )
+        for evidence_id in (
+            execution.command_evidence_id,
+            execution.report_evidence_id,
+        ):
+            if evidence_id is None:
+                continue
+            row = self._connection.execute(
+                "SELECT 1 FROM evidence WHERE run_id = ? AND evidence_id = ?",
+                (execution.run_id, evidence_id),
+            ).fetchone()
+            if row is None:
+                self._raise(
+                    ErrorCode.STATE_NOT_FOUND,
+                    "record_test_execution",
+                    "test execution references missing evidence",
+                )
+        redacted_failure = (
+            self._redacted_text(execution.failure_summary, "record_test_execution")
+            if execution.failure_summary
+            else None
+        )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO test_executions(
+                    test_execution_id, schema_version, run_id, phase, command_id,
+                    tool_call_id, command_evidence_id, report_evidence_id,
+                    declared_argv_json, effective_argv_digest, cwd,
+                    config_fingerprint, workspace_pre_digest, workspace_post_digest,
+                    execution_status, exit_code, report_digest, report_size_bytes,
+                    report_truncated, parser_version, total_count, passed_count,
+                    failed_count, error_count, skipped_count, unknown_count,
+                    failure_summary, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    execution.test_execution_id,
+                    execution.schema_version,
+                    execution.run_id,
+                    execution.phase.value,
+                    execution.command_id,
+                    execution.tool_call_id,
+                    execution.command_evidence_id,
+                    execution.report_evidence_id,
+                    json.dumps(list(execution.declared_argv), separators=(",", ":")),
+                    execution.effective_argv_digest,
+                    execution.cwd,
+                    execution.config_fingerprint,
+                    execution.workspace_pre_digest,
+                    execution.workspace_post_digest,
+                    execution.execution_status.value,
+                    execution.exit_code,
+                    execution.report_digest,
+                    execution.report_size_bytes,
+                    int(execution.report_truncated),
+                    execution.parser_version,
+                    execution.total_count,
+                    execution.passed_count,
+                    execution.failed_count,
+                    execution.error_count,
+                    execution.skipped_count,
+                    execution.unknown_count,
+                    redacted_failure,
+                    _serialize_datetime(execution.created_at),
+                ),
+            )
+            for node in sorted(nodes, key=lambda item: item.node_key):
+                node_failure = (
+                    self._redacted_text(node.failure_summary, "record_test_execution")
+                    if node.failure_summary
+                    else None
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO test_nodes(
+                        test_execution_id, node_key, label, file, status,
+                        failure_code, failure_summary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        node.test_execution_id,
+                        node.node_key,
+                        self._redacted_text(node.label, "record_test_execution"),
+                        node.file,
+                        node.status.value,
+                        node.failure_code,
+                        node_failure,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_test_execution",
+                "test execution or node identity is duplicated",
+            )
+        self._append_event(
+            run_id=execution.run_id,
+            event_type=AuditEventType.TEST_EXECUTION_RECORDED,
+            tool_call_id=execution.tool_call_id,
+            input_summary={
+                "phase": execution.phase.value,
+                "execution_status": execution.execution_status.value,
+                "exit_code": execution.exit_code,
+            },
+            output_summary={
+                "test_execution_id": execution.test_execution_id,
+                "report_digest": execution.report_digest,
+                "total_count": execution.total_count,
+                "failed_count": execution.failed_count,
+                "error_count": execution.error_count,
+                "skipped_count": execution.skipped_count,
+            },
+            evidence_ref=execution.report_evidence_id,
+        )
+        return execution.model_copy(update={"failure_summary": redacted_failure})
+
+    def record_test_baseline(
+        self,
+        baseline: TestBaseline,
+        *,
+        workspace_baseline_json: str,
+        lease_token: str,
+    ) -> TestBaseline:
+        """Persist the single append-only startup baseline for a test-repair run."""
+
+        self._ensure_active()
+        self._verify_lease(baseline.run_id, lease_token, self._now())
+        self.get_run(baseline.run_id)
+        execution = self.get_test_execution(baseline.run_id, TestExecutionPhase.BASELINE)
+        if execution is None or execution.test_execution_id != baseline.test_execution_id:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "record_test_baseline",
+                "baseline test execution does not exist",
+            )
+        if not workspace_baseline_json or len(workspace_baseline_json.encode("utf-8")) > (
+            1024 * 1024
+        ):
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "record_test_baseline",
+                "workspace baseline JSON is empty or exceeds 1 MiB",
+            )
+        existing = self.get_test_baseline(baseline.run_id)
+        if existing is not None:
+            if existing[0] == baseline and existing[1] == workspace_baseline_json:
+                return existing[0]
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_test_baseline",
+                "baseline already exists with different facts",
+            )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO test_repair_baselines(
+                    run_id, schema_version, baseline_id, test_execution_id, command_id,
+                    declared_argv_json, effective_argv_digest, cwd,
+                    config_fingerprint, workspace_baseline_json,
+                    workspace_baseline_digest, report_evidence_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    baseline.run_id,
+                    baseline.schema_version,
+                    baseline.baseline_id,
+                    baseline.test_execution_id,
+                    baseline.command_id,
+                    json.dumps(list(baseline.declared_argv), separators=(",", ":")),
+                    baseline.effective_argv_digest,
+                    baseline.cwd,
+                    baseline.config_fingerprint,
+                    workspace_baseline_json,
+                    baseline.workspace_baseline_digest,
+                    baseline.report_evidence_id,
+                    _serialize_datetime(baseline.created_at),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "record_test_baseline",
+                "test baseline already exists",
+            )
+        self._append_event(
+            run_id=baseline.run_id,
+            event_type=AuditEventType.TEST_BASELINE_CAPTURED,
+            input_summary={
+                "baseline_id": baseline.baseline_id,
+                "test_execution_id": baseline.test_execution_id,
+            },
+            output_summary={
+                "workspace_baseline_digest": baseline.workspace_baseline_digest,
+                "report_evidence_id": baseline.report_evidence_id,
+            },
+            evidence_ref=baseline.report_evidence_id,
+        )
+        return baseline
+
+    def get_test_execution(
+        self,
+        run_id: str,
+        phase: TestExecutionPhase,
+    ) -> TestExecutionRecord | None:
+        """Read one verifier test execution for a run and phase."""
+
+        row = self._connection.execute(
+            "SELECT * FROM test_executions WHERE run_id = ? AND phase = ?",
+            (run_id, phase.value),
+        ).fetchone()
+        return _test_execution_from_row(row) if row is not None else None
+
+    def get_test_nodes(self, test_execution_id: str) -> tuple[TestNodeRecord, ...]:
+        """Read the complete normalized node set for one test execution."""
+
+        rows = self._connection.execute(
+            "SELECT * FROM test_nodes WHERE test_execution_id = ? ORDER BY node_key",
+            (test_execution_id,),
+        ).fetchall()
+        return tuple(_test_node_from_row(row) for row in rows)
+
+    def get_test_baseline(self, run_id: str) -> tuple[TestBaseline, str] | None:
+        """Read the persisted test-repair baseline and its workspace snapshot JSON."""
+
+        row = self._connection.execute(
+            "SELECT * FROM test_repair_baselines WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return _test_baseline_from_row(row) if row is not None else None
+
     def get_run_snapshot(self, run_id: str) -> RunSnapshot:
         """Read all WP-01-owned state in the current transaction."""
 
@@ -1834,6 +2108,69 @@ def _evidence_from_row(row: sqlite3.Row) -> Evidence:
         created_at=_parse_datetime(str(row["created_at"])),
         is_valid=bool(row["is_valid"]),
     )
+
+
+def _test_execution_from_row(row: sqlite3.Row) -> TestExecutionRecord:
+    return TestExecutionRecord(
+        test_execution_id=str(row["test_execution_id"]),
+        run_id=str(row["run_id"]),
+        phase=TestExecutionPhase(str(row["phase"])),
+        command_id=str(row["command_id"]),
+        tool_call_id=str(row["tool_call_id"]) if row["tool_call_id"] else None,
+        command_evidence_id=(
+            str(row["command_evidence_id"]) if row["command_evidence_id"] else None
+        ),
+        report_evidence_id=str(row["report_evidence_id"]),
+        declared_argv=tuple(json.loads(str(row["declared_argv_json"]))),
+        effective_argv_digest=str(row["effective_argv_digest"]),
+        cwd=str(row["cwd"]),
+        config_fingerprint=str(row["config_fingerprint"]),
+        workspace_pre_digest=str(row["workspace_pre_digest"]),
+        workspace_post_digest=str(row["workspace_post_digest"]),
+        execution_status=TestExecutionStatus(str(row["execution_status"])),
+        exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
+        report_digest=str(row["report_digest"]),
+        report_size_bytes=int(row["report_size_bytes"]),
+        report_truncated=bool(row["report_truncated"]),
+        parser_version=int(row["parser_version"]),
+        total_count=int(row["total_count"]),
+        passed_count=int(row["passed_count"]),
+        failed_count=int(row["failed_count"]),
+        error_count=int(row["error_count"]),
+        skipped_count=int(row["skipped_count"]),
+        unknown_count=int(row["unknown_count"]),
+        failure_summary=str(row["failure_summary"]) if row["failure_summary"] else None,
+        created_at=_parse_datetime(str(row["created_at"])),
+    )
+
+
+def _test_node_from_row(row: sqlite3.Row) -> TestNodeRecord:
+    return TestNodeRecord(
+        test_execution_id=str(row["test_execution_id"]),
+        node_key=str(row["node_key"]),
+        label=str(row["label"]),
+        file=str(row["file"]),
+        status=TestNodeStatus(str(row["status"])),
+        failure_code=str(row["failure_code"]) if row["failure_code"] else None,
+        failure_summary=str(row["failure_summary"]) if row["failure_summary"] else None,
+    )
+
+
+def _test_baseline_from_row(row: sqlite3.Row) -> tuple[TestBaseline, str]:
+    baseline = TestBaseline(
+        baseline_id=str(row["baseline_id"]),
+        run_id=str(row["run_id"]),
+        test_execution_id=str(row["test_execution_id"]),
+        command_id=str(row["command_id"]),
+        declared_argv=tuple(json.loads(str(row["declared_argv_json"]))),
+        effective_argv_digest=str(row["effective_argv_digest"]),
+        cwd=str(row["cwd"]),
+        config_fingerprint=str(row["config_fingerprint"]),
+        workspace_baseline_digest=str(row["workspace_baseline_digest"]),
+        report_evidence_id=str(row["report_evidence_id"]),
+        created_at=_parse_datetime(str(row["created_at"])),
+    )
+    return baseline, str(row["workspace_baseline_json"])
 
 
 def _serialize_plan_items(items: tuple[PlanItem, ...]) -> str:

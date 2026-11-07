@@ -20,6 +20,14 @@ from .audit import (
     AuditStoreError,
 )
 from .checkpoint import CheckpointService, CheckpointServiceError
+from .completion import (
+    CompletionChecker,
+    CompletionCheckerError,
+    detect_completion_claim,
+    parse_code_understanding_document,
+    workspace_baseline_from_json,
+    workspace_baseline_to_json,
+)
 from .config import (
     ApprovalConfig,
     BudgetConfig,
@@ -96,6 +104,12 @@ from .domain import (
     StopReason,
     SystemClock,
     TaskKind,
+    TestBaseline,
+    TestExecutionPhase,
+    TestExecutionRecord,
+    TestExecutionStatus,
+    TestNodeRecord,
+    TestNodeStatus,
     ToolCallRequest,
     ToolExecutionContext,
     ToolInvocation,
@@ -146,6 +160,22 @@ from .sandbox import (
 )
 from .state_store import StateStore, StateStoreError
 from .storage import IntegrityReport, SQLiteStorage, StorageError
+from .test_reports import (
+    MAX_FAILURE_SUMMARY_CHARS,
+    MAX_FIELD_CHARS,
+    MAX_LABEL_CHARS,
+    MAX_REPORT_BYTES,
+    MAX_TEST_NODES,
+    PARSER_VERSION,
+    ParsedTestCase,
+    ParsedTestReport,
+    TestNodeComparison,
+    TestReportError,
+    canonical_node_key,
+    compare_test_nodes,
+    normalize_test_file,
+    parse_junit_report,
+)
 from .tools import register_readonly_tools, register_side_effect_tools
 
 __all__ = [
@@ -176,6 +206,8 @@ __all__ = [
     "CancellationToken",
     "Clock",
     "CodeUnderstandingAcceptance",
+    "CompletionChecker",
+    "CompletionCheckerError",
     "CompletionCheck",
     "CompletionItem",
     "CommandEffectClass",
@@ -264,6 +296,14 @@ __all__ = [
     "SystemClock",
     "TaskConfig",
     "TaskKind",
+    "TestBaseline",
+    "TestExecutionPhase",
+    "TestExecutionRecord",
+    "TestExecutionStatus",
+    "TestNodeComparison",
+    "TestNodeRecord",
+    "TestNodeStatus",
+    "TestReportError",
     "TestRepairAcceptance",
     "ToolCallRequest",
     "ToolDefinition",
@@ -286,12 +326,28 @@ __all__ = [
     "WorkspaceEntry",
     "WorkspaceIdentity",
     "JsonNormalizer",
+    "MAX_FAILURE_SUMMARY_CHARS",
+    "MAX_FIELD_CHARS",
+    "MAX_LABEL_CHARS",
+    "MAX_REPORT_BYTES",
+    "MAX_TEST_NODES",
+    "PARSER_VERSION",
+    "ParsedTestCase",
+    "ParsedTestReport",
     "__version__",
     "canonical_json_dump",
     "approval_args_digest",
     "approval_binding_digest",
     "canonical_approval_args",
     "config_fingerprint",
+    "canonical_node_key",
+    "compare_test_nodes",
+    "detect_completion_claim",
     "load_config",
+    "normalize_test_file",
+    "parse_code_understanding_document",
+    "parse_junit_report",
     "validate_contract",
+    "workspace_baseline_from_json",
+    "workspace_baseline_to_json",
 ]

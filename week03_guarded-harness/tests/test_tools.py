@@ -355,6 +355,7 @@ def _side_effect_fixture(
             strategy="test_repair",
             test_command=test_command,
             baseline_required=True,
+            report_format="pytest_junit_xml",
         )
         allowed_tools = ("read_file", "write_file", "apply_patch", "run_test")
         paths = gh.PathPolicyConfig(

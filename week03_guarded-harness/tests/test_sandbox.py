@@ -92,6 +92,7 @@ def _config_path(
             "strategy": "test_repair",
             "test_command": list(test_command or ("python", "-c", "print('ok')")),
             "baseline_required": True,
+            "report_format": "pytest_junit_xml",
         }
     else:
         task["acceptance"] = {

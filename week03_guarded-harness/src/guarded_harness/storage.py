@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .audit import AuditStore
     from .state_store import StateStore
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -478,6 +478,124 @@ BEGIN
 END;
 """
 
+_MIGRATION_V6 = """
+CREATE TABLE test_executions (
+    test_execution_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    run_id TEXT NOT NULL REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    phase TEXT NOT NULL CHECK (phase IN ('BASELINE', 'FINAL')),
+    command_id TEXT NOT NULL,
+    tool_call_id TEXT,
+    command_evidence_id TEXT REFERENCES evidence(evidence_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    report_evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    declared_argv_json TEXT NOT NULL,
+    effective_argv_digest TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    workspace_pre_digest TEXT NOT NULL,
+    workspace_post_digest TEXT NOT NULL,
+    execution_status TEXT NOT NULL CHECK (
+        execution_status IN ('CAPTURED', 'FAILED', 'TIMED_OUT', 'UNKNOWN_RESULT')
+    ),
+    exit_code INTEGER,
+    report_digest TEXT NOT NULL,
+    report_size_bytes INTEGER NOT NULL CHECK (report_size_bytes >= 1),
+    report_truncated INTEGER NOT NULL CHECK (report_truncated IN (0, 1)),
+    parser_version INTEGER NOT NULL CHECK (parser_version = 1),
+    total_count INTEGER NOT NULL CHECK (total_count >= 0),
+    passed_count INTEGER NOT NULL CHECK (passed_count >= 0),
+    failed_count INTEGER NOT NULL CHECK (failed_count >= 0),
+    error_count INTEGER NOT NULL CHECK (error_count >= 0),
+    skipped_count INTEGER NOT NULL CHECK (skipped_count >= 0),
+    unknown_count INTEGER NOT NULL CHECK (unknown_count >= 0),
+    failure_summary TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, phase),
+    FOREIGN KEY (run_id, tool_call_id) REFERENCES tool_calls(run_id, tool_call_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CHECK (
+        total_count = passed_count + failed_count + error_count + skipped_count + unknown_count
+    ),
+    CHECK (report_truncated = 0 OR execution_status = 'UNKNOWN_RESULT')
+);
+
+CREATE INDEX idx_test_executions_run ON test_executions(run_id, phase);
+
+CREATE TRIGGER test_executions_no_update
+BEFORE UPDATE ON test_executions
+BEGIN
+    SELECT RAISE(ABORT, 'TEST_EXECUTION_APPEND_ONLY');
+END;
+
+CREATE TRIGGER test_executions_no_delete
+BEFORE DELETE ON test_executions
+BEGIN
+    SELECT RAISE(ABORT, 'TEST_EXECUTION_APPEND_ONLY');
+END;
+
+CREATE TABLE test_nodes (
+    test_execution_id TEXT NOT NULL REFERENCES test_executions(test_execution_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    node_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    file TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('PASSED', 'FAILED', 'ERROR', 'SKIPPED', 'XFAIL', 'XPASS', 'UNKNOWN')
+    ),
+    failure_code TEXT,
+    failure_summary TEXT,
+    PRIMARY KEY (test_execution_id, node_key)
+);
+
+CREATE INDEX idx_test_nodes_execution_file ON test_nodes(test_execution_id, file);
+
+CREATE TRIGGER test_nodes_no_update
+BEFORE UPDATE ON test_nodes
+BEGIN
+    SELECT RAISE(ABORT, 'TEST_NODE_APPEND_ONLY');
+END;
+
+CREATE TRIGGER test_nodes_no_delete
+BEFORE DELETE ON test_nodes
+BEGIN
+    SELECT RAISE(ABORT, 'TEST_NODE_APPEND_ONLY');
+END;
+
+CREATE TABLE test_repair_baselines (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    baseline_id TEXT NOT NULL UNIQUE,
+    test_execution_id TEXT NOT NULL UNIQUE REFERENCES test_executions(test_execution_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    command_id TEXT NOT NULL,
+    declared_argv_json TEXT NOT NULL,
+    effective_argv_digest TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    workspace_baseline_json TEXT NOT NULL,
+    workspace_baseline_digest TEXT NOT NULL,
+    report_evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER test_repair_baselines_no_update
+BEFORE UPDATE ON test_repair_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'TEST_BASELINE_APPEND_ONLY');
+END;
+
+CREATE TRIGGER test_repair_baselines_no_delete
+BEFORE DELETE ON test_repair_baselines
+BEGIN
+    SELECT RAISE(ABORT, 'TEST_BASELINE_APPEND_ONLY');
+END;
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -500,6 +618,7 @@ MIGRATIONS = (
     Migration(version=3, sql=_MIGRATION_V3),
     Migration(version=4, sql=_MIGRATION_V4),
     Migration(version=5, sql=_MIGRATION_V5),
+    Migration(version=6, sql=_MIGRATION_V6),
 )
 
 
@@ -772,6 +891,9 @@ class SQLiteStorage:
                     "approvals",
                     "checkpoints",
                     "recovery_records",
+                    "test_executions",
+                    "test_nodes",
+                    "test_repair_baselines",
                 }
                 tables = {
                     row["name"]

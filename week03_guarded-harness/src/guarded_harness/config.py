@@ -129,6 +129,7 @@ class TestRepairAcceptance(_ConfigModel):
     strategy: Literal["test_repair"]
     test_command: tuple[str, ...] = Field(min_length=1)
     baseline_required: Literal[True] = True
+    report_format: Literal["pytest_junit_xml"]
 
     @field_validator("test_command", mode="before")
     @classmethod
@@ -742,6 +743,24 @@ def _validate_semantics(config: HarnessConfig) -> None:
                 "task.acceptance.test_command",
                 "test command arguments must be non-empty trimmed strings",
             )
+        command = config.task.acceptance.test_command
+        forbidden = ("--junitxml", "--junit-xml", "junit_family")
+        if any(
+            part.casefold().startswith(forbidden_option)
+            for part in command
+            for forbidden_option in forbidden
+        ):
+            raise _issue(
+                ErrorCode.CONFIG_SCHEMA_INVALID,
+                "task.acceptance.test_command",
+                "test command must not override verifier-owned JUnit report settings",
+            )
+        if config.task.acceptance.report_format != "pytest_junit_xml":
+            raise _issue(
+                ErrorCode.CONFIG_SCHEMA_INVALID,
+                "task.acceptance.report_format",
+                "only pytest_junit_xml is supported",
+            )
 
 
 def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessConfig:
@@ -788,6 +807,7 @@ def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessC
             strategy="test_repair",
             test_command=config.task.acceptance.test_command,
             baseline_required=True,
+            report_format=config.task.acceptance.report_format,
         )
 
     normalized_task = TaskConfig(

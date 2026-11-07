@@ -7,7 +7,7 @@
 | 文档状态 | 已确认决策记录 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-64 |
+| 决策范围 | 已确认的 D-01 至 D-72 |
 
 本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
 决策记录并同步更新需求、设计和相关测试文档。
@@ -80,3 +80,11 @@
 | D-62 | WP-08 交付物变更要求 | 代码理解任务的每个配置交付物必须在本次 Run 中新增或内容发生变化；交付物预先存在但未修改时不得 `ACCEPTED`。存在性、非空、路径和引用检查仍需同时满足。 |
 | D-63 | WP-08 陈旧 Evidence 失效 | Completion 发现引用源码读取后变化时，在持有有效租约的前提下调用 WP-07 的 Evidence 单向失效操作并追加 Audit，然后将对应检查判为 `REJECTED`。失效操作或审计失败时整体验收失败关闭，不得返回 `ACCEPTED`。 |
 | D-64 | WP-08 完成声明识别 | 对 Run 的 `candidate_final_answer` 使用有界、保守的中英文完成声明标记，否定表达不计为完成声明。检测只用于 `claim_without_evidence` 检查项和 Audit 诊断；最终验收仍完全由文件、引用、工作区 diff、Evidence 和 Audit 决定。 |
+| D-65 | WP-09 测试报告与命令适配 | P0 只支持 `pytest_junit_xml`。任务配置新增必填 `report_format` 并纳入配置指纹；固定适配器只向可信基础命令追加 `-o junit_family=xunit2` 和私有临时报告路径对应的 `--junitxml` 参数。未知格式、已有报告覆盖项或任意 argv/cwd/env 注入全部拒绝。 |
+| D-66 | WP-09 内部测试执行控制面 | 新增可信 `Gate.invoke_test_verification`。`BASELINE` 只允许 `RUNNING` 且 Agent 尚无副作用，`FINAL` 只允许 `VERIFYING`；只接受独立内部 Registry 的固定测试定义和相位，不进入模型快照，不占用 Agent step/tool-call 预算。D-59 的只读约束继续只约束 WP-08 代码理解读取。 |
+| D-67 | WP-09 内部测试审批 | 内部基线/最终测试只执行任务配置声明的唯一基础命令，由可信 Harness 启动，不额外要求模型审批；仍必须经过 Gate、Sandbox、Invocation、Evidence、Audit、租约和状态检查。模型可见 `run_test` 继续按任务 `required_tools` 审批策略执行。 |
+| D-68 | WP-09 跨进程基线持久化 | 追加 schema migration v6，持久化测试修复启动 WorkspaceBaseline、测试执行和测试节点。基线、执行和节点事实 append-only；审批后新进程恢复只复用已持久化有效基线，不重跑基线。迁移不得修改 v1-v5。 |
+| D-69 | WP-09 基线失败要求 | 测试修复基线必须至少包含一个 `FAILED` 或 `ERROR` 节点。基线全部通过时任务不是有效测试修复，返回 `COMPLETION_TEST_BASELINE_NOT_FAILING`；回归加固需要未来显式新增任务模式。 |
+| D-70 | WP-09 skip/xfail 语义 | 基线已存在且最终保持的 `SKIPPED/XFAIL` 允许作为历史测试债务保留并显式审计；原本执行节点变为 skip/xfail，或新增节点为 skip/xfail，均拒绝。所有实际执行节点最终必须通过。 |
+| D-71 | WP-09 报告原文保留 | JUnit 报告只在独立私有临时目录中读取，完成解析后删除。State/Audit 只保留报告 SHA-256、字节数、parser 版本、计数、节点键/脱敏标签和脱敏有界失败摘要，不保存完整报告或断言正文。 |
+| D-72 | WP-09 资源上限 | 单份报告最大 8 MiB、最多 100,000 个测试节点、单字段原始长度 4,096 字符、持久化节点标签 512 字符、失败摘要 8 KiB。超过任一上限或 XML 含 DOCTYPE/ENTITY 时失败关闭。 |

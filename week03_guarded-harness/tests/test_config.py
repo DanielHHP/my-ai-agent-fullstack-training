@@ -199,6 +199,77 @@ def test_cross_field_semantics(tmp_path: Path) -> None:
     assert duplicate_tool_error.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
 
 
+def test_test_repair_report_contract_is_strict_and_fingerprinted(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    payload = _payload(str(workspace))
+    payload["task"]["id"] = "repair_fixture"
+    payload["task"]["kind"] = "test_repair"
+    payload["task"]["allowed_tools"] = ["run_test"]
+    payload["task"]["paths"] = {
+        "deny_write": ["tests/**"],
+        "allow_write": ["src/**", "tests/generated/**"],
+    }
+    payload["task"]["acceptance"] = {
+        "strategy": "test_repair",
+        "test_command": ["python", "-m", "pytest", "-q"],
+        "baseline_required": True,
+        "report_format": "pytest_junit_xml",
+    }
+    payload["task"]["approval"] = {
+        "required_tools": [],
+        "approver_roles": [],
+        "ttl_seconds": 900,
+        "channel": "local_cli",
+    }
+    valid = _write_yaml(tmp_path / "valid-repair.yaml", payload)
+    loaded = load_config(valid)
+    assert loaded.fingerprint == config_fingerprint(loaded)
+
+    missing_format = _payload(str(workspace))
+    missing_format["task"]["id"] = "missing_report"
+    missing_format["task"]["kind"] = "test_repair"
+    missing_format["task"]["allowed_tools"] = ["run_test"]
+    missing_format["task"]["acceptance"] = {
+        "strategy": "test_repair",
+        "test_command": ["python", "-m", "pytest", "-q"],
+        "baseline_required": True,
+    }
+    missing_format["task"]["approval"] = {
+        "required_tools": [],
+        "approver_roles": [],
+        "ttl_seconds": 900,
+        "channel": "local_cli",
+    }
+    with pytest.raises(ConfigurationError) as missing:
+        load_config(_write_yaml(tmp_path / "missing-format.yaml", missing_format))
+    assert missing.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+    overridden = _payload(str(workspace))
+    overridden["task"]["id"] = "report_override"
+    overridden["task"]["kind"] = "test_repair"
+    overridden["task"]["allowed_tools"] = ["run_test"]
+    overridden["task"]["acceptance"] = {
+        "strategy": "test_repair",
+        "test_command": [
+            "python",
+            "-m",
+            "pytest",
+            "--junitxml=model.xml",
+        ],
+        "baseline_required": True,
+        "report_format": "pytest_junit_xml",
+    }
+    overridden["task"]["approval"] = {
+        "required_tools": [],
+        "approver_roles": [],
+        "ttl_seconds": 900,
+        "channel": "local_cli",
+    }
+    with pytest.raises(ConfigurationError) as override:
+        load_config(_write_yaml(tmp_path / "override.yaml", overridden))
+    assert override.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+
 def test_approval_roles_and_ttl_are_required_and_fingerprinted(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     missing_roles = _payload(str(workspace))

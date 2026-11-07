@@ -5,13 +5,13 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-08 验收引擎与代码理解 |
-| 文档状态 | approved |
+| 文档状态 | in-progress |
 | 计划版本 | 1.0.0 |
 | 创建日期 | 2026-11-07 |
 | 批准日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 前置依赖 | WP-04 v1.0.0 accepted；WP-05 v1.0.0 accepted；WP-03/WP-01 公共接口可用 |
-| 当前结论 | T00 已完成；T01 至 T10 已批准但尚未开始 |
+| 当前结论 | T00-T08 核心实现已落地；T09/T10 全场景验收和报告待完成 |
 | 下游影响 | WP-09 测试修复策略、WP-10 Harness 最终验收编排、WP-12 端到端场景 |
 
 本计划不重新定义规格。规格评审中发现行为、接口、错误码或安全边界缺口时，必须先更新
@@ -549,17 +549,20 @@ WP-08 是增量模块和窄接口扩展，回滚按以下边界：
 
 当前已完成：
 
-- WP-08 文档目录初始化；
-- `spec.md` v1.0.0 冻结规格；
-- `plan.md` v1.0.0 已批准施工计划和 WP08-AC 到测试的映射；
-- 飞书“核心验收”H1、H2、H3、A2、T1 的 WP-08 责任拆解。
-- D-59 至 D-64 决策登记和跨工作包设计同步。
+- `completion.py` 的 `CompletionChecker`、严格 Markdown 三区解析、事实引用图；
+- Agent `READ` Evidence 追溯、内容摘要和完整行区间并集覆盖；
+- 启动 WorkspaceBaseline 身份校验、变更路径范围和外围保护检查；
+- 模型完成声明诊断和程序化 CompletionItem 编排；
+- Gate `invoke_internal` 固定只读入口、独立内部 Registry 和模型不可见语义；
+- Completion-only `DOCUMENT`/`DIFF` Evidence、逐项 Audit 和最终结果事务写入；
+- `tests/test_completion.py` 中的合法接受、缺失交付物、陈旧引用、模型声明和内部隔离测试。
+- 2026-11-07 实际复跑：`python -m pytest -q` 为 269 passed；
+  `python -m ruff check .` 通过；`python -m ruff format --check .` 通过。
 
-尚未实现：
+尚未完成：
 
-- `completion.py`；
-- Gate 内部控制面；
-- Markdown/证据解析；
-- Completion 测试和验收报告。
+- WP08-AC 全量故障矩阵、截断和并发覆盖；
+- WP-08 `acceptance-report.md`；
+- 针对全部 WP08-AC 的逐场景证据映射。
 
-当前工作包状态为 `DESIGNED`。T01 尚未开始，未产生任何 WP-08 功能完成声明。
+当前工作包状态为 `IN_PROGRESS`，不能声明 WP-08 已 accepted。
