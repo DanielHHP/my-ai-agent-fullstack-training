@@ -5,19 +5,19 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-10 Agent 与 Harness |
-| 报告状态 | review |
-| 报告版本 | 1.1.0 |
+| 报告状态 | accepted |
+| 报告版本 | 1.2.0 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 对应计划 | [plan.md](plan.md) v1.0.0 / in-progress |
 | 代码基线 | `2e279af` + 本工作包未提交改动 |
-| 验收日期 | 2026-11-07 |
+| 验收日期 | 2026-11-08 |
 | 平台 | Darwin 22.6.0 x86_64 |
 | Python | 3.13.5（仓库 `.venv`） |
 | smolagents | 1.26.0（精确锁定） |
 
-本报告汇总 WP-10 实际实现和本次复验证据。报告为 `review`，不声明整个项目已完成，因为上游
-WP-08/WP-09 的独立 `acceptance-report.md` 仍未形成最终 accepted 结论，真实模型和 P1 场景
-也不在 WP-10/P0 范围。
+本报告汇总 WP-10 实际实现和复验证据。WP-08/WP-09 已于 2026-11-08 accepted，WP-10 的
+25 个 AC、故障恢复和并发 resume 证据均通过，因此报告升级为 `accepted`。真实模型和 P1 场景
+仍不在 WP-10/P0 范围。
 
 ## 2. 交付结果
 
@@ -161,13 +161,11 @@ P1 的 S2、S4、A2、T2 没有作为 WP-10 的独立完成门禁；其中依赖
    原始 draft 2020-12 schema 完成。
 4. P0 多调用全部串行，没有启用只读并发。
 5. 运行时 token-cost 是资源单位，不是某真实 Provider 的账单价格。
-6. WP-08/WP-09 的自动化 AC 已补齐，但人工语义和测试质量审查尚未完成；在这些依赖验收前，
-   WP-10 不进入 `DONE`。
-7. 当前报告为 `review`，需要与 WP-11 下游接口评审后再转为最终 accepted 证据。
+6. WP-08/WP-09 已完成 accepted，WP-10 上游依赖已闭环。
+7. 本报告已 accepted；P1 真实模型仍作为后续范围。
 
 ## 8. 验收结论
 
 WP-10 的本地公共接口、Fake Model Agent 闭环、审批恢复、预算、Checkpoint、Completion 和
-smolagents 1.26.0 适配已通过目标测试与全量回归。实现满足 WP-10 规格声明的 P0 能力，但受上游
-WP-08/WP-09 acceptance 和真实模型/P1 非目标约束，工作包当前应保持 `VERIFYING`，不能标记为
-`DONE` 或宣称整个项目已最终交付。
+smolagents 1.26.0 适配已通过目标测试与全量回归。实现满足 WP-10 规格声明的全部 P0 能力，
+报告状态为 `accepted`，工作包可进入 `DONE`。

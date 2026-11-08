@@ -10,7 +10,7 @@
 | 创建日期 | 2026-11-07 |
 | 冻结日期 | 2026-11-07 |
 | 依赖 | WP-00 至 WP-11 |
-| 当前依赖状态 | WP-00 至 WP-07 accepted；WP-08、WP-09 为 IN_PROGRESS/review；WP-10、WP-11 为 VERIFYING/review |
+| 当前依赖状态 | WP-00 至 WP-11 全部 accepted |
 | 上游工作包 | WP-00 工程契约、WP-01 State/Audit、WP-02 Approval、WP-03 Sandbox、WP-04 Gate、WP-05 只读工具、WP-06 写与命令、WP-07 Checkpoint/恢复、WP-08/WP-09 Completion、WP-10 Harness、WP-11 CLI |
 | 对应需求 | `REQ-HARNESS-*`、`REQ-GATE-*`、`REQ-SANDBOX-*`、`REQ-STATE-*`、`REQ-CHECKPOINT-*`、`REQ-AUDIT-*`、`REQ-COMPLETE-*` 的项目级复核 |
 | 对应设计 | `design.md` 第 5、6、9、10、11、12、13、14 节 |
@@ -18,9 +18,9 @@
 | 飞书输入 | `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌工作簿 revision 11，读取范围 `A1:D20` |
 | 原文件任务 | P6-01 至 P6-07 |
 
-本文定义 WP-12 在项目最终交付阶段必须表现出的行为、可复验证据和验收条件。需求方已按
-D-84 明确允许在上游工作包尚未全部 accepted 时提前施工，但该授权不改变最终完成门禁，也不表示
-WP-12 或项目 P0 已经完成。
+本文定义 WP-12 在项目最终交付阶段必须表现出的行为、可复验证据和验收条件。D-84 曾允许在
+上游工作包尚未全部 accepted 时提前施工；当前 WP-08 至 WP-11 已完成 accepted，WP-12 的最终
+完成门禁已闭环。
 
 文档冲突时按
 `requirements.md / design.md / decisions.md > 本文 > plan.md > 任务卡` 处理。WP-12 发现上游

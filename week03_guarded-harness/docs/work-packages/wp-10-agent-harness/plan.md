@@ -5,14 +5,14 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-10 Agent 与 Harness |
-| 文档状态 | in-progress |
+| 文档状态 | done |
 | 计划版本 | 1.0.0 |
 | 创建日期 | 2026-11-07 |
 | 批准日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 前置依赖 | WP-07 accepted；WP-08、WP-09 的实现与验收 |
 | 间接依赖 | WP-01、WP-02、WP-03、WP-04、WP-05、WP-06 的既有公共契约 |
-| 当前结论 | WP-10 实现与目标测试已落地，正在完成全量复验和验收报告 |
+| 当前结论 | 实现、25/25 AC、全量复验和 acceptance report 均已完成 |
 | 下游影响 | WP-11 CLI/恢复、WP-12 两类任务端到端与最终交付 |
 
 本计划不重新定义规格。若评审改变公开接口、Run 状态、错误码、持久化格式或安全语义，必须先
@@ -668,8 +668,8 @@ WP-11 负责 CLI 参数、退出码、审批命令和 `--wait-for-approval`；WP
   预算、安全拒绝、未知结果和故障注入场景；
 - v6 -> v7 migration 和 append-only 基线测试。
 
-当前目标测试与全量测试已通过，但 WP-08/WP-09 的独立验收报告仍未完成，因此 WP-10 保持
-`VERIFYING`，不能进入 `DONE`。实际复验结果：
+当前目标测试、全量测试、检查点恢复和并发 resume 均通过，WP-08/WP-09 依赖已 accepted，WP-10
+可进入 `DONE`。实际复验结果：
 
 - `python -m pip install -e '.[dev]'`：成功；
 - `tests/test_harness_loop.py`：23 passed；
@@ -677,8 +677,7 @@ WP-11 负责 CLI 参数、退出码、审批命令和 `--wait-for-approval`；WP
 - `python -m ruff check .`：通过；
 - `python -m ruff format --check .`：105 files formatted。
 
-基于上述结果的 [acceptance-report.md](acceptance-report.md) 已生成，状态为 `review`，等待上游
-WP-08/WP-09 验收与 WP-11 下游接口评审。
+基于上述结果的 [acceptance-report.md](acceptance-report.md) 已生成并升级为 `accepted`。
 
 后续状态必须由实际代码、测试输出和 `acceptance-report.md` 更新；本文的计划性描述不得被当作
 实现完成证据。

@@ -10,7 +10,7 @@
 | 创建日期 | 2026-11-07 |
 | 冻结日期 | 2026-11-07 |
 | 依赖 | WP-07 accepted；WP-10 accepted |
-| 当前依赖状态 | WP-07 已 accepted；WP-10 为 VERIFYING，验收报告仍为 review |
+| 当前依赖状态 | WP-07、WP-10 均已 accepted |
 | 下游工作包 | WP-12 |
 | 对应需求 | `REQ-HARNESS-001/002/005`、`REQ-GATE-004`、`REQ-STATE-002`、`REQ-CHECKPOINT-002/003/004`、`REQ-AUDIT-001/002/003`、`REQ-COMPLETE-001/002/005` |
 | 对应设计 | `design.md` 6.1、6.3、6.4、9.3、12.4、13、14 |
@@ -18,9 +18,8 @@
 | 飞书输入 | `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌工作簿 revision 11 |
 | 原文件任务 | P5-04、P5-05、P5-07；P5-06 的跨进程部分 |
 
-本文定义 WP-11 必须表现出的外部行为、CLI 契约和验收要求。需求方已明确要求在 WP-10 验收仍为
-`review` 时并行开始施工；实现和测试结果可以记录，但该状态不满足 WP-10 accepted 依赖，本包在
-上游闭环前不能标记 `DONE`。
+本文定义 WP-11 必须表现出的外部行为、CLI 契约和验收要求。WP-10 在后续验收中已转为
+`accepted`，此前的提前施工偏差已闭环，WP-11 当前为 `DONE`。
 
 文档冲突时按 `requirements.md / design.md / decisions.md > 本文 > plan.md > 任务卡` 处理。
 WP11-Q01 至 WP11-Q06 已按 D-78 至 D-83 关闭，本文为冻结规格。

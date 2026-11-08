@@ -5,16 +5,16 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-12 故障加固与交付 |
-| 文档状态 | in-progress |
+| 文档状态 | done |
 | 计划版本 | 1.0.0 |
 | 创建日期 | 2026-11-07 |
 | 批准日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 前置依赖 | WP-00 至 WP-11 全部 accepted |
-| 当前依赖状态 | WP-00 至 WP-07 accepted；WP-08、WP-09 为 IN_PROGRESS/review；WP-10、WP-11 为 VERIFYING/review |
+| 当前依赖状态 | WP-00 至 WP-11 全部 accepted |
 | 当前代码基线 | `956b4a0`；2026-11-07 全量测试 `372 passed in 257.41s` |
 | 下游影响 | P0 最终交付、运维入口和项目完成声明 |
-| 当前结论 | 实现、样例、补测、文档和 372 项全量测试完成；验收 blocked，等待人工复核及 WP-08 至 WP-11 accepted |
+| 当前结论 | 实现、样例、补测、文档、372 项全量测试和人工验收完成；工作包 accepted |
 
 本计划不重新定义规格。WP12-Q01 至 Q03 已按 D-84 至 D-86 关闭，规格冻结、计划批准。
 
@@ -91,7 +91,7 @@ WP-12 原则上不修改 `src/guarded_harness/`。若端到端测试发现生产
 | `docs/test-plan.md` | 尚不存在 | 新增 |
 | `docs/operations.md` | 尚不存在 | 新增 |
 | 根 README | 仍描述“仅 WP-00 完成” | 最终交付时更新 |
-| WP-08 至 WP-11 | 验收未 accepted | 施工门禁，当前不可进入实现 |
+| WP-08 至 WP-11 | 已全部 accepted | 项目级依赖闭环，可进入最终交付 |
 
 ## 4. 决策门禁
 
@@ -432,7 +432,7 @@ docs(wp-12): finalize delivery evidence and index
 
 | 风险/阻塞 | 影响 | 处理 |
 | --- | --- | --- |
-| WP-08 至 WP-11 未 accepted | 不符合法定施工准入 | 当前停在文档；Q01 未确认前不进入 T02 |
+| WP-08 至 WP-11 未 accepted | 曾不符合最终准入 | 已通过后续补测和人工验收闭环，当前均已 accepted |
 | 普通异常被误当进程崩溃 | 无法证明真实持久化恢复 | 使用子进程硬退出，断言退出信号和故障点命中 |
 | DB 锁测试无限阻塞 | 测试不稳定或挂起 | 使用有界 busy timeout、子进程超时和清理锁连接 |
 | 修改测试文件直接篡改 DB | 证据不可信 | 损坏只在隔离副本/临时数据库进行，不改历史事实 |
@@ -484,12 +484,12 @@ WP-12 向项目交付：
 - 补充 WP-08/WP-09 的 44 个 Completion 场景和 WP-10/WP-11 的直接 CLI/恢复证据；
 - 新增 `tests/manual_acceptance_runner.py` 与 WP-08 至 WP-11 手动验收说明；
 - 执行 `372 passed in 257.41s`、Ruff lint、格式检查和 WP-12 目标复跑；
-- 生成 `acceptance-report.md`，状态 blocked；
+- 生成 `acceptance-report.md`，并在依赖与人工验收闭环后升级为 accepted；
 - 更新 `docs/README.md`、`docs/work-packages/index.md` 和任务拆解中的 WP-12 文档入口。
 
-尚未完成且不得宣称完成：
+封版确认：
 
-- WP-08 至 WP-11 仍未全部 accepted；
-- WP-12 最终报告保持 `blocked`，工作包不得标 DONE；
-- 项目 P0 完成声明不得发布；
-- 上游 closed 后必须重新执行最终质量门禁并提升报告状态。
+- WP-08 至 WP-11 已全部 accepted；
+- WP-12 最终报告为 accepted；
+- 工作包与项目 P0 状态可标记 DONE；
+- 后续公共契约变化仍须重新执行受影响门禁并提升报告版本。

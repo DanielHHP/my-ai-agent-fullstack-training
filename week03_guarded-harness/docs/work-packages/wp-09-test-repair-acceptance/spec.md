@@ -9,7 +9,7 @@
 | 规格版本 | 1.0.0 |
 | 创建日期 | 2026-11-07 |
 | 冻结日期 | 2026-11-07 |
-| 依赖 | WP-06 v1.0.0 accepted；WP-08 v1.0.0 frozen（实现尚未完成） |
+| 依赖 | WP-06、WP-08 均已 accepted |
 | 间接依赖 | WP-01 State/Audit、WP-03 Sandbox、WP-07 Evidence 失效与恢复语义 |
 | 下游工作包 | WP-10、WP-12 |
 | 对应需求 | `REQ-GATE-*`、`REQ-STATE-*`、`REQ-AUDIT-*`、`REQ-TASK-003`、`REQ-TASK-004`、`REQ-COMPLETE-*` |
@@ -18,9 +18,8 @@
 | 飞书输入 | 作业文档 `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌工作簿 revision 11 |
 | 原文件任务 | P4-01、P4-02 的测试修复部分 |
 
-本文是 WP-09 已冻结的行为与验收规格。WP-08 Completion 核心和 WP-09 测试修复运行时已进入
-施工，但 WP-08 全场景验收和 WP-09 `acceptance-report.md` 尚未完成；不得把目标测试通过表述为
-工作包已经 accepted。
+本文是 WP-09 已冻结的行为与验收规格。WP-08 全场景验收和 WP-09 `acceptance-report.md` 均已
+完成并 accepted。
 
 文档冲突时按 `requirements.md / design.md / decisions.md > 本文 > plan.md > 任务卡` 的顺序处理。
 WP09-Q01 至 WP09-Q08 已由 D-65 至 D-72 关闭，本文为已冻结规格。
@@ -646,8 +645,6 @@ API Key、令牌、密码或敏感环境变量。
 
 ## 17. 当前结论
 
-WP-09 规格已冻结，WP09-Q01 至 Q08 已关闭。`completion.py` 测试修复策略、JUnit 解析器、
-基线持久化、Gate 内部测试执行和核心验收测试已实现；WP-08 全场景验收、WP-09 剩余故障组合和
-`acceptance-report.md` 尚未完成。
-
-目标测试和全量测试通过只是施工证据，不表示 WP-08/WP-09 已经 accepted。
+WP-09 规格已冻结，WP09-Q01 至 Q08 已关闭，工作包当前为 `DONE`。`completion.py` 测试修复策略、
+JUnit 解析器、基线持久化、Gate 内部测试执行、全场景自动化矩阵和 `acceptance-report.md` 均已完成
+并 accepted。

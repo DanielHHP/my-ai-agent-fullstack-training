@@ -5,9 +5,9 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-11 CLI 与人工恢复 |
-| 报告状态 | review |
-| 报告版本 | 1.1.0 |
-| 验收日期 | 2026-11-07 |
+| 报告状态 | accepted |
+| 报告版本 | 1.2.0 |
+| 验收日期 | 2026-11-08 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 对应计划 | [plan.md](plan.md) v1.1.0 / done |
 | 代码基线 | `3ee4c63` + 本工作包未提交工作区改动 |
@@ -43,10 +43,10 @@ append-only 业务数据。
 ## 3. 依赖状态与结论边界
 
 - WP-07 已 accepted；
-- WP-10 当前为 `VERIFYING`，其验收报告仍为 `review`；
-- 需求方明确要求在 WP-10 review 状态下并行开始 WP-11 施工；这是本报告的已记录施工偏差；
-- WP-11 自身实现和命令级证据已通过，但按完成定义不能在上游未 accepted 时转为 `accepted`；
-- 本报告结论为 `review`，建议在 WP-10 上游报告转 accepted 后复核并转 accepted。
+- WP-10 已于 2026-11-08 转为 `accepted`；
+- 需求方曾要求在 WP-10 review 状态下并行开始 WP-11 施工，该偏差已由后续上游 accepted 闭环；
+- WP-11 自身实现、命令级证据和人工 CLI 操作走查均通过；
+- 本报告结论为 `accepted`。
 
 ## 4. 交付物
 
@@ -182,7 +182,7 @@ append-only 业务数据。
 | T09 `inspect` | DONE | A1、approval filter、truncation、未知 Run |
 | T10 cross-process | DONE | console approve + module-equivalent runner |
 | T11 hardening | DONE | 脱敏、严格 parser、工作区变化、原子过期 |
-| T12 report | REVIEW | 本报告等待 WP-10 accepted；手动操作步骤已生成 |
+| T12 report | DONE | WP-10 已 accepted；人工 CLI 操作走查完成，本报告已 accepted |
 
 ## 9. 飞书核心验收映射
 
@@ -221,12 +221,10 @@ append-only 业务数据。
 3. `approvals` 与 `inspect` 打开状态库时仍会执行现有初始化/兼容检查，但不会写业务状态或
    Audit；读取事务当前复用 SQLite immediate transaction，会短暂获取写锁。
 4. CLI 没有 Web/HTTP 审批、远程身份认证或实时日志流。
-5. WP-10 的上游验收报告仍为 review，是本报告不能转 accepted 的唯一直接阻塞。
+5. WP-10 已 accepted，上游依赖不再阻塞。
 6. Windows 进程执行和跨平台终端行为未纳入 P0 验收。
 
 ## 12. 验收结论
 
-WP-11 的实现、命令行为、跨进程恢复、审批安全边界、只读 inspect 和最终测试证据均通过。
-
-当前报告状态为 `review`，不标记 `accepted`，原因是 WP-10 accepted 依赖尚未完成。上游验收
-转为 accepted 后，本报告可直接进入最终复核，不需要新增 WP-11 功能。
+WP-11 的实现、命令行为、跨进程恢复、审批安全边界、只读 inspect、人工 CLI 操作走查和最终测试
+证据均通过。当前报告状态为 `accepted`，工作包可进入 `DONE`。

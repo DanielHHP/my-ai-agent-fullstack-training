@@ -11,10 +11,10 @@
 | 批准日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 前置依赖 | WP-07 accepted；WP-10 accepted |
-| 当前依赖状态 | WP-07 accepted；WP-10 VERIFYING，验收报告 review |
+| 当前依赖状态 | WP-07、WP-10 accepted |
 | 间接依赖 | WP-01、WP-02、WP-04、WP-07 的 State/Audit/Approval/Checkpoint 公共契约 |
 | 下游影响 | WP-12 的跨进程 E2E、退出码和运维文档 |
-| 当前结论 | 实现和包内测试完成；验收报告 review，等待 WP-10 accepted |
+| 当前结论 | 实现、包内测试、人工 CLI 验收和 acceptance report 均已完成 |
 
 本计划不重新定义规格。WP11-Q01 至 Q06 已按 D-78 至 D-83 关闭；后续若改变命令、模型来源、
 身份参数、只读查询、退出码或等待语义，必须先更新 `spec.md` 和必要的设计/决策文档。
@@ -767,7 +767,6 @@ WP-12 负责：
 - `tests/test_cli.py`：`26 passed`；
 - 全量测试：`372 passed`；
 - Ruff lint 通过，Ruff format check 为 `105 files already formatted`；
-- 已生成 `acceptance-report.md`，状态为 review。
+- 已生成 `acceptance-report.md`，状态已升级为 accepted。
 
-WP-11 实现阶段结束，当前进入 VERIFYING。WP-10 accepted 前不能把验收报告转为 accepted 或把
-工作包标记为 DONE。
+WP-10 依赖已 accepted，WP-11 人工 CLI 审批、inspect 和跨进程恢复验收通过，工作包当前为 DONE。

@@ -5,13 +5,13 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-08 验收引擎与代码理解 |
-| 文档状态 | in-progress |
+| 文档状态 | done |
 | 计划版本 | 1.0.0 |
 | 创建日期 | 2026-11-07 |
 | 批准日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 前置依赖 | WP-04 v1.0.0 accepted；WP-05 v1.0.0 accepted；WP-03/WP-01 公共接口可用 |
-| 当前结论 | T00-T08 核心实现已落地；T09/T10 全场景验收和报告待完成 |
+| 当前结论 | 实现、24/24 AC 自动化证据、人工语义复核和 acceptance report 均已完成 |
 | 下游影响 | WP-09 测试修复策略、WP-10 Harness 最终验收编排、WP-12 端到端场景 |
 
 本计划不重新定义规格。规格评审中发现行为、接口、错误码或安全边界缺口时，必须先更新
@@ -314,7 +314,7 @@ StateStore 现有 `record_completion` 已检查 Run 为 `VERIFYING`、Run revisi
 
 ## 5. 施工任务卡
 
-总体顺序如下。T00 已完成，T01 至 T10 处于 `approved / not-started`。
+总体顺序如下。T00 至 T10 均已完成，工作包已 accepted。
 
 | 任务 | 实现内容 | 对应规格 | 依赖 | 主要文件/测试 |
 | --- | --- | --- | --- | --- |
@@ -338,7 +338,7 @@ StateStore 现有 `record_completion` 已检查 Run 为 `VERIFYING`、Run revisi
 2. `spec.md` 更新为选定方案并冻结；
 3. 新决策追加到 `docs/decisions.md`，必要时更新 `design.md`；
 4. 工作包索引由 `BLOCKED` 变为 `DESIGNED`；
-5. `plan.md` 已改为 approved，可以开始 T01。
+5. `plan.md` 已完成，T01 至 T10 已执行完毕。
 
 ### 5.2 T01 契约与稳定错误
 
@@ -567,9 +567,10 @@ WP-08 是增量模块和窄接口扩展，回滚按以下边界：
 - `tests/test_completion.py` 62 passed；
 - 全量 `372 passed`；Ruff lint 和格式检查通过。
 
-尚未完成：
+后续复核：
 
-- 人工代码解释语义和文档质量审查；
-- 独立复核人确认报告与 AC 映射。
+- 2026-11-08 人工代码解释语义、引用、diff 和审批恢复流程复核 PASS；
+- 24 个 AC 的自动化证据和报告映射已确认；
+- [acceptance-report.md](acceptance-report.md) 已升级为 `accepted`。
 
-当前工作包状态为 `VERIFYING`，不能提前声明 accepted。
+当前工作包状态为 `DONE`。

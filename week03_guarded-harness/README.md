@@ -7,9 +7,9 @@ Guarded Coding Harness 在保留 `smolagents.ToolCallingAgent` 原生决策循�
 
 ## 当前范围
 
-P0 已具备六个核心模块的工程实现、Fake Model 驱动的 Agent/CLI 闭环、审批后跨进程恢复、程序化
-Completion 和离线安全测试。WP-08 至 WP-11 的验收报告仍处于 review/verifying 状态，因此当前不得
-声明项目 P0 最终完成；WP-12 负责最终故障矩阵和交付证据。
+P0 已完成：六个核心模块、Fake Model 驱动的 Agent/CLI 闭环、审批后跨进程恢复、程序化
+Completion、离线安全测试、项目级故障矩阵和人工验收均已通过。WP-08 至 WP-12 的验收报告状态
+均为 `accepted`。
 
 首期支持：
 

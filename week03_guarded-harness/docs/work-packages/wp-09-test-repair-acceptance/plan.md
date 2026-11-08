@@ -5,14 +5,14 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-09 测试修复验收 |
-| 文档状态 | in-progress |
+| 文档状态 | done |
 | 计划版本 | 1.0.0 |
 | 创建日期 | 2026-11-07 |
 | 批准日期 | 2026-11-07 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 前置依赖 | WP-06 v1.0.0 accepted；WP-08 v1.0.0 frozen，尚需实现并 accepted |
 | 间接依赖 | WP-01/WP-03/WP-07 既有公共接口 |
-| 当前结论 | WP09-Q01 至 WP09-Q08 已按 D-65 至 D-72 冻结；开始准备契约与解析器 |
+| 当前结论 | 实现、32/32 AC 自动化证据、人工测试质量复核和 acceptance report 均已完成 |
 | 下游影响 | WP-10 Harness 最终验收编排、WP-12 端到端测试修复场景 |
 
 本计划不重新定义规格。规格评审中发现行为、接口、错误码、持久化或安全边界缺口时，必须先更新
@@ -121,7 +121,7 @@ WP09-Q08 报告与节点上限
         -> D-65 至 D-72 已登记
         -> design.md、WP-04/WP-08 边界已同步
         -> spec v1.0.0 frozen
-        -> plan v1.0.0 approved / in-progress
+        -> plan v1.0.0 approved / done
 
 WP-08 CompletionChecker/内部访问已实现并通过 acceptance-report
         -> 才允许 WP-09 首行代码
@@ -472,7 +472,7 @@ Completion 按 Run 串行化；已存在最终测试执行时不得重复执行�
 2. `spec.md` 已标记 `frozen`；
 3. D-65 至 D-72 已追加，`design.md` 和 WP-04/WP-08 边界已同步；
 4. WP-09 使用独立测试执行入口，不改变 WP-08 只读控制面；
-5. 工作包状态改为 `IN_PROGRESS`；
+5. 工作包状态已从 `IN_PROGRESS` 推进到 `DONE`；
 6. `plan.md` 已批准，WP-08 实现作为下一施工门禁。
 
 ### 5.2 T01 契约
@@ -728,7 +728,7 @@ WP-09 是增量扩展，回滚边界：
 
 - WP-09 文档目录初始化；
 - `spec.md` v1.0.0 frozen，包含飞书“核心验收”H1/H2/H3/A2/T1 映射；
-- `plan.md` v1.0.0 approved / in-progress，包含设计、任务卡、测试矩阵、风险和回滚；
+- `plan.md` v1.0.0 approved / done，包含设计、任务卡、测试矩阵、风险和回滚；
 - WP09-Q01 至 WP09-Q08 已由 D-65 至 D-72 关闭。
 - `report_format=pytest_junit_xml` 严格配置、JUnit XML 安全解析和节点身份；
 - Gate `invoke_test_verification`、独立内部测试执行和模型工具隔离；
@@ -748,9 +748,10 @@ WP-09 是增量扩展，回滚边界：
 - `tests/test_completion.py` 62 passed；
 - 全量 `372 passed`；Ruff lint 和格式检查通过。
 
-尚未完成：
+后续复核：
 
-- 人工审查测试 diff 和断言弱化风险；
-- 独立复核人确认报告与 AC 映射。
+- 2026-11-08 人工测试 diff、断言弱化、节点守恒和审批恢复复核 PASS；
+- 32 个 AC 的自动化证据和报告映射已确认；
+- [acceptance-report.md](acceptance-report.md) 已升级为 `accepted`。
 
-因此 WP-09 当前为 `VERIFYING`，不能标记为 `DONE`。
+当前工作包状态为 `DONE`。

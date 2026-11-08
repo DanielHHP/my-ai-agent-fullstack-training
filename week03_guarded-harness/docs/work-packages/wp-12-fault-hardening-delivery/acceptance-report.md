@@ -5,14 +5,14 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-12 故障加固与交付 |
-| 报告状态 | blocked |
-| 验收结论 | blocked：WP-12 实现证据已通过，但上游 WP-08 至 WP-11 未全部 accepted |
-| 报告版本 | 1.0.0 |
-| 验收日期 | 2026-11-07 |
+| 报告状态 | accepted |
+| 验收结论 | accepted：WP-08 至 WP-11 已 accepted，WP-12 项目级故障矩阵、E2E 和人工验收全部通过 |
+| 报告版本 | 1.1.0 |
+| 验收日期 | 2026-11-08 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
-| 对应计划 | [plan.md](plan.md) v1.0.0 / approved / in-progress |
-| 代码基线 | `956b4a0844ecebc6367cd035b283517f15d235a3`；验收时存在本报告所列 WP-12 未提交改动 |
-| 工作区状态 | 修改 README/docs，新增 WP-12 文档、examples、测试辅助和故障恢复测试 |
+| 对应计划 | [plan.md](plan.md) v1.0.0 / done |
+| 代码基线 | `5a15b9a3fe75f2abf87c5b1135020776fda43660`；验收后更新工作包状态文档 |
+| 工作区状态 | 代码与测试已提交；当前仅有本次验收状态文档更新 |
 | 操作系统 | Darwin 22.6.0 x86_64 |
 | Python | 3.13.5 |
 | pip | 25.1.1 |
@@ -29,21 +29,23 @@
 - 六个必须测试文件、全量测试、Ruff lint、格式和复跑；
 - 测试/运维文档、根 README 和需求/验收映射。
 
-本报告不验收：
+本报告仍不验收：
 
 - 真实模型 Provider 或网络能力（D-07，P1）；
 - 多仓库、分布式、Web/TUI、隐藏验收或容器级隔离；
-- WP-08 至 WP-11 自身尚未完成的最终验收结论。
+- P1 的真实模型质量与跨平台未覆盖范围。
 
-结论为 `blocked`。WP-12 当前实现与本地测试证据通过，但准入要求“WP-00 至 WP-11 全部
-accepted”未满足。D-84 允许提前施工，不授权提前完成项目或把 WP-12 标为 DONE。
+WP-08 至 WP-11 已分别 accepted，项目级依赖闭环完成。
+
+结论为 `accepted`。WP-00 至 WP-11 已全部 accepted，WP-12 实现、自动化证据、故障矩阵、
+两类任务 E2E 和 2026-11-08 人工验收均通过，项目 P0 可以标记完成。
 
 ## 3. 交付物
 
 | 交付物 | 状态 | 说明 |
 | --- | --- | --- |
 | [spec.md](spec.md) | PASS | v1.0.0 frozen，含飞书 P0/P1 全部条目和 WP12-AC |
-| [plan.md](plan.md) | PASS | v1.0.0 approved，含 T00-T13、崩溃矩阵、测试和回滚 |
+| [plan.md](plan.md) | PASS | v1.0.0 done，含 T00-T13、崩溃矩阵、测试和回滚 |
 | `examples/config/code-understanding.yaml` | PASS | 正式加载器校验，相对路径、状态目录在工作区外 |
 | `examples/config/test-repair.yaml` | PASS | 正式加载器校验，失败基线到最终通过 |
 | `examples/workspaces/code-understanding/` | PASS | 最小只读源码样例 |
@@ -181,11 +183,11 @@ python -m pytest --collect-only -q \
 
 | 场景 | 结果 | 证据/说明 |
 | --- | --- | --- |
-| WP12-AC-001 依赖准入 | BLOCKED | WP-08/09 为 IN_PROGRESS/review；WP-10/11 为 VERIFYING/review |
+| WP12-AC-001 依赖准入 | PASS | WP-08 至 WP-11 均 accepted，索引为 DONE |
 | WP12-AC-002 必须文件 | PASS | 六份文件存在；全量收集/通过 372 项 |
 | WP12-AC-003 全量基线 | PASS | 372 passed |
 | WP12-AC-004 lint/格式 | PASS | Ruff check/format 通过 |
-| WP12-AC-005 确定性复跑 | PASS | WP-12 目标 8 项两次一致，19 秒内完成 |
+| WP12-AC-005 确定性复跑 | PASS | WP-12 目标 9 项两次一致，39.74s / 19.76s |
 | WP12-AC-006 样例加载 | PASS | `test_formal_examples_load_with_strict_production_loader` |
 | WP12-AC-007 证据映射 | PASS | 本文第 6-8 节、test-plan 和 P6 任务映射 |
 | WP12-AC-008 文档一致 | PASS | README/docs 已同步；仍受上游状态限制 |
@@ -224,10 +226,10 @@ python -m pytest --collect-only -q \
 
 | 任务 | 状态 | 说明 |
 | --- | --- | --- |
-| WP12-T00 基线门禁 | PASS/PARTIAL | 安装/全量/lint/格式有实际基线；上游 accepted 条件未满足 |
-| WP12-T01 规格与计划 | PASS | D-84 至 D-86；spec frozen、plan approved |
+| WP12-T00 基线门禁 | PASS | 安装/全量/lint/格式和上游 accepted 条件均满足 |
+| WP12-T01 规格与计划 | PASS | D-84 至 D-86；spec frozen、plan done |
 | WP12-T02 故障辅助层 | PASS | `tests/fault_injection.py`、硬退出和 DB 锁辅助 |
-| WP12-T03 崩溃恢复矩阵 | PASS | 8 项 WP-12 目标测试覆盖硬退出、恢复、锁、损坏和租约 |
+| WP12-T03 崩溃恢复矩阵 | PASS | 9 项 WP-12 目标测试覆盖硬退出、恢复、锁、损坏和租约 |
 | WP12-T04 审计/Checkpoint 故障 | PASS | 新测试与既有 Audit/Checkpoint 测试全量通过 |
 | WP12-T05 安全边界复核 | PASS | Gate/Sandbox/Tools 全量通过，P1 证据汇总 |
 | WP12-T06 正式样例 | PASS | 两份 YAML 与两个最小工作区 |
@@ -236,8 +238,8 @@ python -m pytest --collect-only -q \
 | WP12-T09 飞书全矩阵 | PASS | 第 6-7 节映射 |
 | WP12-T10 文档与入口 | PASS | test-plan、operations、README 和索引 |
 | WP12-T11 全量质量门禁 | PASS | 372 passed、Ruff 通过、目标复跑 |
-| WP12-T12 验收报告 | PASS | 本报告实际生成，状态 blocked |
-| WP12-T13 封版交接 | BLOCKED | 等待 WP-08 至 WP-11 accepted 后复跑最终门禁 |
+| WP12-T12 验收报告 | PASS | 本报告实际生成并升级为 accepted |
+| WP12-T13 封版交接 | PASS | WP-08 至 WP-11 accepted，索引和工作包状态已同步为 DONE |
 
 ## 9. 故障矩阵证据
 
@@ -252,8 +254,7 @@ python -m pytest --collect-only -q \
 
 ## 10. 限制与剩余风险
 
-1. WP-08、WP-09 自动化 AC 已补齐但人工语义/测试质量审查待完成；WP-10、WP-11 仍依赖上游
-   accepted，因此 WP-12 与项目 P0 均不能封版。
+1. WP-08 至 WP-11 已 accepted，项目级依赖不再阻塞。
 2. T2 未执行，P0 不声明真实模型质量、网络可靠性或 Provider 配置能力。
 3. 进程执行只支持 Linux/macOS POSIX 进程组；Windows 和不支持可靠进程组终止的平台失败关闭。
 4. Sandbox 不是容器/虚拟机级隔离；Git-ignored 外围文件不在仓库保护基线。
@@ -261,22 +262,22 @@ python -m pytest --collect-only -q \
    弱化的残余风险。
 6. 当前验收在 macOS Darwin 22.6.0 上执行，未单独声明 Linux 运行时复验。
 
-## 11. 解除阻断条件
+## 11. 封版确认
 
-1. WP-08、WP-09 完成 review，验收报告为 accepted；
-2. WP-10、WP-11 的验证报告完成并通过上游依赖检查；
-3. WP-00 至 WP-11 索引状态均为 DONE；
-4. 重新执行 WP-12 安装、全量测试、Ruff lint、格式和目标复跑；
-5. 若上游修复改变公共契约或测试结果，更新本报告版本并重新评审；
-6. 满足后把报告状态从 `blocked` 提升为 `accepted`，再更新工作包索引为 DONE。
+1. WP-08、WP-09 报告已 accepted；
+2. WP-10、WP-11 报告已 accepted；
+3. WP-00 至 WP-11 索引状态为 DONE；
+4. WP-12 安装、全量测试、Ruff lint、格式和目标复跑证据已保留；
+5. 2026-11-08 人工验收结果已由需求方确认；
+6. 本报告状态已从 `blocked` 提升为 `accepted`，工作包索引同步为 DONE。
 
 ## 12. 实际结论
 
-WP-12 要求中的本地实现、正式样例、故障矩阵、两类任务 E2E、文档和质量门禁已经完成并通过实测。
-由于上游验收状态未闭环，本报告不能接受为最终 P0 完成证据。当前交付状态为：
+WP-12 要求中的本地实现、正式样例、故障矩阵、两类任务 E2E、文档、质量门禁和人工验收已经完成
+并通过实测。当前交付状态为：
 
 ```text
 WP-12 implementation: PASS
-WP-12 package acceptance: BLOCKED
-Project P0 completion: NOT CLAIMED
+WP-12 package acceptance: ACCEPTED
+Project P0 completion: COMPLETE
 ```

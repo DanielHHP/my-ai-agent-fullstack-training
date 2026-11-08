@@ -531,8 +531,6 @@ WP-09/WP-10 计划。
 
 ## 15. 当前结论
 
-WP-08 规格已冻结，计划已批准，工作包当前为 `IN_PROGRESS`。已实现
-`completion.py`、Gate `invoke_internal`、内部 Registry、Markdown/Evidence 校验和核心
-Completion 测试；全场景故障矩阵和 `acceptance-report.md` 尚未完成。
-
-只有 `acceptance-report.md` 状态为 `accepted` 后才能把工作包标记为 `DONE`。
+WP-08 规格已冻结，计划已完成，工作包当前为 `DONE`。`completion.py`、Gate
+`invoke_internal`、内部 Registry、Markdown/Evidence 校验、全场景自动化矩阵和
+`acceptance-report.md` 均已完成并 accepted。

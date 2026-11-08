@@ -99,6 +99,6 @@
 | D-81 | WP-11 审批列表语义 | `approvals list` 默认跨 Run、按 `requested_at, approval_id` 稳定排序并限制最多 1000 条；`--run-id`、`--status` 和 `--limit` 仅作窄过滤。列表只返回 persisted/effective status，不物化过期；wait、approve、reject 和 resume 才通过 ApprovalStore 受控物化到期并收口 Run。 |
 | D-82 | WP-11 退出码与 JSON | `run/resume` 仅 `ACCEPTED` 返回 0；2 为 usage/config，3 为 WAITING_APPROVAL，4 为 STOPPED，5 为 BLOCKED，6 为 FAILED，7 为 COMPLETED/REJECTED，8 为 UNVERIFIABLE，9 为内部查询失败。所有命令支持单一 JSON envelope；审批和只读控制命令成功完成返回 0。 |
 | D-83 | WP-11 等待审批超时 | `--wait-for-approval SECONDS` 必须显式给出 `1..86400` 的整数秒；本地超时保持 Run `WAITING_APPROVAL` 并返回退出码 3，不自动 approve、reject 或把等待超时写成审批过期。 |
-| D-84 | WP-12 提前施工授权 | 需求方明确允许在 WP-08 至 WP-11 尚未全部 accepted 时提前开展 WP-12 施工。可记录实现和测试证据，但不得把依赖包或 WP-12 标记为 `DONE`，也不得据此声明项目 P0 完成；所有上游验收关闭后必须重新执行最终门禁。 |
+| D-84 | WP-12 提前施工授权 | 需求方明确允许在 WP-08 至 WP-11 尚未全部 accepted 时提前开展 WP-12 施工。可记录实现和测试证据，但不得把依赖包或 WP-12 标记为 `DONE`，也不得据此声明项目 P0 完成；所有上游验收关闭后必须重新执行最终门禁。2026-11-08 上游已全部 accepted，人工验收和最终门禁已闭环。 |
 | D-85 | WP-12 正式样例形态 | 提供两个最小、自包含的样例工作区和 `examples/config/` 下的两份 YAML，使正式配置可由现有 `load_config` 从仓库相对路径加载，并在复制到临时 Git 工作区后可离线执行；不依赖开发者绝对路径。 |
 | D-86 | WP-12 飞书 P1 处理 | S2、S4、A2、T2 不作为 P0 阻断。S2/S4/A2 汇总已有确定性证据，T2 因 D-07 标为 `NOT_RUN/P1`；最终报告必须明确优先级、证据和未执行范围，不得把 Fake Model 结果冒充真实模型结果。 |
