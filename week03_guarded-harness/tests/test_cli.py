@@ -187,6 +187,27 @@ def _invoke(
     return code, payload, text, stderr.getvalue()
 
 
+def _make_v2(fixture: CliFixture) -> None:
+    text = fixture.config_path.read_text(encoding="utf-8").replace("version: 1", "version: 2")
+    model_block = """model:
+  provider: openai_chat_completions_v1
+  model_id: gpt-test-2026-01-01
+  endpoint: https://api.example.invalid/v1
+  credential_ref: MODEL_API_KEY
+  tokenizer_id: tiktoken:o200k_base
+  max_input_tokens: 1000
+  max_output_tokens: 100
+  pricing:
+    version: test-price
+    input_per_million: "1"
+    output_per_million: "2"
+"""
+    fixture.config_path.write_text(
+        text.replace("task:\n", f"{model_block}task:\n"),
+        encoding="utf-8",
+    )
+
+
 def _start_waiting(fixture: CliFixture) -> tuple[int, dict[str, Any]]:
     factory = SequenceModelFactory((_waiting_script(),))
     code, payload, _text, _stderr = _invoke(fixture, ["run", "--json"], model_factory=factory)
@@ -303,6 +324,45 @@ def test_run_without_model_factory_fails_before_workspace_side_effects(
     assert payload is not None
     assert payload["error"]["code"] == ErrorCode.CLI_MODEL_UNAVAILABLE.value
     assert fixture.report_path.read_bytes() == before
+
+
+def test_v2_run_without_credentials_fails_before_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    _make_v2(fixture)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    before = fixture.report_path.read_bytes()
+
+    code, payload, _text, _stderr = _invoke(fixture, ["run", "--json"])
+
+    assert code == 6
+    assert payload is not None
+    assert payload["error"]["code"] == ErrorCode.MODEL_CREDENTIAL_UNAVAILABLE.value
+    assert fixture.report_path.read_bytes() == before
+    assert not fixture.database_path.exists()
+
+
+def test_v2_approvals_do_not_create_provider(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(tmp_path)
+    _make_v2(fixture)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    calls: list[Path] = []
+
+    def forbidden_provider(path: Path):
+        calls.append(path)
+        raise AssertionError("provider must not be constructed")
+
+    monkeypatch.setattr(cli_module, "create_model_from_config", forbidden_provider)
+    code, payload, _text, _stderr = _invoke(fixture, ["approvals", "list", "--json"])
+
+    assert code == 0
+    assert payload is not None and payload["ok"] is True
+    assert calls == []
 
 
 def test_strict_config_failure_keeps_config_code_and_redacts_value(tmp_path: Path) -> None:

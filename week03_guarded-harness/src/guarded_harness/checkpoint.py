@@ -909,6 +909,7 @@ class CheckpointService:
             plan=snapshot_state.plan,
             steps=snapshot_state.steps,
             invocations=snapshot_state.invocations,
+            model_calls=snapshot_state.model_calls,
             evidence=snapshot_state.evidence,
             approvals=snapshot_state.approvals,
             completion=snapshot_state.completion,
@@ -1822,6 +1823,7 @@ class CheckpointService:
                 "plan": plan,
                 "steps": steps,
                 "invocations": invocations,
+                "model_calls": snapshot.model_calls,
                 "completion": completion,
             }
         )

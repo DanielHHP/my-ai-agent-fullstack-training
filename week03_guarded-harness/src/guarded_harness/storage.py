@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .audit import AuditStore
     from .state_store import StateStore
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _GENESIS_HASH = f"sha256:{'0' * 64}"
 
 
@@ -620,6 +620,82 @@ BEGIN
 END;
 """
 
+_MIGRATION_V8 = """
+ALTER TABLE audit_events ADD COLUMN audit_schema INTEGER NOT NULL DEFAULT 1
+    CHECK (audit_schema IN (1, 2));
+ALTER TABLE audit_events ADD COLUMN model_call_id TEXT;
+
+CREATE INDEX idx_audit_model_call
+    ON audit_events(run_id, model_call_id, sequence);
+
+CREATE TABLE model_calls (
+    model_call_id TEXT PRIMARY KEY,
+    logical_model_call_id TEXT NOT NULL,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    run_id TEXT NOT NULL REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    step_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    config_fingerprint TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 4),
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'PREPARED', 'STARTED', 'SUCCEEDED', 'FAILED',
+            'TIMED_OUT', 'UNKNOWN_RESULT', 'REJECTED'
+        )
+    ),
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+    output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+    reservation_cost TEXT NOT NULL,
+    actual_cost TEXT,
+    error_code TEXT,
+    provider_request_id TEXT,
+    request_fingerprint TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    UNIQUE (run_id, logical_model_call_id, attempt_number),
+    FOREIGN KEY (run_id, step_id) REFERENCES steps(run_id, step_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CHECK (ended_at IS NULL OR ended_at >= started_at),
+    CHECK (
+        status != 'SUCCEEDED'
+        OR (
+            input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+            AND actual_cost IS NOT NULL
+        )
+    ),
+    CHECK (
+        status NOT IN ('FAILED', 'TIMED_OUT', 'UNKNOWN_RESULT', 'REJECTED')
+        OR error_code IS NOT NULL
+    )
+);
+
+CREATE INDEX idx_model_calls_run ON model_calls(run_id, started_at, model_call_id);
+CREATE INDEX idx_model_calls_status ON model_calls(run_id, status);
+CREATE INDEX idx_model_calls_logical
+    ON model_calls(run_id, logical_model_call_id, attempt_number);
+
+CREATE TABLE model_cost_reservations (
+    model_call_id TEXT PRIMARY KEY REFERENCES model_calls(model_call_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+    reserved_cost TEXT NOT NULL,
+    settled_cost TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('ACTIVE', 'SETTLED', 'RELEASED', 'UNKNOWN')
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (updated_at >= created_at)
+);
+
+CREATE INDEX idx_model_reservations_run
+    ON model_cost_reservations(run_id, status);
+"""
+
 
 @dataclass(frozen=True)
 class Migration:
@@ -644,6 +720,7 @@ MIGRATIONS = (
     Migration(version=5, sql=_MIGRATION_V5),
     Migration(version=6, sql=_MIGRATION_V6),
     Migration(version=7, sql=_MIGRATION_V7),
+    Migration(version=8, sql=_MIGRATION_V8),
 )
 
 
@@ -920,6 +997,8 @@ class SQLiteStorage:
                     "test_nodes",
                     "test_repair_baselines",
                     "run_workspace_baselines",
+                    "model_calls",
+                    "model_cost_reservations",
                 }
                 tables = {
                     row["name"]

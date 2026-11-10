@@ -4,12 +4,13 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | 概要设计基线，待评审 |
+| 文档状态 | P0 已实现 + WP-13 P1 已实现并完成外部 live smoke 验收 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 上游输入 | 飞书文档“AI Agent 全栈工程师训练营-作业三”及其中“必须交付”“核心验收”表格 |
 | 参考实现 | `ai-agent-fullstack-training/course_code/week03/3-7/project3` |
 | 目标运行时 | Python 3.10+、`smolagents==1.26.0`、Pydantic 2、jsonschema 4、SQLite |
 | 首期任务 | 代码理解、测试修复 |
+| P1 扩展 | 真实模型 Provider 与模型调用治理（WP-13 离线实现完成） |
 
 本文描述计划实现的结构和安全语义，不代表这些能力已经实现。实现完成与否仍由自动化测试、
 工作区证据、验收命令结果和审计记录共同决定。
@@ -27,11 +28,13 @@
 - Harness 负责任务装配、参数校验、权限判断、路径与命令边界、审批、预算、状态持久化、
   审计、恢复和最终验收。
 - 所有仓库读取、文件写入、进程启动、测试执行和审批相关操作都经过同一个 Gate。
+- P1 真实模型调用额外经过 ModelCallGateway；模型调用治理与工具执行治理分层，不能互相替代。
 - 模型最终回答只作为候选结果；程序根据交付物、工作区 diff、测试结果和审计链决定是否接受。
 - 默认测试完全离线，通过 Fake Model 驱动，不依赖真实模型、网络或用户凭据。
 
 首期不实现多仓库调度、分布式队列、Web 管理台、无限 shell、包安装、后台常驻进程或
-任意网络访问。
+任意网络访问。P1 的真实模型网络访问只允许经过 WP-13 定义的受控 Provider 和端点；本文相关
+章节对应已实现代码和离线测试，但外部真实服务 live smoke 仍以 WP-13 验收报告为准。
 
 ## 3. 总体架构
 
@@ -49,6 +52,10 @@ CLI / 程序化调用
            |
            +--------------------> Config 加载与校验
            |
+           +--------------------> Provider / SecretResolver（P1）
+           |
+           +--------------------> ModelCallGateway / State / Audit（P1）
+           |
            +--------------------> Checkpoint / Resume
            |
            v
@@ -56,6 +63,16 @@ CLI / 程序化调用
 |  ToolCallingAgent   |
 | 模型决策 / ReAct 循环 |
 +----------+----------+
+           |
+           | Model.generate（P1 真实 Provider）
+           v
++---------------------+
+|  ModelCallGateway   |
+| 租约/预算/超时/审计 |
++----------+----------+
+           |
+           v
+   Fake Model / HTTPS Provider
            |
            v
 +---------------------+
@@ -132,6 +149,7 @@ src/guarded_harness/
 ├── domain.py
 ├── registry.py
 ├── agent_adapter.py
+├── model_runtime.py
 ├── approval.py
 ├── policy.py
 ├── storage.py
@@ -144,6 +162,7 @@ src/guarded_harness/
 | --- | --- | --- |
 | `harness.py` | 唯一运行编排器；加载配置、创建 Run、装配组件、启动或恢复 Agent、停止循环、调用 Completion | 依赖下列全部核心模块；CLI 只调用它 |
 | `agent_adapter.py` | 隔离 `smolagents` 公开 API；构造 `ToolCallingAgent`、GovernedTool 和流式运行适配 | 向上服务 Harness，向下只通过 Gate 执行工具 |
+| `model_runtime.py`（P1） | 严格 Provider Factory、SecretResolver、GovernedModel 和模型调用生命周期 | 向上服务 Harness，向下只调用公开 `smolagents.Model`；不执行工具、不决定验收 |
 | `gate.py` | 所有工具调用和系统验收动作的唯一执行入口；固定顺序完成门禁、审批、重复调用、预算与执行意图落库 | 依赖 Registry、Policy、Sandbox、StateStore、Audit |
 | `sandbox.py` | 仓库路径规范化、真实路径边界、受控安全 I/O、敏感路径策略、命令 argv 校验、最小环境变量、POSIX 进程组、超时和输出截断 | 由 Gate 在执行前调用，由受控 handler 复用；handler 不直接打开目标仓库文件 |
 | `state_store.py` | 持久化 Run、步骤、工具调用、预算、审批、证据和验收结果；实现合法状态转移 | 与 Audit 共用 SQLite 事务基础设施 |
@@ -169,6 +188,7 @@ src/guarded_harness/
 | `checkpoint.py` | 不重放未知副作用，不自行批准待审批动作 |
 | `audit.py` | 不作为业务状态数据库，不修改既有事件 |
 | `harness.py` | 不承载具体路径、命令或验收规则；只做装配和编排 |
+| `model_runtime.py` | 不持有 handler、不解释工具结果、不替代 Gate、不保存完整 prompt/response、不批准 Run 终态 |
 
 ## 5. 核心领域模型
 
@@ -273,18 +293,43 @@ CLI 返回非成功状态。Harness 不继续发起模型调用、工具调用�
 状态转换由 StateStore 的条件更新完成，并校验“旧状态 -> 新状态”是否合法。非法转换、
 版本冲突或租约失效都失败关闭。
 
+### 5.5 ModelCall（P1）
+
+真实模型调用使用独立于 ToolInvocation 的 `ModelCall` 事实，至少包含：
+
+```text
+model_call_id -> 稳定 UUIDv4 前缀 ID
+run_id / step_id -> Run 和请求上下文关联
+logical_model_call_id -> 同一逻辑调用跨重试的归组 ID
+provider / model_id / config_fingerprint -> 模型身份
+attempt_number -> 显式重试序号
+status -> PREPARED / STARTED / SUCCEEDED / FAILED /
+          TIMED_OUT / UNKNOWN_RESULT / REJECTED
+started_at / ended_at -> 调用时间
+input_tokens / output_tokens -> Provider 返回的 usage
+reservation_cost / actual_cost -> Decimal 成本
+error_code / provider_request_id / request_fingerprint -> 有界诊断事实
+```
+
+`ModelCall` 不保存完整消息、raw provider payload、隐藏推理或凭据。它是模型服务调用的事实记录，
+不能替代 ToolInvocation、Evidence 或 Completion；模型产生的工具候选仍由 adapter 和 Gate
+处理。P1 的 STARTED ModelCall 必须绑定非空 `step_id`；每次重试使用独立 ModelCall 行和
+`attempt_number`，通过 `logical_model_call_id` 归组。
+
 ## 6. 主要运行流程
 
 ### 6.1 新建 Run
 
 1. CLI 或调用方只调用 `Harness.run(RunRequest)`；不直接构造 Agent 或 handler。
-2. `config.py` 加载并严格校验配置，计算规范化配置指纹，展开任务中的相对路径。
+2. `config.py` 加载并严格校验配置，计算规范化配置指纹，展开任务中的相对路径。P1 version 2
+   配置同时校验 Provider、端点、凭据引用、模型上限和价格策略，但不把密钥值纳入指纹。
 3. Harness 分别识别 `git_root` 和 `workspace_root`，要求工作区位于 Git 根内；只检查
    `workspace_root` 是否干净，并为 `git_root` 内、工作区外的已有脏路径记录保护基线。
    测试修复任务同时记录工作区初始 status/diff。
 4. Harness 创建 `run_id`，在同一事务中写入 Run 初始状态、预算和 `RUN_STARTED` 审计事件。
 5. Harness 装配 StateStore、Audit、Sandbox、Registry、Gate、CompletionChecker 和
-   `ToolCallingAgent`。
+   `ToolCallingAgent`。P1 从可信 Provider Factory 获得 Raw Model，并为当前 Run 包装
+   Governed Model；Provider Factory 不承担预算、审计或恢复判断。
 6. 测试修复任务先通过 Gate 的内部控制面执行基线测试，保存命令、退出码、报告、
    工作区指纹和失败摘要。
 7. Harness 以流式公开接口驱动 Agent，并在每个安全边界保存 Checkpoint。
@@ -410,6 +455,9 @@ CLI 命令语义：
 4. Harness 新建模型和 Agent 对象，不依赖旧进程内存。它从 StateStore 生成确定性的
    continuation prompt，注入原任务、生效配置、计划、已完成步骤摘要、仍有效证据、待执行调用、
    未决审批、预算消耗和剩余约束，再调用公开的 `agent.run(stream=True)`。
+   P1 先校验模型配置指纹和已有 ModelCall；若存在 `STARTED` 但无确定结果的模型调用，则进入
+   `BLOCKED`，使用 `StopReason=UNKNOWN_RESULT` 和错误码 `MODEL_CALL_UNKNOWN`，不创建
+   可执行 Agent，也不自动重发请求。
 5. 恢复后的每个工具调用仍必须经过 Gate；已完成写入不会被当作新的授权。
 6. 工作区、配置、审批或证据任一不匹配时，Run 进入 `BLOCKED`，不自动重放。
 7. 默认模式必须显式调用 `resume`；可选等待模式只改变当前进程是否继续等待，不改变恢复校验。
@@ -530,7 +578,9 @@ handler。
 预算在 Gate 和 Harness 两层检查：
 
 - Gate 防止继续执行工具；
-- Harness 在每次模型步骤后检查 Token、成本和墙钟时间，预算耗尽时不再发起下一次模型调用。
+- P0 Harness 在每次模型步骤后检查 Token、成本和墙钟时间，预算耗尽时不再发起下一次模型调用；
+- P1 ModelCallGateway 在每次真实模型请求前检查 steps、tool calls、墙钟时间和可用成本，并预留
+  单次最坏成本，避免“先付费调用、后才发现预算不足”。
 
 预算更新和工具执行计数使用事务和条件更新，不能只保存在内存。
 
@@ -666,6 +716,8 @@ StateStore、Audit 和 Checkpoint 共用同一个 SQLite 数据库和事务基�
 | `evidence` | 可关联读取、命令、diff、测试和验收事实 |
 | `budget_ledger` | 按来源和预算维度幂等记录增量 |
 | `approvals` | 审批对象、摘要、有效期、决定和消费状态 |
+| `model_calls`（P1） | 模型调用 attempt、模型身份、状态、usage、错误和请求摘要 |
+| `model_cost_reservations`（P1） | 调用前最坏成本预留、结算和 unknown 保守保留 |
 | `checkpoints` | 快照、快照哈希、安全边界和 schema 版本 |
 | `recovery_records` | 恢复动作、原因、关联调用/审批和稳定幂等键 |
 | `completion_results` | 验收项和证据关联 |
@@ -708,6 +760,8 @@ StateStore 公共业务写操作自动产生固定领域审计；调用方不能
 | handler 已返回，结果事务未提交 | 仍是 STARTED | 标记 `UNKNOWN_RESULT`，不得自动重放 |
 | 结果与审计已提交 | `SUCCEEDED/FAILED` | 使用既有结果，不重复调用 |
 | 结果已提交，Checkpoint 索引未提交 | 结果可由工具调用记录安全重建 | 补建下一安全边界 Checkpoint |
+| 模型调用 STARTED 已提交，网络结果未提交 | 无法确认是否已计费或生成 | 恢复为 `MODEL_CALL_UNKNOWN`，不自动重发 |
+| 模型成功结果已提交，工具尚未执行 | 模型响应和 usage 可查询，工具调用仍只是候选 | 新 Agent 从 continuation context 继续，工具重新经过 Gate |
 
 Checkpoint 至少保存 Run、当前步骤、计划、工具调用结果、预算、审批状态、停止原因、最后审计序号、
 配置指纹、工作区证据和 schema 版本。其职责是描述“从哪个安全点继续”，不替代业务状态。
@@ -734,6 +788,8 @@ WP-07 的确定规则：
 - `workspace_root`、`git_root`、工作区相对前缀和预期资源指纹一致；
 - 工作区外已有脏路径的保护基线仍然匹配；
 - 审批仍处于有效状态且绑定摘要匹配；
+- P1 模型 Provider、模型 ID、端点、价格策略和配置指纹仍匹配；
+- P1 不存在未物化的 `STARTED` ModelCall 或无结果的 reservation；
 - 没有 `UNKNOWN_RESULT`；
 - Run 租约可安全获取。
 
@@ -784,7 +840,7 @@ Continuation prompt 使用固定字段顺序和稳定文本格式；历史 obser
 ```text
 event_id, run_id, sequence, occurred_at
 event_type, phase, status, code, decision
-step_id, tool_call_id, approval_id
+step_id, tool_call_id, approval_id, model_call_id（P1）
 actor, tool_name, rule_id, workspace_fingerprint
 input_summary, output_summary, evidence_ref
 prev_hash, event_hash
@@ -804,6 +860,7 @@ prev_hash, event_hash
 - Gate allow/deny，以及具体规则和拒绝阶段；
 - 审批请求、决定、过期、撤销、claim、claim 恢复和消费；
 - 工具执行开始、成功、失败、超时、截断和结果不确定；
+- P1 模型配置拒绝、模型调用开始、成功、失败、超时、限流、usage 非法和结果未知；
 - Checkpoint 写入和安全边界；
 - Completion 每项检查和最终结论。
 
@@ -812,7 +869,10 @@ prev_hash, event_hash
 脱敏。用于审计的参数和结果按行和字符双上限裁剪，绝不从敏感 token 中间截取后仍保留可识别片段。
 
 按 `run_id` 可重放决策链，按 `tool_call_id` 和 `approval_id` 可关联“提案 -> 门禁 -> 审批 ->
-执行 -> 结果 -> 验收”。
+执行 -> 结果 -> 验收”；P1 可按 `model_call_id` 关联模型请求、usage、成本和响应摘要。
+新增 `model_call_id` 和 `MODEL_*` 事件使用 `audit_schema=2`；既有事件保持
+`audit_schema=1` 的原始 canonical payload 和哈希语义，migration 只追加 schema 标识/可空关联
+列并回填旧值为 1，不重写历史事件。
 
 ## 11. 任务配置与两类验收策略
 
@@ -848,6 +908,10 @@ task:
     ttl_seconds: 900
     channel: local_cli
 ```
+
+以上是 P0 version 1 结构。P1 version 2 增加严格的 `model` 块；v1 仍然只能配合可信
+`model_factory` 注入 Fake Model，不能获得真实 Provider。模型配置的完整字段、端点规则、
+SecretResolver 和价格策略见第 13 节。
 
 Gate、Sandbox 和 Harness 不包含 `understand`、`fix_tests` 等任务名分支。配置通过
 `task.kind` 选择验收策略和权限集，新增任务类型应主要新增配置和策略插件。
@@ -973,7 +1037,8 @@ WP-09 固定使用 pytest JUnit XML。可信适配器只向任务配置的基础
 
 P0 只交付和验收 Fake Model 驱动的确定性测试。Harness API 按 `smolagents.Model` 类型注入模型，
 但不提供真实 Provider 的工厂、API Key 配置、网络 smoke test 或真实模型结果断言；接入真实模型
-属于 P1，不得成为 `pytest -q`、安全边界测试或最终交付的前置条件。
+属于 P1，不得成为 `pytest -q`、安全边界测试或最终交付的前置条件。P1 的真实 Provider 仍通过
+同一公开 `smolagents.Model` 和 `ToolCallingAgent` 接口接入，详细边界见第 13 节。
 
 ### 12.2 捕获原始 `tool_call_id`
 
@@ -1015,6 +1080,11 @@ Harness 主循环检查并持久化。
 每 token `0.000001` 资源单位；费率策略版本进入审计。任一步骤后达到任一项预算上限时，不再发起
 下一次模型或工具调用。
 
+P1 真实 Provider 在每次请求前按 input/output token 上限和版本化价格预留最坏成本；成功调用
+按实际 usage 结算，无法确认计费的超时或中断保留预留。模型调用结果和 reservation 不能与 P0
+的 `ToolInvocation` 或工具预算混为一谈。Harness 在首次真实模型调用前创建 Agent Step；
+STARTED ModelCall 不允许使用空 `step_id`。
+
 Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建 `RUN_STARTED` Checkpoint。
 最终回答原始长度超过 16,000 字符时失败关闭。最终回答写入、进入 `VERIFYING`、独立 Completion、
 终态更新和相应 Checkpoint 都必须失败关闭。
@@ -1036,6 +1106,11 @@ Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建
 来源时返回 `CLI_MODEL_UNAVAILABLE`，测试通过注入 `smolagents.Model` 实现离线验收。CLI 不允许
 覆盖 workspace、task、工具 allowlist、预算、测试命令或审批配置。
 
+P1 version 2 配置允许标准 `run/resume` 从固定 OpenAI Chat Completions v1 Provider Factory
+构造模型；
+Raw Model 只负责传输，Harness 在当前 Run 中包装成 Governed Model。`approvals` 和 `inspect`
+仍不得构造 Provider、读取凭据或访问网络。
+
 审批身份必须由调用者显式提供 actor 和至少一个 role。CLI 不读取隐式用户身份。审批、配置路径、
 Run ID、limit 和等待时长都做严格校验；stdout/stderr/JSON 先脱敏、限长再输出。
 
@@ -1044,7 +1119,175 @@ Run ID、limit 和等待时长都做严格校验；stdout/stderr/JSON 先脱敏�
 `UNVERIFIABLE=8`，内部查询失败=9。审批和只读控制命令成功完成返回 0，但其输出仍包含 Run 的
 真实终态。
 
-## 13. 错误与失败关闭
+## 13. P1 真实模型 Provider 与调用治理
+
+本节是 WP-13 的概要设计。它不改变 P0 Fake Model 行为；离线 Provider、默认 SDK 和本地真实
+协议测试已实现，外部服务质量仍需显式 live smoke。
+
+### 13.1 分层边界
+
+真实模型接入分为三层：
+
+```text
+CLI / Harness
+  -> Provider Factory（配置、凭据、Raw Model）
+  -> GovernedModel / ModelCallGateway（状态、租约、预算、审计、响应校验）
+  -> smolagents.ToolCallingAgent（原生决策循环）
+  -> GovernedTool -> Gate（唯一工具执行入口）
+```
+
+职责不得混用：
+
+- Provider Factory 只构造和验证底层 `smolagents.Model`；
+- GovernedModel 只治理模型网络调用，不解析或执行工具；
+- Gate 不处理模型认证、HTTP、token usage 或外部计费；
+- Completion 不采信模型或 ModelCall 成功事实，仍根据文件、diff、测试和审计验收。
+
+### 13.2 Provider 与配置
+
+首个 Provider 固定为 `openai_chat_completions_v1`，只使用公开
+`smolagents.OpenAIServerModel` 的 Chat Completions 路径。
+version 2 配置增加 `model` 块，至少包含：
+
+```yaml
+model:
+  provider: openai_chat_completions_v1
+  model_id: model-snapshot
+  endpoint: https://model-service.example.com/v1
+  credential_ref: MODEL_API_KEY
+  tokenizer_id: tiktoken:o200k_base
+  request_timeout_seconds: 120
+  connect_timeout_seconds: 10
+  max_input_tokens: 120000
+  max_output_tokens: 4096
+  max_response_bytes: 1048576
+  max_tool_calls_per_response: 8
+  requests_per_minute: 60
+  max_retry_attempts: 1
+  pricing:
+    version: provider-price-v1
+    input_per_million: "2.50"
+    output_per_million: "10.00"
+```
+
+约束：
+
+- v2 才能使用真实 Provider；v1 只能通过可信 `model_factory` 注入 Fake Model；
+- Provider 类型和模型类来自固定 allowlist，不能由 YAML 提交 import path 或任意 kwargs；
+- 首版只支持 Chat Completions v1，不实现 Responses API 或动态协议切换；
+- 受约束的 OpenAI SDK 和 `tiktoken` TokenCounter 依赖属于默认安装，不通过 optional extra
+  才能使用；
+- `credential_ref` 是非秘密引用，由受控 SecretResolver 解析；不读取 `.env`；
+- 密钥值不进入配置指纹、State、Audit、日志、异常或 CLI；
+- endpoint 默认 HTTPS，拒绝 userinfo、URL 凭据、`file:`/`data:` 和跨主机 redirect；
+- localhost/私网 HTTP 需要显式窄范围开关并记录审计；HTTP 客户端 `trust_env=False`，不继承
+  代理环境变量；
+- `tokenizer_id` 必须来自固定 registry，用于调用前输入 token 上界检查；未知 tokenizer 或无法
+  计数时失败关闭；
+- 价格策略使用 Decimal 和版本号，不从响应、环境或远端动态价格读取；
+- Provider、模型 ID、端点、价格和上限进入配置指纹，resume 不匹配时失败关闭。
+
+### 13.3 模型调用生命周期
+
+Harness 在当前 Run 内把 Raw Model 包装为 GovernedModel。每次 `Model.generate`：
+
+1. 校验 Run 处于 `RUNNING`、租约有效、配置身份一致；
+2. 确保当前 Agent Step 已创建并持久化；
+3. 使用配置指定的可信 TokenCounter 检查输入，并计算剩余 wall-time 和预算可用性；无法证明
+   输入不超过上限时在本地拒绝；
+4. 按最坏 input/output token 成本创建 reservation；
+5. 原子提交 ModelCall `STARTED`、reservation 和 `MODEL_CALL_STARTED` Audit；
+6. 以有效 timeout 调用 Raw Model；
+7. 校验 `ChatMessage`、usage、响应大小和 tool call 结构；
+8. 原子写入 usage、实际成本、reservation 结算和结果 Audit；
+9. 把原 `ChatMessage` 返回 `ToolCallingAgent`。
+
+任一前置检查失败时 Raw Model 调用次数必须为 0。调用后校验失败时不得把响应交给 Agent。
+`step_callbacks` 只可观测 Agent 步骤，不是模型调用门禁。
+
+### 13.4 预算与成本
+
+真实模型调用使用独立的 `ModelPricingPolicy`：
+
+```text
+input_per_million
+output_per_million
+version
+```
+
+调用前可用成本为：
+
+```text
+max_token_cost - settled_token_cost - active_reservations
+```
+
+单次 reservation 使用可信输入/输出上限和价格计算。预算不足时停止而不发起网络请求。调用
+成功后按 Provider 返回的实际 usage 结算；明确证明未生成内容的失败释放 reservation；超时、
+5xx、连接中断或响应未落盘保留 reservation 并标记 unknown。
+
+Provider 必须返回非空、非负、可解析的 input/output usage。缺失或超过请求上限时使用
+`MODEL_USAGE_INVALID`，不得沿用 P0 Fake Model 的“缺失即 0”兼容行为。
+
+### 13.5 响应与工具候选
+
+GovernedModel 在返回 Agent 前限制：
+
+- 响应类型必须为 `ChatMessage`；
+- 响应内容、raw 摘要和工具参数总大小不超过 `max_response_bytes`；
+- 单响应 tool call 数量不超过 `max_tool_calls_per_response`；
+- tool call ID 非空且同响应唯一；
+- `final_answer` 不得与其它工具混用；
+- 首版只接受 Chat Completions 结构化 tool calls，不调用文本内容 fallback 解析；缺少非空 ID
+  时拒绝并不合成 ID；
+- 非法响应不得截断后继续，也不得通过提示词让模型自动重试来绕过预算。
+
+校验通过后，模型工具调用仍只是候选。`HarnessToolCallingAgent` 保留原 ID 和顺序交给
+GovernedTool/Gate；Gate 的 schema、路径、权限、审批、重复和预算检查不变。
+
+### 13.6 持久化、审计与恢复
+
+下一次单调 migration 增加 `model_calls` 和 `model_cost_reservations`。ModelCall 保存模型身份、
+attempt、状态、usage、成本、稳定错误和请求摘要，不保存完整 messages、raw payload 或隐藏推理。
+Audit 同时增加 `audit_schema=2`、可空 `model_call_id` 和 `MODEL_*` 事件；v1 旧事件仍按原
+canonical schema 校验哈希，不回写或重算历史链。
+
+事务规则：
+
+- STARTED、reservation 和开始 Audit 同事务提交；
+- 成功/失败/超时/unknown、usage、成本和结果 Audit 在下一事务提交；
+- 失败关闭时不得留下“模型已成功但无审计”的可执行状态；
+- 恢复发现 STARTED 无结果时物化 `MODEL_CALL_UNKNOWN` 并进入 `BLOCKED`，
+  `StopReason=UNKNOWN_RESULT`；
+- unknown ModelCall 不允许自动重发；需要继续时启动新 Run；
+- 已成功持久化的响应可从 continuation context 继续，但工具仍重新经过 Gate。
+
+### 13.7 超时、限流与错误
+
+SDK 和 smolagents 的隐式重试必须关闭：
+
+- `OpenAIServerModel(..., retry=False)`；
+- OpenAI client `max_retries=0`；
+- OpenAI/httpx client 使用 `trust_env=False`，不继承 `HTTP_PROXY`、`HTTPS_PROXY` 或
+  `ALL_PROXY`；不跟随跨主机 redirect；
+- ModelCallGateway 记录每次显式 attempt；
+- 只允许对明确未生成内容的 429 或连接建立失败进行有限重试；
+- read timeout、5xx、连接后中断、响应截断和解析失败默认 unknown，不自动重发；
+- 请求 timeout 取配置值与剩余 wall-time 的最小值。
+
+稳定错误码使用 `MODEL_*` 命名空间，覆盖配置、Provider 不可用、凭据、端点、认证、模型不存在、
+限流、超时、协议、响应、大小、tool call、usage 和 unknown。错误文本必须脱敏、有界，不包含
+请求体、header 或密钥。
+
+### 13.8 CLI 与测试
+
+`run/resume` 可以从 v2 配置构造 Provider；`approvals`/`inspect` 分支不得引用 Provider 或
+SecretResolver，测试必须证明其网络调用为 0。
+
+默认测试使用 fake transport/client，覆盖合法/非法配置、凭据脱敏、响应和 usage、预算 reservation、
+显式重试、审计失败、STARTED 后崩溃和只读命令零网络。真实服务 smoke test 使用独立 marker，
+必须显式 opt-in，只执行发布时固定模型快照和低预算只读任务，并且不能替代 P0 自动化门禁。
+
+## 14. 错误与失败关闭
 
 错误码使用稳定命名空间，至少覆盖：
 
@@ -1056,6 +1299,8 @@ Run ID、limit 和等待时长都做严格校验；stdout/stderr/JSON 先脱敏�
 - `CHECKPOINT_*`：快照损坏、配置/工作区变化和未知结果；
 - `AUDIT_*`：append-only 违约、写入失败和链校验失败；
 - `COMPLETION_*`：交付物、引用、diff、测试和证据不足；
+- `MODEL_*`（P1）：Provider、凭据、端点、认证、限流、超时、协议、响应、tool call、usage 和
+  模型调用 unknown；
 - `SMOLAGENTS_*`：版本或公开适配契约不兼容。
 - `CLI_*`：usage、模型不可用、审批控制、检查结果和输出失败。
 
@@ -1069,7 +1314,7 @@ Run ID、limit 和等待时长都做严格校验；stdout/stderr/JSON 先脱敏�
 面向模型的错误文本要有界、脱敏，并说明拒绝阶段和可修正方向；完整内部异常只写受控本地日志，
 不进入模型上下文。
 
-## 14. 测试设计映射
+## 15. 测试设计映射
 
 默认测试完全离线，使用临时 Git 工作区、临时 SQLite 和 Fake Model。六个必须测试文件与模块的
 计划对应关系：
@@ -1082,6 +1327,15 @@ Run ID、limit 和等待时长都做严格校验；stdout/stderr/JSON 先脱敏�
 | `tests/test_audit.py` | append-only 约束、事件顺序、ID 关联、脱敏、决策链回放 |
 | `tests/test_harness_loop.py` | Fake Model 正常完成、拒绝、审批等待、预算停止、异常停止、统一入口和 `smolagents` 兼容 |
 | `tests/test_completion.py` | 两类任务验收、模型无证据声明、越界 diff、测试失效和结果不确定拒绝 |
+
+P1 新增测试：
+
+| 测试 | 主要验证 |
+| --- | --- |
+| `tests/test_model_config.py` | v2 schema、Provider/端点/凭据引用、价格和 fingerprint |
+| `tests/test_model_runtime.py` | fake Provider、response/usage、大小、tool call、重试和限流 |
+| `tests/test_model_calls.py` | STARTED/完成、reservation、成本、Audit、unknown 和 recovery |
+| `tests/live/test_live_model_smoke.py` | 显式 opt-in 的真实只读任务 smoke test |
 
 实现阶段还应增加端到端故障注入：在 handler 前后、结果事务提交前后和 Checkpoint 写入前后模拟
 进程终止，证明恢复不会重复已确定写入。详细用例和命令由后续 `docs/test-plan.md` 维护。

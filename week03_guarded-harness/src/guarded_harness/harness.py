@@ -40,6 +40,8 @@ from .domain import (
     IdFactory,
     InvocationStatus,
     LeasePolicy,
+    ModelCallRecord,
+    ModelCallStatus,
     ObservationStatus,
     RecoveryAction,
     RecoveryPlan,
@@ -60,6 +62,11 @@ from .domain import (
     Uuid4IdFactory,
 )
 from .gate import Gate
+from .model_runtime import (
+    ModelRuntimeError,
+    TokenCounter,
+    build_governed_model,
+)
 from .policy import PolicyEngine
 from .registry import ToolRegistry
 from .sandbox import CommandPolicy, Sandbox, SandboxViolation, WorkspaceBaseline
@@ -213,6 +220,7 @@ class Harness:
         command_policy: CommandPolicy | None = None,
         fault_injector: FaultInjector | None = None,
         token_cost_policy: TokenCostPolicy | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         self._config_path = Path(config_path)
         self._model = model
@@ -222,6 +230,7 @@ class Harness:
         self._command_policy = command_policy
         self._fault_injector = fault_injector
         self._token_cost_policy = token_cost_policy or TokenCostPolicy()
+        self._token_counter = token_counter
         self._lock = threading.RLock()
 
     def run(self, request: RunRequest) -> RunResult:
@@ -422,6 +431,13 @@ class Harness:
                 run_id=run_id,
                 startup_workspace=startup_workspace,
             )
+            interrupted = tuple(
+                call
+                for call in self._snapshot(session).model_calls
+                if call.status.value == "STARTED"
+            )
+            if interrupted:
+                return self._finish_interrupted_model_calls(session, interrupted)
             plan = checkpoints.prepare_recovery(run_id, lease.token)
             return self._handle_recovery(session, plan)
         except (HarnessError, AgentAdapterError) as exc:
@@ -567,8 +583,20 @@ class Harness:
             return self._finish_budget_stop(session)
         remaining_steps = self._remaining_steps(session)
         observer = _StepObserver()
+        model = self._model
+        if session.config.config.version == 2:
+            model = build_governed_model(
+                delegate=self._model,
+                storage=session.storage,
+                config=session.config,
+                run_id=session.run_id,
+                lease_token=session.lease.token,
+                ensure_step=lambda: self._ensure_step(session, "Agent decision step"),
+                token_counter=self._token_counter,
+                clock=self._now_clock(),
+            )
         agent = build_tool_calling_agent(
-            model=self._model,
+            model=model,
             adapter=session.adapter,
             step_callbacks=[observer],
             max_steps=remaining_steps,
@@ -647,7 +675,16 @@ class Harness:
             _LOGGER.exception("Agent adapter failed")
             outcome = _AgentOutcome.failed(exc.code.value)
         except Exception as exc:
-            if outcome is None:
+            model_error = _find_model_runtime_error(exc)
+            if outcome is None and model_error is not None:
+                self._fail_current_step(session, model_error.code)
+                if model_error.code == ErrorCode.GATE_BUDGET_EXHAUSTED:
+                    outcome = _AgentOutcome.budget()
+                elif model_error.unknown:
+                    outcome = _AgentOutcome.unknown(model_error.code.value)
+                else:
+                    outcome = _AgentOutcome.failed(model_error.code.value)
+            elif outcome is None:
                 _LOGGER.exception("Agent stream failed")
                 outcome = _AgentOutcome.failed(ErrorCode.HARNESS_INTERNAL_ERROR.value)
                 outcome = _AgentOutcome(
@@ -665,6 +702,49 @@ class Harness:
             else:
                 outcome = _AgentOutcome.failed(ErrorCode.SMOLAGENTS_STREAM_CONTRACT_INVALID.value)
         return self._conclude_outcome(session, outcome)
+
+    def _fail_current_step(self, session: _Session, code: ErrorCode) -> None:
+        step_id = session.current_step_id
+        if step_id is None:
+            return
+        try:
+            with session.storage.transaction(actor=_HARNESS_ACTOR) as unit:
+                snapshot = unit.state.get_run_snapshot(session.run_id)
+                step = next((item for item in snapshot.steps if item.step_id == step_id), None)
+                if step is not None and step.status == StepStatus.RUNNING:
+                    unit.state.transition_step(
+                        step_id,
+                        expected_status=StepStatus.RUNNING,
+                        expected_revision=unit.state.get_step_revision(step_id),
+                        target=StepStatus.FAILED,
+                        ended_at=self._now(),
+                        lease_token=session.lease.token,
+                        error_code=code.value,
+                    )
+        except Exception:
+            _LOGGER.exception("failed to close model step after runtime error")
+        session.current_step_id = None
+
+    def _finish_interrupted_model_calls(
+        self,
+        session: _Session,
+        calls: tuple[ModelCallRecord, ...],
+    ) -> RunResult:
+        for call in calls:
+            with session.storage.transaction(actor=_HARNESS_ACTOR) as unit:
+                unit.state.fail_model_call(
+                    call.model_call_id,
+                    status=ModelCallStatus.UNKNOWN_RESULT,
+                    error_code=ErrorCode.MODEL_CALL_UNKNOWN,
+                    provider_request_id=call.provider_request_id,
+                    lease_token=session.lease.token,
+                )
+        return self._finish_failure(
+            session,
+            RunStatus.BLOCKED,
+            ErrorCode.MODEL_CALL_UNKNOWN.value,
+            stop_reason=StopReason.UNKNOWN_RESULT,
+        )
 
     def _conclude_outcome(self, session: _Session, outcome: _AgentOutcome) -> RunResult:
         if outcome.kind == "WAITING_APPROVAL":
@@ -909,7 +989,12 @@ class Harness:
                     ErrorCode.HARNESS_INTERNAL_ERROR.value if target == StepStatus.FAILED else None
                 ),
             )
-        self._record_step_budget(session, step_id, token_usage)
+        self._record_step_budget(
+            session,
+            step_id,
+            token_usage,
+            include_token_cost=session.config.config.version != 2,
+        )
         if target == StepStatus.COMPLETED:
             try:
                 self._create_checkpoint(
@@ -929,18 +1014,23 @@ class Harness:
         session: _Session,
         step_id: str,
         token_usage: TokenUsage,
+        *,
+        include_token_cost: bool = True,
     ) -> None:
         """Persist step, token, and wall-time budget deltas idempotently."""
 
         commands: list[tuple[BudgetSourceKind, str, BudgetCategory, Decimal]] = [
             (BudgetSourceKind.STEP, step_id, BudgetCategory.STEPS, Decimal(1)),
-            (
-                BudgetSourceKind.HARNESS,
-                f"tokens:{self._token_cost_policy.version}:{step_id}",
-                BudgetCategory.TOKEN_COST,
-                self._token_cost_policy.cost(token_usage),
-            ),
         ]
+        if include_token_cost:
+            commands.append(
+                (
+                    BudgetSourceKind.HARNESS,
+                    f"tokens:{self._token_cost_policy.version}:{step_id}",
+                    BudgetCategory.TOKEN_COST,
+                    self._token_cost_policy.cost(token_usage),
+                )
+            )
         now = self._now()
         with session.storage.transaction(actor=_HARNESS_ACTOR) as unit:
             run = unit.state.get_run(session.run_id)
@@ -1320,6 +1410,17 @@ def _safe_message(exc: Exception) -> str:
     if isinstance(value, str) and value:
         return value[:1000]
     return _bounded(exc, 1000)
+
+
+def _find_model_runtime_error(exc: BaseException) -> ModelRuntimeError | None:
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, ModelRuntimeError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
 
 
 __all__ = ["Harness", "HarnessError", "TokenCostPolicy"]

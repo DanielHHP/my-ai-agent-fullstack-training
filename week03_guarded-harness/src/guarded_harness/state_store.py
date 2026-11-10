@@ -17,6 +17,7 @@ from .domain import (
     ApprovalId,
     BudgetCategory,
     BudgetDeltaCommand,
+    BudgetSourceKind,
     BudgetUsage,
     CompletionCheck,
     CompletionItem,
@@ -26,6 +27,8 @@ from .domain import (
     GatePhase,
     InvocationStatus,
     LeasePolicy,
+    ModelCallRecord,
+    ModelCallStatus,
     PlanItem,
     Run,
     RunBudget,
@@ -553,6 +556,332 @@ class StateStore:
             input_summary={"ordinal": step.ordinal, "summary": step.summary},
         )
         return step
+
+    def create_model_call(
+        self,
+        call: ModelCallRecord,
+        *,
+        lease_token: str,
+    ) -> ModelCallRecord:
+        """Persist one STARTED model attempt and its worst-case reservation."""
+
+        self._ensure_active()
+        now = self._now()
+        self._verify_lease(call.run_id, lease_token, now)
+        run = self.get_run(call.run_id)
+        if run.status != RunStatus.RUNNING:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "create_model_call",
+                "model calls require a RUNNING run",
+            )
+        if call.status != ModelCallStatus.STARTED:
+            self._raise(
+                ErrorCode.STATE_INVARIANT_VIOLATION,
+                "create_model_call",
+                "new model calls must be STARTED",
+            )
+        step_row = self._connection.execute(
+            "SELECT 1 FROM steps WHERE run_id = ? AND step_id = ?",
+            (call.run_id, call.step_id),
+        ).fetchone()
+        if step_row is None:
+            self._raise(
+                ErrorCode.STATE_NOT_FOUND,
+                "create_model_call",
+                "model call step does not exist in this run",
+            )
+        active = self._active_model_reservation_cost(call.run_id)
+        if run.usage.token_cost + active + call.reservation_cost > run.budget.max_token_cost:
+            self._raise(
+                ErrorCode.STATE_BUDGET_EXCEEDED,
+                "create_model_call",
+                "model reservation would exceed max_token_cost",
+            )
+        try:
+            self._connection.execute(
+                """
+                INSERT INTO model_calls(
+                    model_call_id, logical_model_call_id, schema_version,
+                    run_id, step_id, provider, model_id, config_fingerprint,
+                    attempt_number, status, started_at, ended_at,
+                    input_tokens, output_tokens, reservation_cost, actual_cost,
+                    error_code, provider_request_id, request_fingerprint, revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    call.model_call_id,
+                    call.logical_model_call_id,
+                    call.schema_version,
+                    call.run_id,
+                    call.step_id,
+                    call.provider,
+                    call.model_id,
+                    call.config_fingerprint,
+                    call.attempt_number,
+                    call.status.value,
+                    _serialize_datetime(call.started_at),
+                    None,
+                    None,
+                    None,
+                    _decimal_text(call.reservation_cost),
+                    None,
+                    None,
+                    None,
+                    call.request_fingerprint,
+                    0,
+                ),
+            )
+            self._connection.execute(
+                """
+                INSERT INTO model_cost_reservations(
+                    model_call_id, run_id, reserved_cost, settled_cost,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?)
+                """,
+                (
+                    call.model_call_id,
+                    call.run_id,
+                    _decimal_text(call.reservation_cost),
+                    None,
+                    _serialize_datetime(now),
+                    _serialize_datetime(now),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "create_model_call",
+                "model call identity or attempt is duplicated",
+            )
+        run_revision = self._get_run_revision(call.run_id)
+        self._touch_run(call.run_id, run_revision, now)
+        self._append_event(
+            run_id=call.run_id,
+            phase=GatePhase.MODEL,
+            event_type=AuditEventType.MODEL_CALL_STARTED,
+            status=AuditStatus.STARTED,
+            step_id=call.step_id,
+            model_call_id=call.model_call_id,
+            input_summary={
+                "provider": call.provider,
+                "model_id": call.model_id,
+                "attempt": call.attempt_number,
+                "reservation_cost": _decimal_text(call.reservation_cost),
+            },
+        )
+        return call
+
+    def complete_model_call(
+        self,
+        model_call_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        actual_cost: Decimal,
+        provider_request_id: str | None,
+        lease_token: str,
+    ) -> ModelCallRecord:
+        """Settle one model call and record actual usage and cost."""
+
+        self._ensure_active()
+        now = self._now()
+        row = self._connection.execute(
+            "SELECT * FROM model_calls WHERE model_call_id = ?",
+            (model_call_id,),
+        ).fetchone()
+        if row is None:
+            self._raise(ErrorCode.STATE_NOT_FOUND, "complete_model_call", "model call missing")
+        current = _model_call_from_row(row)
+        self._verify_lease(current.run_id, lease_token, now)
+        if current.status != ModelCallStatus.STARTED:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "complete_model_call",
+                "only STARTED model calls can succeed",
+            )
+        if input_tokens < 0 or output_tokens < 0 or actual_cost < 0:
+            self._raise(
+                ErrorCode.MODEL_USAGE_INVALID,
+                "complete_model_call",
+                "model usage and cost must be non-negative",
+            )
+        if actual_cost > current.reservation_cost:
+            self._raise(
+                ErrorCode.MODEL_USAGE_INVALID,
+                "complete_model_call",
+                "actual model cost exceeds reservation",
+            )
+        run_revision = self._get_run_revision(current.run_id)
+        self.record_budget_delta(
+            BudgetDeltaCommand(
+                run_id=current.run_id,
+                source_kind=BudgetSourceKind.HARNESS,
+                source_id=f"model:{model_call_id}",
+                category=BudgetCategory.TOKEN_COST,
+                expected_run_revision=run_revision,
+                delta=actual_cost,
+            ),
+            lease_token=lease_token,
+        )
+        changed = self._connection.execute(
+            """
+            UPDATE model_calls
+            SET status = 'SUCCEEDED', ended_at = ?, input_tokens = ?,
+                output_tokens = ?, actual_cost = ?, provider_request_id = ?,
+                revision = revision + 1
+            WHERE model_call_id = ? AND status = 'STARTED' AND revision = ?
+            """,
+            (
+                _serialize_datetime(now),
+                input_tokens,
+                output_tokens,
+                _decimal_text(actual_cost),
+                provider_request_id,
+                model_call_id,
+                int(row["revision"]),
+            ),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "complete_model_call",
+                "model call changed concurrently",
+            )
+        self._connection.execute(
+            """
+            UPDATE model_cost_reservations
+            SET status = 'SETTLED', settled_cost = ?, updated_at = ?
+            WHERE model_call_id = ? AND status = 'ACTIVE'
+            """,
+            (_decimal_text(actual_cost), _serialize_datetime(now), model_call_id),
+        )
+        self._touch_run(current.run_id, self._get_run_revision(current.run_id), now)
+        self._append_event(
+            run_id=current.run_id,
+            phase=GatePhase.MODEL,
+            event_type=AuditEventType.MODEL_CALL_SUCCEEDED,
+            status=AuditStatus.SUCCEEDED,
+            step_id=current.step_id,
+            model_call_id=model_call_id,
+            input_summary={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "actual_cost": _decimal_text(actual_cost),
+            },
+            output_summary={"provider_request_id": provider_request_id},
+        )
+        updated = self._connection.execute(
+            "SELECT * FROM model_calls WHERE model_call_id = ?",
+            (model_call_id,),
+        ).fetchone()
+        return _model_call_from_row(updated)
+
+    def fail_model_call(
+        self,
+        model_call_id: str,
+        *,
+        status: ModelCallStatus,
+        error_code: ErrorCode,
+        provider_request_id: str | None,
+        lease_token: str,
+    ) -> ModelCallRecord:
+        """Close one STARTED model call as failed, timed out, or unknown."""
+
+        self._ensure_active()
+        if status not in {
+            ModelCallStatus.FAILED,
+            ModelCallStatus.TIMED_OUT,
+            ModelCallStatus.UNKNOWN_RESULT,
+        }:
+            raise ValueError("failure status is not terminal")
+        now = self._now()
+        row = self._connection.execute(
+            "SELECT * FROM model_calls WHERE model_call_id = ?",
+            (model_call_id,),
+        ).fetchone()
+        if row is None:
+            self._raise(ErrorCode.STATE_NOT_FOUND, "fail_model_call", "model call missing")
+        current = _model_call_from_row(row)
+        self._verify_lease(current.run_id, lease_token, now)
+        if current.status != ModelCallStatus.STARTED:
+            self._raise(
+                ErrorCode.STATE_INVALID_TRANSITION,
+                "fail_model_call",
+                "only STARTED model calls can fail",
+            )
+        changed = self._connection.execute(
+            """
+            UPDATE model_calls
+            SET status = ?, ended_at = ?, error_code = ?, provider_request_id = ?,
+                revision = revision + 1
+            WHERE model_call_id = ? AND status = 'STARTED' AND revision = ?
+            """,
+            (
+                status.value,
+                _serialize_datetime(now),
+                error_code.value,
+                provider_request_id,
+                model_call_id,
+                int(row["revision"]),
+            ),
+        ).rowcount
+        if changed != 1:
+            self._raise(
+                ErrorCode.STATE_CONFLICT,
+                "fail_model_call",
+                "model call changed concurrently",
+            )
+        reservation_status = "UNKNOWN" if status == ModelCallStatus.UNKNOWN_RESULT else "RELEASED"
+        self._connection.execute(
+            """
+            UPDATE model_cost_reservations
+            SET status = ?, updated_at = ?
+            WHERE model_call_id = ? AND status = 'ACTIVE'
+            """,
+            (reservation_status, _serialize_datetime(now), model_call_id),
+        )
+        self._touch_run(current.run_id, self._get_run_revision(current.run_id), now)
+        event_type = {
+            ModelCallStatus.FAILED: AuditEventType.MODEL_CALL_FAILED,
+            ModelCallStatus.TIMED_OUT: AuditEventType.MODEL_CALL_TIMED_OUT,
+            ModelCallStatus.UNKNOWN_RESULT: AuditEventType.MODEL_CALL_UNKNOWN,
+        }[status]
+        audit_status = {
+            ModelCallStatus.FAILED: AuditStatus.FAILED,
+            ModelCallStatus.TIMED_OUT: AuditStatus.TIMED_OUT,
+            ModelCallStatus.UNKNOWN_RESULT: AuditStatus.UNKNOWN_RESULT,
+        }[status]
+        self._append_event(
+            run_id=current.run_id,
+            phase=GatePhase.MODEL,
+            event_type=event_type,
+            status=audit_status,
+            code=error_code.value,
+            step_id=current.step_id,
+            model_call_id=model_call_id,
+            input_summary={"status": status.value},
+            output_summary={"provider_request_id": provider_request_id},
+        )
+        updated = self._connection.execute(
+            "SELECT * FROM model_calls WHERE model_call_id = ?",
+            (model_call_id,),
+        ).fetchone()
+        return _model_call_from_row(updated)
+
+    def get_model_calls(self, run_id: str) -> tuple[ModelCallRecord, ...]:
+        """Read all model attempts for one run in stable order."""
+
+        self._ensure_active()
+        rows = self._connection.execute(
+            """
+            SELECT * FROM model_calls
+            WHERE run_id = ?
+            ORDER BY started_at, logical_model_call_id, attempt_number, model_call_id
+            """,
+            (run_id,),
+        ).fetchall()
+        return tuple(_model_call_from_row(row) for row in rows)
 
     def create_invocation(
         self,
@@ -1946,6 +2275,17 @@ class StateStore:
             invocations=tuple(
                 _invocation_from_row(self._connection, row) for row in invocation_rows
             ),
+            model_calls=tuple(
+                _model_call_from_row(row)
+                for row in self._connection.execute(
+                    """
+                    SELECT * FROM model_calls
+                    WHERE run_id = ?
+                    ORDER BY started_at, logical_model_call_id, attempt_number, model_call_id
+                    """,
+                    (run_id,),
+                ).fetchall()
+            ),
             evidence=tuple(_evidence_from_row(row) for row in evidence_rows),
             approvals=tuple(approval_from_row(row) for row in approval_rows),
             completion=self._get_completion(run_id),
@@ -1964,6 +2304,16 @@ class StateStore:
             "SELECT * FROM run_workspace_baselines WHERE run_id = ?",
             (run_id,),
         ).fetchone()
+
+    def _active_model_reservation_cost(self, run_id: str) -> Decimal:
+        row = self._connection.execute(
+            """
+            SELECT reserved_cost FROM model_cost_reservations
+            WHERE run_id = ? AND status IN ('ACTIVE', 'UNKNOWN')
+            """,
+            (run_id,),
+        ).fetchall()
+        return sum((Decimal(str(item["reserved_cost"])) for item in row), Decimal(0))
 
     def _get_run_revision(self, run_id: str) -> int:
         row = self._connection.execute(
@@ -2165,6 +2515,7 @@ class StateStore:
         step_id: str | None = None,
         tool_call_id: str | None = None,
         approval_id: str | None = None,
+        model_call_id: str | None = None,
         tool_name: str | None = None,
         rule_id: str | None = None,
         input_summary: object = None,
@@ -2182,6 +2533,7 @@ class StateStore:
                 step_id=step_id,
                 tool_call_id=tool_call_id,
                 approval_id=approval_id,
+                model_call_id=model_call_id,
                 tool_name=tool_name,
                 rule_id=rule_id,
                 input_summary=input_summary,
@@ -2277,6 +2629,32 @@ def _step_from_row(row: sqlite3.Row) -> Step:
         summary=str(row["summary"]),
         started_at=_parse_datetime(str(row["started_at"])),
         ended_at=_parse_datetime(str(row["ended_at"])) if row["ended_at"] else None,
+    )
+
+
+def _model_call_from_row(row: sqlite3.Row) -> ModelCallRecord:
+    return ModelCallRecord(
+        model_call_id=str(row["model_call_id"]),
+        logical_model_call_id=str(row["logical_model_call_id"]),
+        run_id=str(row["run_id"]),
+        step_id=str(row["step_id"]),
+        provider=str(row["provider"]),
+        model_id=str(row["model_id"]),
+        config_fingerprint=str(row["config_fingerprint"]),
+        attempt_number=int(row["attempt_number"]),
+        status=ModelCallStatus(str(row["status"])),
+        started_at=_parse_datetime(str(row["started_at"])),
+        ended_at=_parse_datetime(str(row["ended_at"])) if row["ended_at"] else None,
+        input_tokens=int(row["input_tokens"]) if row["input_tokens"] is not None else None,
+        output_tokens=int(row["output_tokens"]) if row["output_tokens"] is not None else None,
+        reservation_cost=Decimal(str(row["reservation_cost"])),
+        actual_cost=Decimal(str(row["actual_cost"])) if row["actual_cost"] is not None else None,
+        error_code=str(row["error_code"]) if row["error_code"] else None,
+        provider_request_id=(
+            str(row["provider_request_id"]) if row["provider_request_id"] else None
+        ),
+        request_fingerprint=str(row["request_fingerprint"]),
+        schema_version=int(row["schema_version"]),
     )
 
 

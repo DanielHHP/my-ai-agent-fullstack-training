@@ -4,13 +4,14 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | 已确认决策记录 |
+| 文档状态 | P0 与 WP-13 P1 决策均已确认 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | 已确认的 D-01 至 D-86 |
+| 决策范围 | D-01 至 D-100 已确认 |
 
-本文记录已与需求方确认的设计决策。实现和后续变更必须以这些结论为基线；如需调整，应追加新的
-决策记录并同步更新需求、设计和相关测试文档。
+本文记录项目设计决策。D-01 至 D-86 是 P0 已确认基线；D-87 至 D-100 是 2026-11-09 至
+2026-11-10 基于真实模型接入评估确认的 WP-13 P1 决策。D-07、D-78 继续约束 P0 和 version 1
+配置，不阻止 version 2 的受控 P1 Provider 扩展。
 
 ## 2. 已确认决策
 
@@ -102,3 +103,17 @@
 | D-84 | WP-12 提前施工授权 | 需求方明确允许在 WP-08 至 WP-11 尚未全部 accepted 时提前开展 WP-12 施工。可记录实现和测试证据，但不得把依赖包或 WP-12 标记为 `DONE`，也不得据此声明项目 P0 完成；所有上游验收关闭后必须重新执行最终门禁。2026-11-08 上游已全部 accepted，人工验收和最终门禁已闭环。 |
 | D-85 | WP-12 正式样例形态 | 提供两个最小、自包含的样例工作区和 `examples/config/` 下的两份 YAML，使正式配置可由现有 `load_config` 从仓库相对路径加载，并在复制到临时 Git 工作区后可离线执行；不依赖开发者绝对路径。 |
 | D-86 | WP-12 飞书 P1 处理 | S2、S4、A2、T2 不作为 P0 阻断。S2/S4/A2 汇总已有确定性证据，T2 因 D-07 标为 `NOT_RUN/P1`；最终报告必须明确优先级、证据和未执行范围，不得把 Fake Model 结果冒充真实模型结果。 |
+| D-87 | WP-13 配置与真实 Provider 边界 | 真实模型只允许在任务配置 schema v2 的严格 `model` 块中声明，首版不引入独立 model profile；v1 保持 P0 兼容并只能使用可信注入的 Fake Model。v2 `ModelConfig` 使用 `extra="forbid"`、固定 Provider 枚举和窄范围字段，Provider/模型/端点/价格/上限进入非秘密配置指纹。 |
+| D-88 | WP-13 首个 Provider 与依赖 | P1 首版只实现 `openai_chat_completions_v1`，使用公开 `smolagents.OpenAIServerModel`；不引入 LiteLLM、Responses API 或任意动态 Provider。受约束的 OpenAI SDK 是默认运行时依赖，不以 optional extra 提供；安装缺包或版本不兼容时返回 `MODEL_PROVIDER_UNAVAILABLE`，不得回退 Fake Model。 |
+| D-89 | WP-13 凭据与端点 | `credential_ref` 只保存非秘密引用，由固定 allowlist 的 `SecretResolver` 解析；不读取 `.env`，不把密钥写入 fingerprint、State、Audit、日志、异常、CLI 或子进程环境。endpoint 使用精确 origin/path allowlist，默认 HTTPS，拒绝 userinfo、URL 凭据、非 HTTP(S) scheme、cross-host redirect 和代理环境；localhost/私网 HTTP 需显式窄开关。HTTP client 固定 `trust_env=False`。 |
+| D-90 | WP-13 模型调用包装边界 | Harness 为每个 Run 将 Raw Model 包装为 GovernedModel；所有公开 `Model.generate` 必须经过 ModelCallGateway。Provider 只负责传输，`step_callbacks`、SDK 日志和 smolagents 内部日志不能充当门禁；不修改 ToolCallingAgent 决策循环或私有字段。 |
+| D-91 | WP-13 成本预留与预算 | 调用前按可信 `max_input_tokens`、`max_output_tokens` 和版本化 input/output 价格计算 Decimal reservation，并从可用预算中扣除；成功按实际 usage 结算，明确未生成内容的失败可释放，超时、5xx、连接中断或结果未落盘保留 reservation 并标记 unknown。预算不足时网络调用为 0。 |
+| D-92 | WP-13 ModelCall 持久化与响应上限 | 下一次单调 migration 增加 `model_calls`、`model_cost_reservations`、Audit 可空 `model_call_id`/`audit_schema`；旧事件保持 schema 1 哈希语义，新 `MODEL_*` 事件使用 schema 2。每次 attempt 使用独立 `model_calls` 行，`logical_model_call_id` 将重试归组；P1 STARTED 的 `step_id` 必须非空。调用 STARTED、reservation 和 Audit 同事务提交，结果与结算在下一事务提交。响应必须是 `ChatMessage`，usage 非空且非负，内容/tool call 数量/ID/大小受限；不保存完整 prompt、raw payload 或隐藏推理。 |
+| D-93 | WP-13 超时、限流与 usage | SDK `max_retries=0` 且 smolagents `retry=False`，所有显式 attempt 记录和审计。只对明确未生成内容的 429 或连接建立失败进行有限重试；read timeout、5xx、响应截断、连接后中断和解析失败不自动重发。真实 Provider 缺失或非法 usage 使用 `MODEL_USAGE_INVALID`，不得按 0 计费。 |
+| D-94 | WP-13 模型调用恢复 | resume 时重新校验 v2 模型身份、Provider、端点、价格和凭据引用；配置变化继续失败关闭。ModelCall `STARTED` 后崩溃且结果未提交时物化为 `MODEL_CALL_UNKNOWN`，Run 进入 `BLOCKED`、`StopReason=UNKNOWN_RESULT`，第一版不自动重发或强制 reconcile；需要继续时启动新 Run。 |
+| D-95 | WP-13 CLI 与只读命令 | 标准 `run/resume` 可从 v2 配置构造 Provider；只有 `run/resume` 可以创建模型。`approvals` 和 `inspect` 不构造模型、不读取凭据、不访问网络。P0 退出码保持不变，具体失败由稳定 `MODEL_*` 错误码区分。 |
+| D-96 | WP-13 离线测试与 live smoke | 默认 pytest 继续完全离线，使用 fake transport/client 覆盖配置、凭据、预算、响应、重试、审计和恢复。真实服务只通过显式 marker/环境变量 opt-in，运行低预算只读任务，不作为普通 CI 或 P0 验收前置。live smoke 使用发布时固定的 OpenAI Chat Completions 模型快照和低预算验收配置，拒绝标记为移动别名的模型。 |
+| D-97 | WP-13 TokenCounter 与上下文超限 | `tiktoken` 作为默认运行时依赖，v2 模型配置必须指定固定 registry 中可验证的 tokenizer；调用前必须用该 tokenizer 证明输入不超过 `max_input_tokens`。无法计数、配置未知 tokenizer 或输入超限时在本地失败关闭。首版不执行上下文压缩、旧 observation 截断或隐式模型摘要；长任务应拆分任务或提高明确配置的上下文上限。 |
+| D-98 | WP-13 结构化工具调用与调用 ID | 首版只接受 Chat Completions 返回的结构化 tool calls；不启用文本内容中的 tool-call fallback 解析。tool-call ID 必须非空且同一响应唯一；Provider 不返回 ID 时 `MODEL_TOOL_CALLS_INVALID`，不自动合成 ID。`final_answer` 不得与其它工具混用。 |
+| D-99 | WP-13 Step 与 attempt 身份 | Harness 必须在首次真实模型调用前创建并持久化 Agent Step；所有 STARTED ModelCall 必须绑定非空 `step_id`。每次重试是独立 attempt 和独立计费行，并通过 `logical_model_call_id` 关联同一逻辑调用；不增加第二套可漂移的 attempt 表。 |
+| D-100 | WP-13 网络与 live smoke 约束 | OpenAI/httpx 客户端不继承 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 等环境代理，不允许跨主机 redirect；如未来需要代理，必须作为独立受控配置评审。live smoke 的配置、模型快照、端点和单次预算由发布验收清单固定，自动化不得选择移动别名。 |

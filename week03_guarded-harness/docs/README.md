@@ -8,7 +8,7 @@
 | --- | --- |
 | [requirements.md](requirements.md) | 项目整体需求、职责边界、必须交付物与整体验收标准 |
 | [design.md](design.md) | 系统概要设计：模块划分、运行链路、安全边界、状态与恢复、验收策略 |
-| [decisions.md](decisions.md) | 已确认的 D-01 至 D-86 设计决策及约束 |
+| [decisions.md](decisions.md) | 已确认的 D-01 至 D-100 设计决策及约束 |
 | [task-breakdown.md](task-breakdown.md) | 按里程碑和能力工作包组织的 P0 开发计划、执行规程、`spec.md`/`plan.md`/`acceptance-report.md` 包内文档模式、依赖、验收条件与文件任务追溯 |
 | [test-plan.md](test-plan.md) | P0 测试层级、六个必须测试文件、飞书场景、故障矩阵、命令和证据格式 |
 | [operations.md](operations.md) | 本地运行、审批、恢复、状态数据库、日志、退出码、平台限制和禁止操作 |
@@ -51,5 +51,8 @@
 | [WP-12 规格](work-packages/wp-12-fault-hardening-delivery/spec.md) | 已冻结：项目级故障矩阵、正式样例、飞书核心验收映射、最终质量门禁和交付证据 |
 | [WP-12 计划](work-packages/wp-12-fault-hardening-delivery/plan.md) | 已完成：故障注入、跨进程恢复、两类任务 E2E、样例、测试矩阵、风险和回滚 |
 | [WP-12 验收报告](work-packages/wp-12-fault-hardening-delivery/acceptance-report.md) | v1.1 accepted：9 项目标、372 项全量测试、故障/E2E 和人工验收通过；P0 完成 |
+| [WP-13 规格](work-packages/wp-13-real-model-provider/spec.md) | frozen：真实模型 Provider、模型调用治理、预算预留、审计、恢复和 P1 验收边界 |
+| [WP-13 计划](work-packages/wp-13-real-model-provider/plan.md) | done：离线实现、SDK 协议和 live smoke 验收完成 |
+| [WP-13 验收报告](work-packages/wp-13-real-model-provider/acceptance-report.md) | v1.1 accepted：P0 回归、SDK 协议和 DeepSeek live smoke 通过 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

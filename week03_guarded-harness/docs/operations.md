@@ -224,3 +224,23 @@ Windows 或不支持可靠进程组终止的平台应拒绝进程执行。Sandbo
 5. 区分“未开始”“确定失败”“已成功”“结果未知”；
 6. 结果未知或审计链损坏时保持阻塞；
 7. 修复根因后创建新 Run，并在验收报告中记录原 Run ID、事故原因和限制。
+
+## 13. P1 真实模型 Provider 运维边界
+
+WP-13 已通过外部 live smoke 验收；外部调用继续遵守以下边界：
+
+- 只有 version 2 配置可以声明真实 Provider；
+- 首个 Provider 固定为 `openai_chat_completions_v1`，OpenAI SDK 和固定 TokenCounter 属于默认
+  安装，不需要额外 optional extra；
+- 配置中的 `credential_ref` 是非秘密引用，真实值由受控环境变量或 SecretResolver 提供；
+- 配置必须声明固定 `tokenizer_id`，未知 tokenizer、输入超限、不支持结构化 tool calls 或仅返回
+  文本 tool-call 时拒绝；
+- 不读取 `.env`，不把密钥写入配置、State、Audit、日志或子进程环境；
+- HTTP client 不继承 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`，不跟随跨主机 redirect；
+- `run/resume` 才创建 Provider；`approvals` 和 `inspect` 不读取凭据、不访问网络；
+- 模型调用超时或结果未落盘时进入模型调用 unknown，不自动重试；
+- 真实 smoke test 必须显式 opt-in，不能由普通测试或模型输入开启。
+
+version 1 配置仍返回 `CLI_MODEL_UNAVAILABLE`，除非调用方注入可信模型工厂。version 2 配置
+使用 `examples/config/model-openai-chat-completions.yaml` 作为起点。缺少凭据或切换端点、
+模型后，应重新执行对应环境的 live smoke。

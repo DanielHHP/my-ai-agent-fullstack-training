@@ -131,6 +131,18 @@ class InvocationStatus(str, Enum):
     UNKNOWN_RESULT = "UNKNOWN_RESULT"
 
 
+class ModelCallStatus(str, Enum):
+    """Lifecycle state for one model service attempt."""
+
+    PREPARED = "PREPARED"
+    STARTED = "STARTED"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+    UNKNOWN_RESULT = "UNKNOWN_RESULT"
+    REJECTED = "REJECTED"
+
+
 class ObservationStatus(str, Enum):
     """Statuses visible to the model in a tool observation."""
 
@@ -169,6 +181,7 @@ class GatePhase(str, Enum):
     REPEAT = "REPEAT"
     BUDGET = "BUDGET"
     EXECUTION = "EXECUTION"
+    MODEL = "MODEL"
 
 
 class ToolRisk(str, Enum):
@@ -521,6 +534,22 @@ class ErrorCode(str, Enum):
     HARNESS_WORKSPACE_BASELINE_INVALID = "HARNESS_WORKSPACE_BASELINE_INVALID"
     HARNESS_INTERNAL_ERROR = "HARNESS_INTERNAL_ERROR"
 
+    MODEL_CONFIG_INVALID = "MODEL_CONFIG_INVALID"
+    MODEL_PROVIDER_UNAVAILABLE = "MODEL_PROVIDER_UNAVAILABLE"
+    MODEL_CREDENTIAL_UNAVAILABLE = "MODEL_CREDENTIAL_UNAVAILABLE"
+    MODEL_ENDPOINT_DENIED = "MODEL_ENDPOINT_DENIED"
+    MODEL_AUTH_FAILED = "MODEL_AUTH_FAILED"
+    MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
+    MODEL_RATE_LIMITED = "MODEL_RATE_LIMITED"
+    MODEL_TIMEOUT = "MODEL_TIMEOUT"
+    MODEL_PROTOCOL_UNSUPPORTED = "MODEL_PROTOCOL_UNSUPPORTED"
+    MODEL_INPUT_TOO_LARGE = "MODEL_INPUT_TOO_LARGE"
+    MODEL_RESPONSE_INVALID = "MODEL_RESPONSE_INVALID"
+    MODEL_RESPONSE_TOO_LARGE = "MODEL_RESPONSE_TOO_LARGE"
+    MODEL_TOOL_CALLS_INVALID = "MODEL_TOOL_CALLS_INVALID"
+    MODEL_USAGE_INVALID = "MODEL_USAGE_INVALID"
+    MODEL_CALL_UNKNOWN = "MODEL_CALL_UNKNOWN"
+
     CLI_USAGE_ERROR = "CLI_USAGE_ERROR"
     CLI_CONFIG_REQUIRED = "CLI_CONFIG_REQUIRED"
     CLI_MODEL_UNAVAILABLE = "CLI_MODEL_UNAVAILABLE"
@@ -611,6 +640,14 @@ ToolCallId = Annotated[
     str,
     StringConstraints(strict=True, min_length=1, max_length=256),
     AfterValidator(_validate_tool_call_id),
+]
+ModelCallId = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^modelcall_[0-9a-f]{32}$"),
+]
+LogicalModelCallId = Annotated[
+    str,
+    StringConstraints(strict=True, pattern=r"^logicalcall_[0-9a-f]{32}$"),
 ]
 BudgetSourceId = Annotated[
     str,
@@ -772,6 +809,49 @@ class Step(StrictDomainModel):
     def model_post_init(self, __context: Any) -> None:
         if self.ended_at is not None and self.ended_at < self.started_at:
             raise ValueError("ended_at must not precede started_at")
+
+
+class ModelCallRecord(StrictDomainModel):
+    """Persisted lifecycle, usage, and cost for one model service attempt."""
+
+    schema_version: Literal[1] = 1
+    model_call_id: ModelCallId
+    logical_model_call_id: LogicalModelCallId
+    run_id: RunId
+    step_id: StepId
+    provider: str = Field(min_length=1, max_length=128)
+    model_id: str = Field(min_length=1, max_length=256)
+    config_fingerprint: Sha256Digest
+    attempt_number: int = Field(ge=1, le=4)
+    status: ModelCallStatus = ModelCallStatus.PREPARED
+    started_at: UtcDatetime
+    ended_at: UtcDatetime | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    reservation_cost: Decimal = Field(ge=0)
+    actual_cost: Decimal | None = Field(default=None, ge=0)
+    error_code: StableErrorCode | None = None
+    provider_request_id: str | None = Field(default=None, max_length=256)
+    request_fingerprint: Sha256Digest
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.ended_at is not None and self.ended_at < self.started_at:
+            raise ValueError("model call end must not precede start")
+        if (
+            self.status
+            in {
+                ModelCallStatus.FAILED,
+                ModelCallStatus.TIMED_OUT,
+                ModelCallStatus.UNKNOWN_RESULT,
+                ModelCallStatus.REJECTED,
+            }
+            and self.error_code is None
+        ):
+            raise ValueError("failed or indeterminate model calls require an error code")
+        if self.status == ModelCallStatus.SUCCEEDED and (
+            self.input_tokens is None or self.output_tokens is None or self.actual_cost is None
+        ):
+            raise ValueError("successful model calls require usage and actual cost")
 
 
 class ToolSpec(StrictDomainModel):
@@ -1360,6 +1440,7 @@ class RunSnapshot(StrictDomainModel):
     plan: RunPlan | None = None
     steps: tuple[Step, ...] = ()
     invocations: tuple[ToolInvocation, ...] = ()
+    model_calls: tuple[ModelCallRecord, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     approvals: tuple[Approval, ...] = ()
     completion: CompletionCheck | None = None
@@ -1446,6 +1527,7 @@ class CheckpointSnapshot(StrictDomainModel):
     plan: RunPlan | None = None
     steps: tuple[Step, ...] = ()
     invocations: tuple[ToolInvocation, ...] = ()
+    model_calls: tuple[ModelCallRecord, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     approvals: tuple[Approval, ...] = ()
     completion: CompletionCheck | None = None

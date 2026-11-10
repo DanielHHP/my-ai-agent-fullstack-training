@@ -11,15 +11,20 @@ P0 已完成：六个核心模块、Fake Model 驱动的 Agent/CLI 闭环、审�
 Completion、离线安全测试、项目级故障矩阵和人工验收均已通过。WP-08 至 WP-12 的验收报告状态
 均为 `accepted`。
 
+WP-13 P1 已验收：version 2 模型配置、OpenAI Chat Completions SDK、GovernedModel、
+模型调用 usage/成本/Audit、migration v8、显式重试、超时和 unknown 恢复均已通过离线测试、
+本地 SDK 协议仿真和 DeepSeek live smoke。
+
 首期支持：
 
 - 单个本地 Git 工作区；
 - 代码理解与测试修复；
 - Linux/macOS POSIX 进程组；
 - 本地 SQLite 状态与本地 CLI 审批；
-- Fake Model 离线验收。
+- Fake Model 离线验收；
+- version 2 OpenAI Chat Completions 真实模型配置。
 
-不包含真实模型 Provider、网络调用、Web/TUI、多仓库、分布式执行、隐藏验收或容器级隔离。
+不包含多 Provider 路由、自动 fallback、Web/TUI、多仓库、分布式执行、隐藏验收或容器级隔离。
 
 ## 安装与验证
 
@@ -38,10 +43,12 @@ python -m ruff format --check .
 ```bash
 guarded-harness --config examples/config/code-understanding.yaml run --json
 guarded-harness --config examples/config/test-repair.yaml run --json
+guarded-harness --config examples/config/model-openai-chat-completions.yaml run --json
 ```
 
-标准 console 入口没有受控模型来源时返回 `CLI_MODEL_UNAVAILABLE`。自动化测试通过可信
-`model_factory` 注入 Fake Model；P0 不提供真实 Provider 配置。
+version 1 配置仍只使用可信 `model_factory` 注入；标准入口没有来源时返回
+`CLI_MODEL_UNAVAILABLE`。version 2 配置通过默认安装的 OpenAI SDK 和固定 tokenizer 策略
+构造真实模型。
 
 正式样例位于 `examples/`，并以临时 Git 副本离线执行。审批、恢复和运维说明见
 [operations.md](docs/operations.md)。

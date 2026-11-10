@@ -280,6 +280,7 @@ class InspectionService:
         *,
         tool_call_id: str | None = None,
         approval_id: str | None = None,
+        model_call_id: str | None = None,
         audit_limit: int = 100,
     ) -> dict[str, Any]:
         """Return one bounded inspection projection for a persisted Run."""
@@ -329,6 +330,18 @@ class InspectionService:
                 events = unit.audit.list_approval_events(
                     run_id,
                     approval_id,
+                    limit=min(audit_limit + 1, 1000),
+                )
+            elif model_call_id is not None:
+                if not any(item.model_call_id == model_call_id for item in snapshot.model_calls):
+                    raise ControlError(
+                        ErrorCode.CLI_INSPECTION_UNAVAILABLE,
+                        "inspect",
+                        "model call does not exist in this run",
+                    )
+                events = unit.audit.list_model_events(
+                    run_id,
+                    model_call_id,
                     limit=min(audit_limit + 1, 1000),
                 )
             else:
@@ -398,6 +411,27 @@ class InspectionService:
                 }
                 for item in snapshot.invocations
             ],
+            "model_calls": [
+                {
+                    "model_call_id": item.model_call_id,
+                    "logical_model_call_id": item.logical_model_call_id,
+                    "step_id": item.step_id,
+                    "provider": item.provider,
+                    "model_id": item.model_id,
+                    "attempt_number": item.attempt_number,
+                    "status": item.status.value,
+                    "input_tokens": item.input_tokens,
+                    "output_tokens": item.output_tokens,
+                    "reservation_cost": str(item.reservation_cost),
+                    "actual_cost": str(item.actual_cost) if item.actual_cost is not None else None,
+                    "error_code": item.error_code,
+                    "started_at": _serialize_datetime(item.started_at),
+                    "ended_at": (
+                        _serialize_datetime(item.ended_at) if item.ended_at is not None else None
+                    ),
+                }
+                for item in snapshot.model_calls
+            ],
             "completion": (
                 snapshot.completion.model_dump(mode="json")
                 if snapshot.completion is not None
@@ -466,6 +500,7 @@ class InspectionService:
             "step_id": event.step_id,
             "tool_call_id": event.tool_call_id,
             "approval_id": event.approval_id,
+            "model_call_id": event.model_call_id,
             "actor": event.actor,
             "tool_name": event.tool_name,
             "rule_id": event.rule_id,

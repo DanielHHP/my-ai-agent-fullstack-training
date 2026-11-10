@@ -10,9 +10,10 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import ConfigDict, Field, ValidationError, field_validator
+from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .domain import (
     ConfigurationError,
@@ -36,6 +37,18 @@ _WINDOWS_RESERVED_NAMES = {
     *(f"com{index}" for index in range(1, 10)),
     *(f"lpt{index}" for index in range(1, 10)),
 }
+_MODEL_PROVIDERS = {"openai_chat_completions_v1"}
+_TOKENIZERS = {
+    "tiktoken:o200k_base",
+    "tiktoken:cl100k_base",
+    "tiktoken:p50k_base",
+}
+_CREDENTIAL_REFS = {
+    "MODEL_API_KEY",
+    "OPENAI_API_KEY",
+    "GUARDED_HARNESS_MODEL_API_KEY",
+}
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class _ConfigModel(StrictDomainModel):
@@ -168,20 +181,92 @@ class TaskConfig(_ConfigModel):
         return value
 
 
+class ModelPricingConfig(_ConfigModel):
+    """Trusted versioned model token pricing."""
+
+    version: str = Field(min_length=1, max_length=128)
+    input_per_million: Decimal = Field(ge=0)
+    output_per_million: Decimal = Field(ge=0)
+
+    @field_validator("input_per_million", "output_per_million", mode="before")
+    @classmethod
+    def _coerce_decimal(cls, value: object) -> object:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return Decimal(value)
+        if isinstance(value, str):
+            try:
+                return Decimal(value)
+            except InvalidOperation:
+                return value
+        return value
+
+
+class ModelConfig(_ConfigModel):
+    """Strict OpenAI Chat Completions model profile."""
+
+    provider: Literal["openai_chat_completions_v1"]
+    model_id: str = Field(min_length=1, max_length=256)
+    endpoint: str = Field(min_length=1, max_length=2048)
+    credential_ref: str = Field(min_length=1, max_length=128)
+    tokenizer_id: str = Field(min_length=1, max_length=128)
+    request_timeout_seconds: int = Field(default=120, ge=1, le=600)
+    connect_timeout_seconds: int = Field(default=10, ge=1, le=120)
+    max_input_tokens: int = Field(default=120_000, ge=1, le=10_000_000)
+    max_output_tokens: int = Field(default=4_096, ge=1, le=1_000_000)
+    max_response_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
+    max_tool_calls_per_response: int = Field(default=8, ge=1, le=64)
+    requests_per_minute: int = Field(default=60, ge=0, le=100_000)
+    max_retry_attempts: int = Field(default=1, ge=0, le=3)
+    allow_insecure_localhost: bool = False
+    pricing: ModelPricingConfig
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.provider not in _MODEL_PROVIDERS:
+            raise ValueError("unsupported model provider")
+        if self.credential_ref not in _CREDENTIAL_REFS:
+            raise ValueError("credential_ref is not in the fixed allowlist")
+        if self.tokenizer_id not in _TOKENIZERS:
+            raise ValueError("tokenizer_id is not in the fixed registry")
+        try:
+            parsed = urlsplit(self.endpoint)
+        except ValueError as exc:
+            raise ValueError("endpoint is invalid") from exc
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("endpoint must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("endpoint must not contain userinfo")
+        if parsed.query or parsed.fragment:
+            raise ValueError("endpoint must not contain query or fragment")
+        if parsed.scheme != "https":
+            if not self.allow_insecure_localhost or parsed.hostname not in _LOCAL_HOSTS:
+                raise ValueError("insecure endpoint requires an explicit localhost exception")
+        if self.connect_timeout_seconds > self.request_timeout_seconds:
+            raise ValueError("connect timeout cannot exceed request timeout")
+
+
 class HarnessConfig(_ConfigModel):
     """Top-level versioned YAML configuration."""
 
-    version: Literal[1]
+    version: Literal[1, 2]
     state_dir: str = Field(min_length=1, max_length=4096)
     workspace: WorkspaceConfig
     budget: BudgetConfig
     task: TaskConfig
+    model: ModelConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_model_version(self) -> HarnessConfig:
+        if self.version == 2 and self.model is None:
+            raise ValueError("version 2 configuration requires model")
+        if self.version == 1 and self.model is not None:
+            raise ValueError("version 1 configuration cannot contain model")
+        return self
 
 
 class ResolvedHarnessConfig(_ConfigModel):
     """Validated configuration with normalized paths and a stable fingerprint."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     config: HarnessConfig
     workspace_root: str = Field(min_length=1, max_length=4096)
     state_dir: str = Field(min_length=1, max_length=4096)
@@ -829,7 +914,7 @@ def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessC
         ),
     )
     normalized_config = HarnessConfig(
-        version=1,
+        version=config.version,
         state_dir=str(state_dir),
         workspace=WorkspaceConfig(
             root=str(workspace_root),
@@ -838,10 +923,12 @@ def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessC
         ),
         budget=config.budget,
         task=normalized_task,
+        model=config.model,
     )
     fingerprint = _compute_fingerprint(normalized_config)
     return ResolvedHarnessConfig(
         config=normalized_config,
+        schema_version=normalized_config.version,
         workspace_root=str(workspace_root),
         state_dir=str(state_dir),
         deliverables=deliverables,
@@ -852,7 +939,7 @@ def _normalize_config(config: HarnessConfig, base_dir: Path) -> ResolvedHarnessC
 def _compute_fingerprint(config: HarnessConfig) -> str:
     try:
         payload = {
-            "fingerprint_schema": 1,
+            "fingerprint_schema": 2 if config.version == 2 else 1,
             "config": config.model_dump(mode="json"),
         }
         canonical = json.dumps(
@@ -900,6 +987,8 @@ __all__ = [
     "BudgetConfig",
     "CodeUnderstandingAcceptance",
     "HarnessConfig",
+    "ModelConfig",
+    "ModelPricingConfig",
     "PathPolicyConfig",
     "ResolvedHarnessConfig",
     "TaskConfig",

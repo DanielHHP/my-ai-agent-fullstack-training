@@ -360,15 +360,15 @@ def test_storage_initializes_schema_and_pragmas(tmp_path: Path, fixed_clock) -> 
 
     report = storage.verify_integrity()
     assert report.ok
-    assert report.schema_version == 7
-    assert report.migration_count == 7
+    assert report.schema_version == 8
+    assert report.migration_count == 8
     assert report.journal_mode.casefold() == "wal"
     assert report.foreign_keys_enabled
     assert report.busy_timeout_ms == 5000
     assert report.required_tables_present
     assert report.budget_ledger_consistent
     assert report.quick_check.casefold() == "ok"
-    assert storage.schema_version() == 7
+    assert storage.schema_version() == 8
     if "posix" in __import__("os").name:
         assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
         assert stat.S_IMODE(storage.database_path.stat().st_mode) == 0o600
@@ -1738,14 +1738,14 @@ def test_approval_migration_upgrades_v3_and_preserves_runs(
         unit.state.create_run(_run(), owner_id="owner-1")
     assert storage.schema_version() == 3
 
-    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 7)
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 8)
     monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
     storage.initialize()
     report = storage.verify_integrity()
     with storage.transaction(actor="agent") as unit:
         run = unit.state.get_run(RUN_ID)
     assert report.ok
-    assert report.schema_version == 7
+    assert report.schema_version == 8
     assert run.run_id == RUN_ID
 
 
@@ -1762,13 +1762,13 @@ def test_checkpoint_migration_upgrades_v4_and_preserves_runs(
     with storage.transaction(actor="agent") as unit:
         unit.state.create_run(_run(), owner_id="owner-1")
 
-    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 7)
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 8)
     monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
     storage.initialize()
     report = storage.verify_integrity()
 
     assert report.ok
-    assert report.schema_version == 7
+    assert report.schema_version == 8
     with storage.transaction(actor="agent") as unit:
         assert unit.state.get_run(RUN_ID).run_id == RUN_ID
 
@@ -1786,14 +1786,14 @@ def test_test_repair_migration_upgrades_v5_and_preserves_runs(
     with storage.transaction(actor="agent") as unit:
         unit.state.create_run(_run(), owner_id="owner-1")
 
-    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 7)
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 8)
     monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
     storage.initialize()
     report = storage.verify_integrity()
 
     assert report.ok
-    assert report.schema_version == 7
-    assert report.migration_count == 7
+    assert report.schema_version == 8
+    assert report.migration_count == 8
     with storage.transaction(actor="agent") as unit:
         assert unit.state.get_run(RUN_ID).run_id == RUN_ID
 
@@ -1811,14 +1811,14 @@ def test_workspace_baseline_migration_upgrades_v6_and_preserves_runs(
     with storage.transaction(actor="agent") as unit:
         unit.state.create_run(_run(), owner_id="owner-1")
 
-    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 7)
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 8)
     monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
     storage.initialize()
     report = storage.verify_integrity()
 
     assert report.ok
-    assert report.schema_version == 7
-    assert report.migration_count == 7
+    assert report.schema_version == 8
+    assert report.migration_count == 8
     with storage.transaction(actor="agent") as unit:
         assert unit.state.get_run(RUN_ID).run_id == RUN_ID
         assert unit.state.get_workspace_baseline(RUN_ID) is None

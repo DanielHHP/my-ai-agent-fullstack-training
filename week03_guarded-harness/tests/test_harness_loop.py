@@ -916,7 +916,7 @@ def test_resume_without_persisted_baseline_blocks_old_run(
             lease_token=lease.token,
         )
         unit.state.release_lease(lease)
-    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 7)
+    monkeypatch.setattr(storage_module, "SCHEMA_VERSION", 8)
     monkeypatch.setattr(storage_module, "MIGRATIONS", all_migrations)
     storage.initialize()
 

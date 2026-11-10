@@ -17,6 +17,7 @@ from .domain import (
     ErrorCode,
     EvidenceId,
     GatePhase,
+    ModelCallId,
     RunId,
     Sha256Digest,
     StableErrorCode,
@@ -80,6 +81,14 @@ class AuditEventType(str, Enum):
     APPROVAL_CONSUMED = "APPROVAL_CONSUMED"
     CHECKPOINT_WRITTEN = "CHECKPOINT_WRITTEN"
     RECOVERY_RECORDED = "RECOVERY_RECORDED"
+    MODEL_CONFIG_REJECTED = "MODEL_CONFIG_REJECTED"
+    MODEL_CALL_STARTED = "MODEL_CALL_STARTED"
+    MODEL_CALL_SUCCEEDED = "MODEL_CALL_SUCCEEDED"
+    MODEL_CALL_FAILED = "MODEL_CALL_FAILED"
+    MODEL_CALL_TIMED_OUT = "MODEL_CALL_TIMED_OUT"
+    MODEL_CALL_RATE_LIMITED = "MODEL_CALL_RATE_LIMITED"
+    MODEL_CALL_UNKNOWN = "MODEL_CALL_UNKNOWN"
+    MODEL_CALL_USAGE_INVALID = "MODEL_CALL_USAGE_INVALID"
 
 
 class AuditStatus(str, Enum):
@@ -119,6 +128,7 @@ class AuditEventDraft(StrictDomainModel):
     step_id: StepId | None = None
     tool_call_id: ToolCallId | None = None
     approval_id: ApprovalId | None = None
+    model_call_id: ModelCallId | None = None
     tool_name: ToolName | None = None
     rule_id: str | None = Field(default=None, min_length=1, max_length=256)
     input_summary: JsonValue | None = None
@@ -143,6 +153,7 @@ class AuditEventRecord(StrictDomainModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     schema_version: Literal[1] = 1
+    audit_schema: Literal[1, 2] = 1
     event_id: str = Field(min_length=1, max_length=128)
     run_id: RunId
     sequence: int = Field(ge=1)
@@ -155,6 +166,7 @@ class AuditEventRecord(StrictDomainModel):
     step_id: StepId | None = None
     tool_call_id: ToolCallId | None = None
     approval_id: ApprovalId | None = None
+    model_call_id: ModelCallId | None = None
     actor: str = Field(min_length=1, max_length=256)
     tool_name: ToolName | None = None
     rule_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -236,8 +248,19 @@ class AuditStore:
         actor = self._redacted_text(self._unit.actor, "append")
         input_summary = self._redacted_value(draft.input_summary, "append")
         output_summary = self._redacted_value(draft.output_summary, "append")
+        audit_columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(audit_events)").fetchall()
+        }
+        supports_schema_two = {"audit_schema", "model_call_id"}.issubset(audit_columns)
+        audit_schema = (
+            2
+            if supports_schema_two
+            and (draft.model_call_id is not None or draft.event_type.value.startswith("MODEL_"))
+            else 1
+        )
         payload = {
-            "audit_schema": 1,
+            "audit_schema": audit_schema,
             "schema_version": 1,
             "event_id": event_id,
             "run_id": draft.run_id,
@@ -251,6 +274,7 @@ class AuditStore:
             "step_id": draft.step_id,
             "tool_call_id": draft.tool_call_id,
             "approval_id": draft.approval_id,
+            **({"model_call_id": draft.model_call_id} if audit_schema == 2 else {}),
             "actor": actor,
             "tool_name": draft.tool_name,
             "rule_id": draft.rule_id,
@@ -263,6 +287,7 @@ class AuditStore:
         event_hash = _event_hash(payload)
         record = AuditEventRecord(
             event_id=event_id,
+            audit_schema=audit_schema,
             run_id=draft.run_id,
             sequence=sequence,
             occurred_at=occurred_at,
@@ -274,6 +299,7 @@ class AuditStore:
             step_id=draft.step_id,
             tool_call_id=draft.tool_call_id,
             approval_id=draft.approval_id,
+            model_call_id=draft.model_call_id,
             actor=actor,
             tool_name=draft.tool_name,
             rule_id=draft.rule_id,
@@ -287,43 +313,84 @@ class AuditStore:
         try:
             if self._unit.storage.fault_injector is not None:
                 self._unit.storage.fault_injector.trigger("audit:before-insert")
-            self._connection.execute(
-                """
-                INSERT INTO audit_events(
-                    event_id, schema_version, run_id, sequence, occurred_at,
-                    event_type, phase, status, decision, code,
-                    step_id, tool_call_id, approval_id, actor, tool_name,
-                    rule_id, workspace_fingerprint, input_summary_json,
-                    output_summary_json, evidence_ref, prev_hash, event_hash
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            if supports_schema_two:
+                self._connection.execute(
+                    """
+                    INSERT INTO audit_events(
+                        event_id, schema_version, audit_schema, run_id, sequence, occurred_at,
+                        event_type, phase, status, decision, code,
+                        step_id, tool_call_id, approval_id, model_call_id, actor, tool_name,
+                        rule_id, workspace_fingerprint, input_summary_json,
+                        output_summary_json, evidence_ref, prev_hash, event_hash
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    (
+                        record.event_id,
+                        record.schema_version,
+                        record.audit_schema,
+                        record.run_id,
+                        record.sequence,
+                        _serialize_datetime(record.occurred_at),
+                        record.event_type.value,
+                        record.phase.value,
+                        record.status.value,
+                        record.decision.value,
+                        record.code,
+                        record.step_id,
+                        record.tool_call_id,
+                        record.approval_id,
+                        record.model_call_id,
+                        record.actor,
+                        record.tool_name,
+                        record.rule_id,
+                        record.workspace_fingerprint,
+                        _json_or_none(record.input_summary),
+                        _json_or_none(record.output_summary),
+                        record.evidence_ref,
+                        record.prev_hash,
+                        record.event_hash,
+                    ),
                 )
-                """,
-                (
-                    record.event_id,
-                    record.schema_version,
-                    record.run_id,
-                    record.sequence,
-                    _serialize_datetime(record.occurred_at),
-                    record.event_type.value,
-                    record.phase.value,
-                    record.status.value,
-                    record.decision.value,
-                    record.code,
-                    record.step_id,
-                    record.tool_call_id,
-                    record.approval_id,
-                    record.actor,
-                    record.tool_name,
-                    record.rule_id,
-                    record.workspace_fingerprint,
-                    _json_or_none(record.input_summary),
-                    _json_or_none(record.output_summary),
-                    record.evidence_ref,
-                    record.prev_hash,
-                    record.event_hash,
-                ),
-            )
+            else:
+                self._connection.execute(
+                    """
+                    INSERT INTO audit_events(
+                        event_id, schema_version, run_id, sequence, occurred_at,
+                        event_type, phase, status, decision, code,
+                        step_id, tool_call_id, approval_id, actor, tool_name,
+                        rule_id, workspace_fingerprint, input_summary_json,
+                        output_summary_json, evidence_ref, prev_hash, event_hash
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    (
+                        record.event_id,
+                        record.schema_version,
+                        record.run_id,
+                        record.sequence,
+                        _serialize_datetime(record.occurred_at),
+                        record.event_type.value,
+                        record.phase.value,
+                        record.status.value,
+                        record.decision.value,
+                        record.code,
+                        record.step_id,
+                        record.tool_call_id,
+                        record.approval_id,
+                        record.actor,
+                        record.tool_name,
+                        record.rule_id,
+                        record.workspace_fingerprint,
+                        _json_or_none(record.input_summary),
+                        _json_or_none(record.output_summary),
+                        record.evidence_ref,
+                        record.prev_hash,
+                        record.event_hash,
+                    ),
+                )
         except sqlite3.IntegrityError as exc:
             raise AuditStoreError(
                 ErrorCode.AUDIT_SEQUENCE_CONFLICT,
@@ -426,6 +493,27 @@ class AuditStore:
         ).fetchall()
         return tuple(_record_from_row(row) for row in rows)
 
+    def list_model_events(
+        self,
+        run_id: str,
+        model_call_id: str,
+        *,
+        limit: int = 1000,
+    ) -> tuple[AuditEventRecord, ...]:
+        """List bounded audit facts associated with one model call."""
+
+        self._ensure_active()
+        self._validate_limit(limit)
+        rows = self._connection.execute(
+            """
+            SELECT * FROM audit_events
+            WHERE run_id = ? AND model_call_id = ?
+            ORDER BY sequence LIMIT ?
+            """,
+            (run_id, model_call_id, limit),
+        ).fetchall()
+        return tuple(_record_from_row(row) for row in rows)
+
     def verify_chain(self, run_id: str) -> AuditChainReport:
         """Recompute all links and hashes for one run."""
 
@@ -519,8 +607,10 @@ class AuditStore:
 
 
 def _record_from_row(row: sqlite3.Row) -> AuditEventRecord:
+    columns = set(row.keys())
     return AuditEventRecord(
         schema_version=int(row["schema_version"]),
+        audit_schema=int(row["audit_schema"]) if "audit_schema" in columns else 1,
         event_id=str(row["event_id"]),
         run_id=str(row["run_id"]),
         sequence=int(row["sequence"]),
@@ -533,6 +623,11 @@ def _record_from_row(row: sqlite3.Row) -> AuditEventRecord:
         step_id=str(row["step_id"]) if row["step_id"] else None,
         tool_call_id=str(row["tool_call_id"]) if row["tool_call_id"] else None,
         approval_id=str(row["approval_id"]) if row["approval_id"] else None,
+        model_call_id=(
+            str(row["model_call_id"])
+            if "model_call_id" in columns and row["model_call_id"]
+            else None
+        ),
         actor=str(row["actor"]),
         tool_name=str(row["tool_name"]) if row["tool_name"] else None,
         rule_id=str(row["rule_id"]) if row["rule_id"] else None,
@@ -555,8 +650,8 @@ def _event_id(run_id: str, sequence: int) -> str:
 
 
 def _record_payload(record: AuditEventRecord) -> dict[str, object]:
-    return {
-        "audit_schema": 1,
+    payload: dict[str, object] = {
+        "audit_schema": record.audit_schema,
         "schema_version": record.schema_version,
         "event_id": record.event_id,
         "run_id": record.run_id,
@@ -579,6 +674,9 @@ def _record_payload(record: AuditEventRecord) -> dict[str, object]:
         "evidence_ref": record.evidence_ref,
         "prev_hash": record.prev_hash,
     }
+    if record.audit_schema == 2:
+        payload["model_call_id"] = record.model_call_id
+    return payload
 
 
 def _event_hash(payload: dict[str, object]) -> str:

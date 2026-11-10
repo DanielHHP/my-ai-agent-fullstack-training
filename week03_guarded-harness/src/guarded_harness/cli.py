@@ -29,6 +29,7 @@ from .domain import (
     ErrorCode,
     FaultInjector,
     IdFactory,
+    ModelCallId,
     RunId,
     RunMode,
     RunRequest,
@@ -38,6 +39,7 @@ from .domain import (
     ToolCallId,
 )
 from .harness import Harness, HarnessError, ToolFactory
+from .model_runtime import create_model_from_config
 from .redaction import Redactor
 from .sandbox import CommandPolicy
 from .state_store import StateStoreError
@@ -171,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("run_id")
     inspect_parser.add_argument("--tool-call-id")
     inspect_parser.add_argument("--approval-id")
+    inspect_parser.add_argument("--model-call-id")
     inspect_parser.add_argument(
         "--audit-limit",
         type=_positive_limit,
@@ -213,12 +216,19 @@ def main(
             raise CLIError(ErrorCode.CLI_CONFIG_REQUIRED, "--config is required")
         config = _load_config(args.config)
         active_clock = clock or SystemClock()
+        active_model_factory = model_factory
+        if active_model_factory is None:
+            active_model_factory = (
+                _production_model_factory
+                if config.config.version == 2
+                else _unavailable_model_factory
+            )
         if args.command == "run":
             result = _run_command(
                 config_path=args.config,
                 config=config,
                 wait_seconds=args.wait_for_approval,
-                model_factory=model_factory or _unavailable_model_factory,
+                model_factory=active_model_factory,
                 tool_factory=tool_factory,
                 clock=active_clock,
                 id_factory=id_factory,
@@ -237,7 +247,7 @@ def main(
                 config=config,
                 run_id=run_id,
                 wait_seconds=args.wait_for_approval,
-                model_factory=model_factory or _unavailable_model_factory,
+                model_factory=active_model_factory,
                 tool_factory=tool_factory,
                 clock=active_clock,
                 id_factory=id_factory,
@@ -290,15 +300,24 @@ def main(
                 if args.approval_id is not None
                 else None
             )
-            if tool_call_id is not None and approval_id is not None:
+            model_call_id = (
+                _validate_id(ModelCallId, args.model_call_id, "model_call_id")
+                if args.model_call_id is not None
+                else None
+            )
+            selectors = sum(
+                value is not None for value in (tool_call_id, approval_id, model_call_id)
+            )
+            if selectors > 1:
                 raise CLIError(
                     ErrorCode.CLI_USAGE_ERROR,
-                    "--tool-call-id and --approval-id are mutually exclusive",
+                    "--tool-call-id, --approval-id and --model-call-id are mutually exclusive",
                 )
             data = InspectionService(args.config, clock=active_clock).inspect_run(
                 run_id,
                 tool_call_id=tool_call_id,
                 approval_id=approval_id,
+                model_call_id=model_call_id,
                 audit_limit=args.audit_limit,
             )
             _emit_success(output, command_name, data, json_mode)
@@ -385,6 +404,8 @@ def exit_code_for_error(code: str) -> int:
     }:
         return 2
     if normalized == ErrorCode.CLI_MODEL_UNAVAILABLE.value:
+        return 6
+    if normalized.startswith("MODEL_"):
         return 6
     if normalized.startswith("APPROVAL_"):
         return 5
@@ -491,8 +512,9 @@ def _harness(
     except CLIError:
         raise
     except Exception as exc:
+        code = getattr(exc, "code", ErrorCode.CLI_MODEL_UNAVAILABLE)
         raise CLIError(
-            ErrorCode.CLI_MODEL_UNAVAILABLE,
+            code if isinstance(code, ErrorCode) else ErrorCode.CLI_MODEL_UNAVAILABLE,
             _safe_message(exc),
         ) from exc
     if not isinstance(model, Model):
@@ -588,6 +610,11 @@ def _unavailable_model_factory(config_path: Path) -> Model:
         ErrorCode.CLI_MODEL_UNAVAILABLE,
         "no trusted P0 model factory is configured; inject smolagents.Model in-process",
     )
+
+
+def _production_model_factory(config_path: Path) -> Model:
+    config = load_config(config_path)
+    return create_model_from_config(config)
 
 
 def _validate_id(annotation: Any, value: str, name: str) -> str:

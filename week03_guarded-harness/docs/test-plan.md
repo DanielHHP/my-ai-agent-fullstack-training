@@ -1,30 +1,32 @@
-# Guarded Coding Harness P0 测试计划
+# Guarded Coding Harness 测试计划
 
 ## 1. 文档信息
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | WP-12 实施基线 |
+| 文档状态 | P0 完成基线 + WP-13 P1 实现与 live 验收完成 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
 | 对应决策 | [decisions.md](decisions.md) |
-| 对应工作包 | [WP-12 规格](work-packages/wp-12-fault-hardening-delivery/spec.md) |
+| 对应工作包 | [WP-12 规格](work-packages/wp-12-fault-hardening-delivery/spec.md)；[WP-13 规格](work-packages/wp-13-real-model-provider/spec.md) |
 | 飞书来源 | `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌工作簿 revision 11 |
 
-本文定义 P0 测试层级、命令、安全/故障矩阵和证据格式。测试计划不重新定义规格；行为冲突时以
-需求、设计、决策和已冻结工作包规格为准。
+本文定义 P0 测试层级、命令、安全/故障矩阵和证据格式，并记录 WP-13 P1 真实模型的测试草案。
+测试计划不重新定义规格；行为冲突时以需求、设计、决策和已冻结工作包规格为准。
 
 ## 2. 目标与约束
 
 默认测试必须：
 
-1. 完全离线，不调用真实模型 Provider、网络或用户凭据；
+1. P0 和 WP-13 默认测试完全离线，不调用真实模型 Provider、网络或用户凭据；
 2. 使用临时 Git 工作区、临时 SQLite 和 Fake Model；
 3. 可确定、可重复执行，不依赖开发者绝对路径或执行顺序；
 4. 对拒绝、审批、执行、恢复和验收都检查持久化事实与副作用计数；
 5. 不通过删除、跳过、弱化断言或额外测试替代六个必须测试文件；
 6. 故障注入只在测试目录显式启用，生产配置、CLI、模型和普通环境变量不能开启；
 7. 平台相关进程测试仅承诺 Linux/macOS；不满足进程组能力时必须失败关闭。
+8. WP-13 live smoke 只能通过显式 marker/环境变量 opt-in，不能由普通配置、CLI 或模型输入
+   自动启用。
 
 ## 3. 测试层级
 
@@ -38,6 +40,9 @@
 | Agent/Harness | `tests/test_harness_loop.py` | Fake Model、原生 `ToolCallingAgent`、预算和终态 |
 | CLI | `tests/test_cli.py` | run/resume/approval/inspect、跨进程和退出码 |
 | WP-12 故障矩阵 | `tests/test_fault_recovery.py` | 硬进程退出、DB 锁、Checkpoint 损坏、租约和正式样例 |
+| P1 模型配置/运行时 | `tests/test_model_config.py`、`tests/test_model_runtime.py` | version 2 配置、凭据、Provider、响应、usage、超时和重试 |
+| P1 模型调用生命周期 | `tests/test_model_calls.py` | STARTED/结果、预算 reservation、Audit、崩溃和 unknown |
+| P1 live smoke | `tests/live/test_live_model_smoke.py` | 显式 opt-in 的真实只读任务端到端 |
 
 ## 4. 六个必须测试文件
 
@@ -83,6 +88,24 @@ python -m pytest -q
 ```
 
 最终报告必须记录实际退出码、通过/失败/错误/skip 数和执行日期。不能复制本文示例计数作为结果。
+
+WP-13 离线目标测试：
+
+```bash
+python -m pytest \
+  tests/test_model_config.py \
+  tests/test_model_runtime.py \
+  tests/test_model_calls.py -q
+```
+
+WP-13 显式 live smoke：
+
+```bash
+GUARDED_HARNESS_LIVE_MODEL=1 \
+python -m pytest tests/live/test_live_model_smoke.py -q -m live_model
+```
+
+live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检查。
 
 ## 6. 飞书核心验收映射
 
@@ -166,7 +189,36 @@ python -m pytest -q
 - P0 场景缺少自动化证据；
 - 文档把 P1 未执行项写成已验证。
 
-## 11. 最终复跑
+## 11. WP-13 P1 模型调用矩阵
+
+| 风险 | 测试 | 期望 |
+| --- | --- | --- |
+| v2 schema 和 Provider 注入 | `test_model_config.py` | 合法配置可加载；未知字段、动态 Provider、非法 URL 被拒绝 |
+| 默认安装 | clean venv + `python -m pip install .` | OpenAI SDK 与 `tiktoken` 默认可导入，无需 extra |
+| tokenizer 与上下文 | `test_model_config.py`、`test_model_runtime.py` | 未知 tokenizer/输入超限时 Provider calls=0，不截断或摘要 |
+| 凭据泄漏 | config/redaction/fingerprint | 密钥值不进入配置指纹、SQLite、Audit、日志和 CLI |
+| 端点绕过 | endpoint parser/fake client | userinfo、非 HTTP(S)、跨主机 redirect 被拒绝 |
+| 代理环境绕过 | fake transport + `HTTP_PROXY` | `trust_env=False`，代理变量不影响请求 |
+| 预算提交前失败 | fake transport | provider calls=0，Run 不进入网络调用 |
+| 调用成本预留 | model call + budget | 成功按 usage 结算，unknown 保守保留 reservation |
+| 隐式重试 | fake transport count | SDK/smolagents 无额外请求，显式 attempt 均有 Audit |
+| Step 关联 | first model call | 调用前创建 Step，STARTED 的 `step_id` 非空 |
+| usage 缺失/非法 | fake response | `MODEL_USAGE_INVALID`，不得按 0 计费 |
+| 文本 tool-call fallback | fake response with content only | `MODEL_RESPONSE_INVALID`，不调用文本解析 |
+| 缺失/重复 tool-call ID | fake structured call | `MODEL_TOOL_CALLS_INVALID`，不合成 ID |
+| 响应过大/工具调用非法 | fake response | 不进入 Agent/Gate，失败关闭 |
+| Agent/Gate 穿透 | fake tool call | 模型只看到 GovernedTool，实际执行仍经过 Gate |
+| Audit 开始失败 | fault injector | `MODEL_CALL_STARTED` 未提交，network call=0 |
+| Audit schema 兼容 | v7 database + v8 migration | 旧事件按 schema 1 校验，新 `MODEL_*` 事件按 schema 2 校验 |
+| STARTED 后崩溃 | 子进程硬退出 | 恢复为 `MODEL_CALL_UNKNOWN` 且不重发 |
+| 模型配置漂移 | resume with changed profile | `HARNESS_CONFIG_RELOAD_FAILED`/明显配置错误 |
+| 只读命令零网络 | CLI inspect/approvals | Provider 创建和网络调用均为 0 |
+| live smoke | explicit marker + fixed model snapshot | 真实只读任务产生模型调用、工具调用和 Completion 结果 |
+
+WP-13 测试必须使用 fake client/transport 覆盖正常和故障路径；真实服务调用只允许出现在
+`tests/live/` 的显式 opt-in 测试中。
+
+## 12. 最终复跑
 
 WP-12 验收前至少执行：
 
@@ -179,6 +231,10 @@ WP-12 验收前至少执行：
 
 所有结果和限制写入
 [WP-12 acceptance-report](work-packages/wp-12-fault-hardening-delivery/acceptance-report.md)。
+
+WP-13 验收前还必须复跑模型目标测试、P0 全量测试、Ruff lint、格式检查和显式 live smoke；
+离线结果、真实 Provider 结果及剩余限制分别写入
+`work-packages/wp-13-real-model-provider/acceptance-report.md`。
 
 WP-08 至 WP-11 的语义审查、CLI 操作走查和测试 diff 审查使用
 [manual-acceptance-wp08-wp11.md](manual-acceptance-wp08-wp11.md)；人工结果不能替代失败的自动化门禁。

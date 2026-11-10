@@ -4,15 +4,16 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | P0 工作包计划基线，作为详细设计、施工和验收报告输入 |
+| 文档状态 | P0 已完成工作包基线 + P1 WP-13 草案拆解 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
 | 已确认决策 | [decisions.md](decisions.md) |
 | 开发资源 | 单开发者；默认串行施工，但按实际依赖而非文件顺序安排 |
 | 组织单位 | 可独立实现、测试、审查和回滚的能力工作包 |
 
-本文按“里程碑 -> 工作包 -> 实施任务”组织 P0 开发。工作包是计划和验收单位，文件是包内的
-实施对象；同一个文件可以由多个工作包分阶段扩展。本文描述计划，不代表相关能力已经实现。
+本文按“里程碑 -> 工作包 -> 实施任务”组织 P0 和 P1 开发。工作包是计划和验收单位，文件是包内
+的实施对象；同一个文件可以由多个工作包分阶段扩展。本文描述计划，不代表相关能力已经实现。
+WP-00 至 WP-12 已按 P0 完成；WP-13 是 2026-11-09 新增的 P1 真实模型接入草案。
 
 ## 2. 工作包定义
 
@@ -111,6 +112,7 @@ WP-04，后续真实工具接入和生命周期扩展仍可在 WP-05、WP-06 中
 | WP-10 Agent 与 Harness | Fake Model、公开适配和 Harness 编排形成 Agent 闭环 | WP-07、WP-08、WP-09 | P5-01 至 P5-03、P5-06 | 原生 ToolCallingAgent 循环保留，所有工具调用经过 Gate |
 | WP-11 CLI 与人工恢复 | run、resume、approvals、inspect 共享受控运行链 | WP-07、WP-10 | P5-04、P5-05、P5-07 | 审批后新进程恢复，写操作只执行一次 |
 | WP-12 故障加固与交付 | 全局故障矩阵、样例配置、测试与运维文档形成最终交付 | WP-00 至 WP-11 | P6-01 至 P6-07 | 两类任务端到端通过，完整证据链可复验 |
+| WP-13 真实模型 Provider 与调用治理 | version 2 模型配置、OpenAI Chat Completions v1 Provider、ModelCallGateway、预算预留、审计、恢复和 live smoke | WP-07、WP-10、WP-11、WP-12 | WP13-T00 至 WP13-T09 | P0 回归通过；离线 Provider 契约通过；固定快照 live smoke 显式 opt-in |
 
 ## 5. 依赖关系与施工顺序
 
@@ -132,6 +134,7 @@ WP-06 + WP-08 ──────────────────────
 WP-07 + WP-08 + WP-09 ─────────────────────────────────────> WP-10
 WP-07 + WP-10 ─────────────────────────────────────────────> WP-11
 WP-00 至 WP-11 ────────────────────────────────────────────> WP-12
+WP-00 至 WP-12 ────────────────────────────────────────────> WP-13（P1）
 ```
 
 ### 5.2 推荐施工顺序
@@ -142,6 +145,7 @@ WP-00 至 WP-11 ─────────────────────�
 WP-00 -> WP-01 -> WP-02 -> WP-03 -> WP-04 -> WP-05
       -> WP-06 -> WP-07 -> WP-08 -> WP-09
       -> WP-10 -> WP-11 -> WP-12
+      -> WP-13（P1，等待 WP-12 DONE 后单独批准）
 ```
 
 WP-02 与 WP-03 在 WP-00 完成后没有直接依赖，可在多人协作时并行。WP-08 的代码理解验收可以在
@@ -156,6 +160,7 @@ WP-06 完成前开始，因为它只依赖 Gate 和只读工具；但 WP-09 必�
 | M2 可恢复验收闭环 | WP-07 至 WP-09 | 崩溃恢复判定和两类任务程序化验收可用 |
 | M3 Agent 运行闭环 | WP-10、WP-11 | Fake Model 驱动原生 Agent，CLI 支持审批和恢复 |
 | M4 P0 最终交付 | WP-12 | 全量测试、故障注入、样例和文档通过 |
+| M5 P1 真实模型接入 | WP-13 | 受控真实 Provider、模型调用治理、离线契约和显式 live smoke 通过 |
 
 ### 5.4 里程碑执行规程
 
@@ -394,6 +399,49 @@ python -m ruff format --check .
 
 **最终出口**：生成最终验收记录，包含命令、结果、覆盖场景、证据位置、剩余风险和明确未实现项。
 M4 不增加新的 P0 功能；发现问题时回到对应工作包修复，并通过该工作包和受影响下游里程碑重新验收。
+
+### 5.10 M5 P1 真实模型接入
+
+**范围**：WP-13。
+
+**准入条件**：M4 已 DONE；D-87 至 D-100 已确认；version 2 配置、Provider 和 ModelCallGateway
+规格冻结。
+
+**包内施工顺序**：
+
+1. 冻结配置 v2、ModelCall 状态、错误码、usage 和 reservation 契约；
+2. 将 OpenAI SDK 和固定 TokenCounter 加入默认运行依赖，实现 SecretResolver、
+   `openai_chat_completions_v1` Provider 和 Raw Model Factory；
+3. 接入 ModelCallGateway，先证明门禁失败时 Provider 调用次数为 0；
+4. migration v8 持久化 ModelCall、reservation 和模型调用 Audit；
+5. 实现预算预留、成功结算、隐式重试关闭和响应/usage 校验；
+6. 接入 CLI `run/resume`，保证 `approvals`/`inspect` 零模型、零网络；
+7. 完成 STARTED 后崩溃、配置漂移和 unknown 恢复测试；
+8. 执行 P0 全量回归和显式 live smoke。
+
+**完成演示**：
+
+1. v2 配置构造真实 `smolagents.Model`，原生 ToolCallingAgent 仍负责决策；
+2. 首次模型调用前创建 Step，每次真实调用先写 `model_call STARTED` 和 reservation，成功后有
+   usage/成本/Audit；
+3. 无凭据、预算不足或 Audit 失败时网络调用为 0；
+4. STARTED 后硬退出恢复为 `BLOCKED/UNKNOWN_RESULT/MODEL_CALL_UNKNOWN`，不自动重发；
+5. 只读任务通过真实 Provider 生成至少一个工具调用并最终被 Completion 独立验收；
+6. 默认 `pytest -q` 完全离线，P0 372 项基线继续通过。
+
+**验收命令**：
+
+```bash
+python -m pytest tests/test_model_config.py tests/test_model_runtime.py tests/test_model_calls.py -q
+python -m pytest -q
+python -m ruff check .
+python -m ruff format --check .
+```
+
+真实 smoke test 只在显式授权后单独执行，不能替代上面的默认门禁。
+
+**最终出口**：WP-13 规格 frozen、计划 approved、验收报告 accepted；P0 未回归，P1 真实模型
+能力有实际 Provider 和离线契约双重证据。
 
 ## 6. 工作包详细定义
 
@@ -874,6 +922,60 @@ WP09-Q01 至 Q08 已由 D-65 至 D-72 关闭；32/32 AC、人工测试质量复�
 
 **不在本包内**：新增 P0 功能、真实 Provider、隐藏验收、多仓库或分布式能力。
 
+### WP-13 真实模型 Provider 与模型调用治理（P1）
+
+**目标**：在 P0 治理闭环之上，让标准 `run/resume` 安全接入真实模型服务，同时保持
+ToolCallingAgent 决策循环、Gate 工具边界和 Completion 独立验收。
+
+**依赖**：WP-07、WP-10、WP-11、WP-12 均已 accepted。
+
+**包内文档**：[冻结规格](work-packages/wp-13-real-model-provider/spec.md)（v1.0.0 / frozen）、
+[实施计划](work-packages/wp-13-real-model-provider/plan.md)（v1.0.0 / done）、
+[验收报告](work-packages/wp-13-real-model-provider/acceptance-report.md)（v1.1 / accepted）。
+
+**当前状态**：DONE。离线实现、默认 SDK、migration v8、P0 回归、本地真实 SDK 协议测试和
+DeepSeek 外部 live smoke 均已通过。
+
+**主要范围**：
+
+- `model_runtime.py`、version 2 配置、SecretResolver 和 OpenAI Chat Completions v1 Provider；
+- GovernedModel/ModelCallGateway 及模型调用状态；
+- `model_calls`、成本 reservation、Audit 和 migration v8；
+- `run/resume` Provider 装配，`approvals`/`inspect` 零网络；
+- fake transport 离线测试和显式 live smoke；
+- 需求、设计、决策、测试、运维和验收文档。
+
+**交付内容**：
+
+- v2 `model` 配置包含 Provider、模型、端点、凭据引用、tokenizer、超时、token/响应上限、
+  速率、重试和价格；
+- 固定 `openai_chat_completions_v1`、tokenizer registry、结构化工具调用和严格调用 ID；
+- 所有真实 `Model.generate` 经过租约、wall-time、预算和 Audit 前置检查；
+- 首次模型调用前创建并持久化 Agent Step；每次重试有独立 attempt 和逻辑调用归组 ID；
+- 调用前 reservation、调用后使用实际 usage 结算，缺失 usage 失败关闭；
+- SDK/smolagents 隐式重试关闭，显式 attempt 有审计；
+- `ChatMessage`、usage、响应大小、tool call 数量和 ID 在进入 Agent 前校验；
+- `MODEL_CALL_STARTED` 后崩溃恢复为 unknown，不自动重发；
+- 模型响应中的工具候选继续经过现有 GovernedTool 和 Gate；
+- 模型配置变化、凭据不可用、端点变化和价格策略变化均失败关闭；
+- 默认测试无网络，真实 smoke 显式 opt-in。
+
+**退出条件**：
+
+- WP13-AC-001 至 WP13-AC-020 全部有实际测试或人工证据；
+- P0 全量测试、Ruff lint 和格式检查通过；
+- 凭据不出现在 fingerprint、State、Audit、日志和 CLI；
+- 预算不足、Audit 开始写失败和租约无效时 Provider 调用为 0；
+- `approvals`/`inspect` 不创建模型、不读取凭据、不访问网络；
+- 一类真实只读任务通过受控 Provider 完成，且未用 Fake Model 结果冒充；
+- 文档明确 WP-13 是 P1，P0 完成声明不自动包含真实模型能力。
+
+**施工前详细设计**：必须冻结配置 v2、SecretResolver、端点策略、ModelCall 状态、migration v8、
+reservation 语义、隐式重试关闭、响应校验和 `MODEL_CALL_UNKNOWN` 恢复边界。
+
+**不在本包内**：任意 Provider 插件、LiteLLM/多 Provider 路由、模型质量评估、Web 配置界面、
+远程密钥托管、隐藏推理存储、自动 fallback 和自动重放 unknown 调用。
+
 ## 7. 工作包文档拆解模式
 
 每个工作包进入详细设计后，默认形成两份规范性文档；通过验收时再形成一份证据文档：
@@ -1127,6 +1229,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | Agent 统一入口 | WP-10 | WP-11、WP-12 | Fake Model 下所有调用经过 Gate |
 | 人工审批与恢复 | WP-11 | WP-12 | 新进程 resume 和一次性执行 |
 | 全量故障加固 | WP-12 | 无 | 完整测试、lint、格式和交付记录 |
+| 真实模型调用治理 | WP-13 | 后续 Provider 扩展 | 配置/凭据/预算/超时/响应/Audit/unknown 证据 |
 | 工作包验收报告 | WP-00 | 每个 WP | `acceptance-report.md` 为 accepted，命令可复跑且场景/任务/限制完整 |
 
 ## 10. 风险与详细设计待确认项
@@ -1144,6 +1247,12 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | smolagents 公开适配稳定性 | WP-10 | 只依赖固定版本的公开接口，升级测试必须显式失败 |
 | Git-ignored 外围文件不可见 | WP-03 | 只能作为剩余风险，不宣称文件系统级强隔离 |
 | 自然语言语义正确性 | WP-08 | P0 只验证引用和程序化事实，不宣称能自动证明代码解释语义 |
+| 真实模型调用成本不可精确预测 | WP-13 | 配置价格和 reservation 是治理预算，不冒充 Provider 账单 |
+| 真实模型网络和端点风险 | WP-13 | 固定 allowlist、HTTPS、无跨主机 redirect、显式私网例外 |
+| 模型调用超时后的计费/结果不确定 | WP-13 | 保留 reservation 并标记 unknown，不自动重发 |
+| 远端模型版本漂移 | WP-13 | 优先固定模型快照；移动别名不能冒充完全可复现 |
+| Provider 工具调用协议差异 | WP-13 | 首版只支持 OpenAI Chat Completions v1；响应和 tool call 在 Agent 前校验 |
+| 隐式 SDK 重试造成审计缺口 | WP-13 | SDK `max_retries=0`、smolagents `retry=False`，显式 attempt 审计 |
 
 ## 11. 原文件任务追溯附录
 
@@ -1191,6 +1300,9 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | `tests/test_audit.py` | WP-01 | WP-04、WP-12 | 审计与事务 |
 | `tests/test_harness_loop.py` | WP-10 | WP-11、WP-12 | Agent 运行与恢复 |
 | `tests/test_completion.py` | WP-08 | WP-09、WP-10、WP-12 | 程序化最终验收 |
+| `tests/test_model_config.py` | WP-13 | 无 | 模型配置、端点和凭据引用 |
+| `tests/test_model_runtime.py` | WP-13 | 无 | Provider、响应、usage、超时和重试 |
+| `tests/test_model_calls.py` | WP-13 | 无 | 模型调用状态、预算、Audit 和恢复 |
 
 允许增加测试文件，但不得以额外测试替代上述六份指定文件。
 
@@ -1206,6 +1318,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | `REQ-CHECKPOINT-*` | WP-07、WP-10、WP-11、WP-12 |
 | `REQ-TASK-*` | WP-05、WP-06、WP-08、WP-09、WP-10 |
 | `REQ-COMPLETE-*` | WP-08、WP-09、WP-10、WP-12 |
+| `REQ-MODEL-*` | WP-13 |
 | D-01 审批与恢复 | WP-02、WP-07、WP-10、WP-11 |
 | D-02 工作区范围 | WP-00、WP-03、WP-08 |
 | D-03 交付物路径 | WP-00、WP-06、WP-08 |
@@ -1224,6 +1337,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | D-22 Evidence 单一生产者 | WP-01、WP-04、WP-05、WP-08、WP-09 |
 | D-29 至 D-36 Sandbox 边界 | WP-03、WP-04、WP-05、WP-06、WP-07、WP-09、WP-12 |
 | D-48 至 D-52 WP-06 写入与命令语义 | WP-06、WP-07、WP-09、WP-10、WP-12 |
+| D-87 至 D-100 真实模型接入 | WP-13 |
 
 ## 14. 全局完成定义
 
@@ -1243,3 +1357,14 @@ P0 交付必须同时满足：
 
 工作包完成不自动等于项目完成。只有 WP-12 的端到端、安全边界和交付证据全部通过后，
 项目才可以标记为 P0 完成。
+
+P1 真实模型接入必须另行满足：
+
+1. WP-13 规格 frozen、计划 approved、验收报告 accepted；
+2. version 2 配置、默认安装 SDK、TokenCounter、SecretResolver、ModelCallGateway 和 migration
+   v8 已实现；
+3. 默认离线测试和 P0 全量测试全部通过；
+4. 模型调用预算、usage、响应、审计、崩溃和恢复边界有自动化证据；
+5. `approvals`/`inspect` 零模型、零凭据、零网络；
+6. 一类真实只读任务完成显式 live smoke；
+7. 文档没有把计划、Fake Model 或 P0 证据冒充真实模型能力。

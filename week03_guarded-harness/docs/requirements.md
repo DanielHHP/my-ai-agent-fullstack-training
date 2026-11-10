@@ -4,15 +4,19 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | 设计输入基线 |
-| 优先级 | 除特别说明外，本文件中的需求均为必须实现（P0） |
-| 技术栈 | Python 3.10+、smolagents、pytest、Ruff、pip + `pyproject.toml` |
+| 文档状态 | P0 实现基线 + P1 真实模型扩展设计输入 |
+| 优先级 | `REQ-MODEL-*` 为 P1；其余除特别说明外均为必须实现（P0） |
+| 技术栈 | Python 3.10+、smolagents、OpenAI Chat Completions SDK（P1）、pytest、Ruff、pip + `pyproject.toml` |
 | 首期任务范围 | 代码理解、测试修复 |
 | 来源 | 用户作业说明；飞书文档“必须交付”章节及其内嵌交付表；本项目 `AGENTS.md`；参考项目 `course_code/week03/3-7/project3` |
 
 飞书文档中的“必须交付”表（revision 11）锁定了六个核心模块、测试目录和六个测试文件；
 本章的其他正文补充要求 `tests/` 使用 Fake Model 覆盖正常路径与失败路径。本文件将这些要求扩展为
 可设计、可实现、可验收的整体需求，不把参考项目的 TypeScript 类名、文件布局或内部实现作为验收条件。
+
+2026-11-09 的需求评估新增 P1 真实模型 Provider 与模型调用治理范围。该范围由
+[WP-13 规格](work-packages/wp-13-real-model-provider/spec.md)冻结。离线实现、默认依赖和
+本地真实 SDK 协议仿真已完成；外部模型服务 live smoke 仍需独立凭据验收，不属于 P0 已实现事实。
 
 ## 2. 背景与目标
 
@@ -35,7 +39,7 @@ Guarded Coding Harness。
 
 ## 3. 范围与非目标
 
-### 3.1 首期范围
+### 3.1 P0 首期范围
 
 - 单个 Agent Run 绑定一个目标仓库根目录。
 - `ToolCallingAgent` 的原生决策循环继续工作。
@@ -44,13 +48,24 @@ Guarded Coding Harness。
 - 单机、本地、可离线复现的正常执行、审批等待、失败停止和进程恢复。
 - Fake Model 驱动的确定性自动化测试。
 
-### 3.2 非目标
+### 3.2 P1 真实模型扩展范围
+
+- 标准 `run/resume` 可从严格校验的 version 2 配置构造
+  `openai_chat_completions_v1` 的 `smolagents.Model`。
+- 模型调用先经过 Run、租约、wall-time、成本预留和审计边界，再访问外部服务。
+- 模型响应、token usage、工具调用数量和大小在进入 `ToolCallingAgent` 前校验。
+- 模型调用结果、重试和未知状态可持久化、审计和人工检查。
+- 默认自动化测试仍完全离线；真实服务只通过显式 opt-in smoke test 验证。
+
+### 3.3 非目标
 
 - 不实现通用自主编程平台、多仓库并行调度、分布式任务队列或 Web 管理界面。
 - 不提供无限制 shell、包安装、后台常驻进程或任意网络访问。
 - 不替代 smolagents 的模型调用、消息管理和 ReAct/Tool Calling 循环。
 - 不通过提示词、回调日志或模型最终回答充当安全门禁。
 - 不对非幂等外部副作用承诺物理上的 exactly-once；无法确认结果时必须暴露“不确定”状态并停止自动重放。
+- P1 首版不提供任意 Provider 插件、自动 fallback、模型质量评估、隐藏推理保存或跨 Provider
+  路由。
 
 ## 4. 核心原则
 
@@ -65,13 +80,20 @@ Guarded Coding Harness。
 ## 5. 总体运行流程
 
 ```text
-任务配置 + 目标仓库 + Fake/Real Model
+任务配置 + 目标仓库 + Fake Model 或受信 Provider
                 │
                 ▼
           Harness.run()
                 │
                 ▼
        ToolCallingAgent 决策循环
+                │ Model.generate
+                ▼
+       ModelCallGateway（P1）
+       Run/租约/预算/审计/响应校验
+                │
+                ▼
+       Fake Model 或真实模型服务
                 │ ToolCall(tool_call_id, name, args)
                 ▼
         ┌─────────────────┐
@@ -333,6 +355,96 @@ Run 因任何预算耗尽而停止时，执行状态必须为 `STOPPED`、停止
 `FAILED` 或 `ACCEPTED`，也不得继续执行最终验收；已经产生的部分交付物和测试结果只能作为
 诊断证据保留。
 
+### 6.9 真实模型 Provider 与模型调用治理（P1）
+
+**REQ-MODEL-001（P1 必须）**
+标准 `run/resume` 必须能够从经过严格校验的 version 2 配置构造真实
+`smolagents.Model`，但不得复制、重写或 monkey patch `ToolCallingAgent`。模型选择、tool call
+解析和 ReAct/Tool Calling 循环继续由 smolagents 负责。
+
+**REQ-MODEL-002（P1 必须）**
+真实模型配置必须声明 Provider、模型 ID、端点、凭据引用、tokenizer、连接/请求超时、输入/输出
+token 上限、响应大小、单响应工具调用上限、速率、重试和版本化价格策略。配置使用版本化联合
+模型和 `extra="forbid"`；v1 继续兼容可信 Fake Model 注入，v2 才允许真实 Provider。
+
+**REQ-MODEL-003（P1 必须）**
+首个 Provider 固定为 `openai_chat_completions_v1`，底层使用
+`smolagents.OpenAIServerModel`。Provider 类型、公开模型类和安全参数使用固定 allowlist；
+YAML、CLI、模型输出和环境变量不能选择任意 import path、类、可调用对象或 SDK 参数。服务必须
+返回结构化 tool calls；首版不启用文本内容中的 tool-call fallback，Provider 不返回非空唯一
+call ID 时失败关闭。
+
+**REQ-MODEL-004（P1 必须）**
+凭据必须通过受控 `SecretResolver` 按非秘密 `credential_ref` 解析。不得读取 `.env`，不得把
+密钥值写入配置、配置指纹、SQLite、Audit、日志、异常、CLI 输出或子进程环境。凭据缺失或
+不在 allowlist 时在真实网络请求前失败关闭。
+
+**REQ-MODEL-005（P1 必须）**
+模型端点必须经过协议、主机、端口和路径校验，默认使用 HTTPS，禁止 userinfo、URL 凭据、
+`file:`/`data:` scheme 和 cross-host redirect。localhost、私网或 HTTP 例外必须显式、窄范围
+配置并记录审计。模型 HTTP 客户端不继承代理环境变量；未来如支持代理，必须单独评审。
+
+**REQ-MODEL-006（P1 必须）**
+所有真实 `Model.generate` 调用必须经过 Harness 拥有的 Governed Model/ModelCallGateway。
+`step_callbacks`、SDK 日志和 smolagents 内部日志只能观测，不能作为模型调用门禁。
+
+**REQ-MODEL-007（P1 必须）**
+发起网络请求前必须确认 Run 处于允许调用的状态、租约有效、wall-time 和预算尚有余额。请求
+timeout 必须不大于剩余 wall-time。模型配置必须指定固定 registry 中的 tokenizer，Harness
+必须用其证明输入不超过 `max_input_tokens`；无法计数、未知 tokenizer 或输入超限时拒绝调用。
+任一前置条件不满足时 Provider 调用次数必须为 0。首版不得通过截断旧 observation、上下文压缩
+或隐式模型摘要绕过上下文超限。
+
+**REQ-MODEL-008（P1 必须）**
+真实模型调用使用版本化 input/output token 价格策略和 Decimal 成本。调用前按可信输入/输出
+上限预留最坏成本；调用成功按实际 usage 结算，明确未生成内容的失败可释放预留，超时、5xx 或
+响应丢失等无法确认计费的场景保留预留并标记未知。
+
+**REQ-MODEL-009（P1 必须）**
+SDK 和 smolagents 的隐式重试必须关闭。只允许对 Provider 明确未接受请求的限流或连接建立失败
+进行有限、可审计重试；read timeout、连接中断、5xx、响应截断和解析失败不得自动重发。
+
+**REQ-MODEL-010（P1 必须）**
+真实模型响应必须返回非空、非负、可解析的 input/output token usage，且不得超过请求上限。
+缺失或非法 usage 时不得按 0 计费，也不得把响应交给 Agent。
+
+**REQ-MODEL-011（P1 必须）**
+模型响应必须是 `ChatMessage`，并满足响应大小、工具调用数量、工具调用 ID 非空/唯一、
+`final_answer` 不与其他工具混用等约束。非法或超大响应不得截断后继续执行。
+
+**REQ-MODEL-012（P1 必须）**
+每次模型调用必须有稳定 `model_call_id`、`logical_model_call_id` 和 attempt，STARTED 状态
+必须绑定首次模型调用前创建的 Step。持久化开始、结束、状态、usage、成本、错误码和请求/响应
+摘要。完整 prompt、完整响应、raw provider payload、隐藏推理和敏感 header 不得写入
+State/Audit。P1 新增 Audit 关联字段时使用新 audit schema 版本，旧事件的哈希链和 append-only
+事实不得被重写。
+
+**REQ-MODEL-013（P1 必须）**
+模型调用写 `STARTED` 后进程崩溃且结果未落盘时，恢复必须标记 `MODEL_CALL_UNKNOWN`，不得自动
+重新发送。对应 Run 状态为 `BLOCKED`、`StopReason=UNKNOWN_RESULT`、错误码为
+`MODEL_CALL_UNKNOWN`。新进程只能依据已提交的确定结果继续；需要继续工作时启动新 Run 或使用
+未来单独评审的 reconcile 契约。
+
+**REQ-MODEL-014（P1 必须）**
+resume 必须重新校验配置指纹、Provider、模型 ID、端点、价格策略和凭据引用。模型配置不一致
+时不得静默切换到新模型继续旧 Run。
+
+**REQ-MODEL-015（P1 必须）**
+`approvals` 和 `inspect` 等只读控制命令不得构造真实模型、读取凭据或访问模型网络。只有
+`run/resume` 可以创建 Provider。
+
+**REQ-MODEL-016（P1 必须）**
+默认 pytest 必须保持离线、确定和可重复。真实服务 smoke test 必须使用显式 marker 和人工
+opt-in，只运行低预算只读场景，不得成为普通 CI、P0 验收或完成声明的依赖。
+
+**REQ-MODEL-017（P1 必须）**
+认证失败、端点拒绝、模型不存在、限流、超时、协议不兼容、响应非法、usage 非法和调用未知
+必须有稳定 `MODEL_*` 错误码。错误文本必须有界脱敏，不能包含请求体、header 或凭据。
+
+**REQ-MODEL-018（P1 必须）**
+真实模型调用成功不等于任务成功。模型返回的工具调用仍只作为候选经过现有 Gate；Agent 停止后
+仍由 Completion 根据工作区、测试、Evidence 和 Audit 独立验收。
+
 ## 7. 必须交付物
 
 以下文件是作业明确要求的交付边界。Python 模块应位于可由 `src` 布局导入的包内，推荐包目录为
@@ -359,6 +471,19 @@ Run 因任何预算耗尽而停止时，执行状态必须为 `STOPPED`、停止
 | TEST-005 | `tests/test_harness_loop.py` | Fake Model 正常完成、门禁拒绝、审批等待、预算停止、异常停止和统一入口 |
 | TEST-006 | `tests/test_completion.py` | 代码理解与测试修复验收、模型无证据声明、diff/测试结果不满足时拒绝 |
 
+### 7.1 P1 真实模型交付物
+
+以下交付物只属于 WP-13 P1，不改变 P0 必须交付清单：
+
+| ID | 交付物 | 最低职责 | 验收证据 |
+| --- | --- | --- | --- |
+| DEL-P1-001 | `model_runtime.py` | Provider Factory、SecretResolver、GovernedModel 和 ModelCallGateway | Fake transport 与公开 `smolagents.Model` 契约测试 |
+| DEL-P1-002 | version 2 `model` 配置 | 严格 Provider、端点、凭据引用、超时、token、速率、重试和价格配置 | 正反配置、指纹和脱敏测试 |
+| DEL-P1-003 | `model_calls` 持久化 | 调用状态、attempt、usage、reservation、成本和稳定错误 | 重开数据库可查询，崩溃窗口可判定 |
+| DEL-P1-004 | 模型调用 Audit | 开始、成功、失败、超时、限流、usage 非法和 unknown 事件 | 可按 `model_call_id` 关联 Step、Run 和响应结果 |
+| DEL-P1-005 | `tests/test_model_runtime.py` 等 | 离线 Provider、预算、响应、重试、恢复和只读命令测试 | 默认 `pytest -q` 无网络依赖 |
+| DEL-P1-006 | 真实服务 smoke test | 显式 opt-in 的只读任务 E2E | 真实模型生成工具调用并形成可复核证据 |
+
 ## 8. 非功能需求
 
 ### 8.1 安全
@@ -367,6 +492,8 @@ Run 因任何预算耗尽而停止时，执行状态必须为 `STOPPED`、停止
 - 所有敏感信息在写入状态、审计、日志或模型上下文前脱敏。
 - 所有安全判定必须位于程序执行路径，不能仅写在系统提示词或工具 description 中。
 - 安全基础设施异常按失败关闭处理。
+- P1 真实模型网络只允许访问配置声明的受控端点；模型不能决定 Provider、端点、凭据引用、
+  超时、重试或预算。
 
 ### 8.2 可恢复性与一致性
 
@@ -387,9 +514,19 @@ Run 因任何预算耗尽而停止时，执行状态必须为 `STOPPED`、停止
 - 使用 Ruff 执行 lint 和格式检查。
 - 运行时依赖和开发依赖在 `pyproject.toml` 中声明，正式依赖来源唯一；开发、测试和 lint
   统一通过 `python -m pip install -e '.[dev]'` 安装，不维护重复的 `requirements.txt`。
+- P1 真实 OpenAI Chat Completions SDK 和 `tiktoken` TokenCounter 属于默认运行时依赖，不通过
+  单独 optional extra 才能使用。
 - 不引入与 smolagents 核心重复的第二套 Agent Loop。
 
-## 9. 整体验收标准
+### 8.5 P1 可观测性与资源控制
+
+- 每次真实模型调用有稳定 `model_call_id`、attempt、Provider、模型 ID、状态、耗时、usage、
+  reservation、settled cost 和关联 Step。
+- 模型调用、重试和响应校验均先脱敏再写入 State/Audit/日志。
+- 成本账本和 reservation 使用 Decimal，任一时刻已结算成本加未释放预留不得超过 Run 预算。
+- 模型结果未知与工具结果未知分别使用明确事实，不互相伪装或自动改写。
+
+## 9. P0 整体验收标准
 
 项目只有同时满足以下条件才算完成：
 
@@ -404,14 +541,38 @@ Run 因任何预算耗尽而停止时，执行状态必须为 `STOPPED`、停止
 9. 测试不需要真实模型即可复现正常路径和失败路径。
 10. Ruff、格式检查和测试命令通过，文档与实际行为保持一致。
 
-## 10. 后续设计需明确的实现决策
+## 10. P1 真实模型验收标准
+
+WP-13 只有在同时满足以下条件时才可声明真实模型接入能力完成：
+
+1. version 2 配置可通过正式加载器严格校验；未知 Provider、字段、端点、凭据引用、tokenizer
+   和价格策略被拒绝。
+2. 标准 `run/resume` 通过可信 Factory 构造 `smolagents.Model`，且未改写 Agent 决策循环。
+3. 所有模型调用经过 ModelCallGateway；首次调用前创建 Step，STARTED 绑定非空 `step_id`；
+   预算、租约、wall-time 或审计前置失败时网络调用为 0。
+4. 缺失或非法 usage、超大响应、文本 tool-call fallback、空/重复调用 ID 和超限调用数量均
+   失败关闭。
+5. 调用前 reservation、调用后实际结算、明确失败释放和未知结果保留策略有自动化证据。
+6. OpenAI SDK 和 TokenCounter 由默认安装提供；SDK/smolagents 隐式重试关闭，显式重试
+   attempt、限流、超时和错误码可审计。
+7. `STARTED` 后崩溃恢复为 `MODEL_CALL_UNKNOWN` 且不自动重发；已确定成功结果不重复请求。
+8. resume 时模型配置、端点、价格或 Provider 变化被拒绝。
+9. `approvals` 和 `inspect` 不创建模型、不读取凭据、不访问网络。
+10. 默认 `pytest -q` 完全离线；真实 Provider smoke test 显式 opt-in 并单独记录证据。
+11. P0 全量测试和六个必须测试文件继续通过。
+12. Ruff lint、格式检查和文档索引一致，验收报告区分计划、实测和剩余风险。
+
+## 11. 后续设计需明确的实现决策
 
 以下内容属于设计阶段，不改变本需求中的强制边界：
 
 - State Store 与 Checkpoint 使用 SQLite、文件快照还是组合方案，以及事务提交顺序。
 - smolagents 的具体公开兼容层类型、版本范围和工具包装方式。
-- 任务配置格式、审批交互方式和 CLI 参数；真实模型 Provider 属于 P1，不进入 P0 自动化验收。
+- 任务配置格式、审批交互方式和 CLI 参数。
 - 代码理解交付物的固定路径，以及引用行号的具体校验强度。
 - 测试修复中 `allow_write` 测试目录的具体配置和各工具预算的默认值。
+- 真实模型 Provider 的配置 schema、SecretResolver、端点策略、模型调用状态、成本 reservation、
+  重试和恢复细节由 [WP-13](work-packages/wp-13-real-model-provider/spec.md) 冻结并已实现；
+  DeepSeek 外部 live smoke 已通过，真实 Provider 的协议与生成调用已完成验收。
 
 这些决策应写入 `docs/design.md` 和 `docs/decisions.md`，并通过 `docs/test-plan.md` 明确验证方式。
