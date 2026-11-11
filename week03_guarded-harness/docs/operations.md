@@ -42,9 +42,14 @@ python -m guarded_harness --config PATH ...
 - workspace、干净/外围保护策略；
 - state 目录；
 - 预算；
-- task id/kind/description、工具 allowlist；
+- task id/kind、工具 allowlist；
 - 路径策略、测试命令、交付物；
 - 审批角色、必审工具和 TTL。
+
+唯一例外是 `run --instruction TEXT`：它替换本次 Run 的有效任务描述，但不修改 YAML、
+配置指纹或其他任务字段。提供该参数时，YAML `task.description` 不发送给模型；未提供时继续
+使用 YAML 描述。有效指令会在 Run 创建时持久化，`resume` 不接受新指令并从 Run 状态继续。
+不要通过命令行或任务描述传递 API Key、密码或令牌，因为它们可能出现在 shell 历史和持久化状态中。
 
 状态目录必须位于目标工作区外。配置路径、未知字段、非法预算、越界路径和危险测试命令均应失败
 关闭。
@@ -60,7 +65,8 @@ python -m guarded_harness --config PATH ...
 ## 4. 常用命令
 
 ```bash
-guarded-harness --config PATH run [--wait-for-approval SECONDS] [--json]
+guarded-harness --config PATH run [--instruction TEXT] \
+  [--wait-for-approval SECONDS] [--json]
 guarded-harness --config PATH resume RUN_ID [--wait-for-approval SECONDS] [--json]
 guarded-harness --config PATH approvals list [--run-id RUN_ID] [--status STATUS] [--limit N] [--json]
 guarded-harness --config PATH approvals approve APPROVAL_ID \
@@ -70,6 +76,9 @@ guarded-harness --config PATH approvals reject APPROVAL_ID \
 guarded-harness --config PATH inspect RUN_ID \
   [--tool-call-id TOOL_CALL_ID] [--approval-id APPROVAL_ID] [--json]
 ```
+
+`--instruction` 只允许用于 `run`，要求非空白且最长 4000 字符。它不能改变工具权限、路径、
+预算、审批或验收；因此用户指令要求执行未授权操作时仍由 Gate 拒绝。
 
 `approvals approve/reject` 只改变授权/规定 Run 终态，不执行 handler。仓库操作只能由 `resume`
 重新经过 Gate 后执行。

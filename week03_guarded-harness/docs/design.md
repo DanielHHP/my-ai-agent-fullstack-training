@@ -1101,10 +1101,17 @@ Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建
 - `approvals` 和 `inspect` 不启动模型、Gate 业务执行、handler 或子进程；
 - `--wait-for-approval SECONDS` 在同一进程有界轮询；批准后重建 Harness/Agent 并调用
   `Harness.run(RESUME)`，本地超时只返回 WAITING_APPROVAL，不改变审批。
+- `run --instruction TEXT` 只为本 Run 覆盖任务描述；提供指令时不拼接 YAML
+  `task.description`，未提供时继续使用配置描述。有效文本在 Run 创建时写入
+  `Run.task_description`，审批后恢复和 continuation context 都从该持久化值重建。
+- `resume` 禁止重新提供指令，避免恢复后的 Agent 重新解释已经审批的调用上下文。
 
 `run/resume` 的模型通过可信 `model_factory` 注入。P0 不提供真实 Provider；标准入口在没有受控模型
 来源时返回 `CLI_MODEL_UNAVAILABLE`，测试通过注入 `smolagents.Model` 实现离线验收。CLI 不允许
-覆盖 workspace、task、工具 allowlist、预算、测试命令或审批配置。
+覆盖 workspace、task id/kind、工具 allowlist、路径、预算、测试命令、验收或审批配置。CLI 指令
+不是授权来源，不能扩大模型可见工具、文件范围或审批角色；与 YAML 验收或权限冲突的指令仍会被
+Gate 或 Completion 拒绝。配置文件中的 `task.description` 继续参与配置指纹，因此运行期间修改
+该字段即使没有再次传入 CLI 指令也不能恢复同一 Run。
 
 P1 version 2 配置允许标准 `run/resume` 从固定 OpenAI Chat Completions v1 Provider Factory
 构造模型；

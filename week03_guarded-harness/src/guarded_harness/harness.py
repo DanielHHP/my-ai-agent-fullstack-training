@@ -163,6 +163,7 @@ class _Session:
     adapter: HarnessAgentAdapter
     lease: RunLease
     run_id: str
+    task_description: str
     startup_workspace: WorkspaceBaseline
     current_step_id: str | None = None
 
@@ -240,10 +241,10 @@ class Harness:
             raise TypeError("request must be a RunRequest")
         with self._lock:
             if request.mode == RunMode.START:
-                return self._start()
+                return self._start(instruction=request.instruction)
             return self._resume(request.run_id or "")
 
-    def _start(self) -> RunResult:
+    def _start(self, *, instruction: str | None) -> RunResult:
         try:
             assert_smolagents_compatibility()
             config = self._load_config()
@@ -286,7 +287,11 @@ class Harness:
                 registry=registry,
                 visible_specs=visible_specs,
             )
-            run = self._new_run(config, startup_workspace)
+            run = self._new_run(
+                config,
+                startup_workspace,
+                instruction=instruction,
+            )
             with storage.transaction(actor=_HARNESS_ACTOR) as unit:
                 lease = unit.state.create_run(
                     run,
@@ -320,6 +325,7 @@ class Harness:
                 adapter=adapter,
                 lease=lease,
                 run_id=run.run_id,
+                task_description=run.task_description,
                 startup_workspace=startup_workspace,
             )
             if isinstance(config.config.task.acceptance, TestRepairAcceptance):
@@ -337,7 +343,7 @@ class Harness:
                 boundary_ref="run-start",
                 summary="Run started with persisted workspace baseline",
             )
-            return self._drive(session, task=config.config.task.description)
+            return self._drive(session, task=run.task_description)
         except (HarnessError, AgentAdapterError) as exc:
             raise HarnessError(_error_code(exc), _safe_message(exc)) from exc
         except (
@@ -429,6 +435,7 @@ class Harness:
                 adapter=adapter,
                 lease=lease,
                 run_id=run_id,
+                task_description=run.task_description,
                 startup_workspace=startup_workspace,
             )
             interrupted = tuple(
@@ -571,7 +578,7 @@ class Harness:
         context = session.checkpoints.build_continuation_context(plan)
         continuation = session.checkpoints.render_continuation(context)
         task = (
-            f"{session.config.config.task.description}\n\n"
+            f"{session.task_description}\n\n"
             f"{continuation}\n\n"
             "Continue from the persisted safe boundary. Do not repeat completed operations "
             "unless the tools explicitly return replay-suppressed evidence."
@@ -1249,14 +1256,19 @@ class Harness:
         self,
         config: ResolvedHarnessConfig,
         startup_workspace: WorkspaceBaseline,
+        *,
+        instruction: str | None,
     ) -> Run:
         now = self._now()
+        task_description = (
+            instruction if instruction is not None else config.config.task.description
+        )
         return Run(
             run_id=self._ids.new_run_id(),
             trace_id=self._ids.new_trace_id(),
             task_id=config.config.task.id,
             task_kind=config.config.task.kind,
-            task_description=config.config.task.description,
+            task_description=task_description,
             config_fingerprint=config.fingerprint,
             workspace=startup_workspace.identity,
             budget=config.config.budget.as_run_budget(),

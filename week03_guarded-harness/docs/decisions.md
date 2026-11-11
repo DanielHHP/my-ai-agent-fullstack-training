@@ -117,3 +117,4 @@
 | D-98 | WP-13 结构化工具调用与调用 ID | 首版只接受 Chat Completions 返回的结构化 tool calls；不启用文本内容中的 tool-call fallback 解析。tool-call ID 必须非空且同一响应唯一；Provider 不返回 ID 时 `MODEL_TOOL_CALLS_INVALID`，不自动合成 ID。`final_answer` 不得与其它工具混用。 |
 | D-99 | WP-13 Step 与 attempt 身份 | Harness 必须在首次真实模型调用前创建并持久化 Agent Step；所有 STARTED ModelCall 必须绑定非空 `step_id`。每次重试是独立 attempt 和独立计费行，并通过 `logical_model_call_id` 关联同一逻辑调用；不增加第二套可漂移的 attempt 表。 |
 | D-100 | WP-13 网络与 live smoke 约束 | OpenAI/httpx 客户端不继承 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 等环境代理，不允许跨主机 redirect；如未来需要代理，必须作为独立受控配置评审。live smoke 的配置、模型快照、端点和单次预算由发布验收清单固定，自动化不得选择移动别名。 |
+| D-101 | WP-14 START Run 指令覆盖 | CLI `run --instruction TEXT` 可为本 Run 提供一次性任务指令。提供时，该文本替换 `task.description` 作为初始 Agent 任务并持久化为 `Run.task_description`；未提供时继续使用配置描述。YAML 仍决定任务 id/kind、工具、路径、预算、审批、验收和配置指纹。`RESUME` 禁止重新提供指令，恢复必须使用 Run 中持久化的有效指令；指令不扩大任何授权。 |

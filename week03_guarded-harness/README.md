@@ -15,6 +15,9 @@ WP-13 P1 已验收：version 2 模型配置、OpenAI Chat Completions SDK、Gove
 模型调用 usage/成本/Audit、migration v8、显式重试、超时和 unknown 恢复均已通过离线测试、
 本地 SDK 协议仿真和 DeepSeek live smoke。
 
+WP-14 已验收：`run --instruction` 可为新 Run 提供一次性任务指令，YAML 继续负责权限、审批和
+验收；有效指令持久化后供审批恢复使用，`resume` 不允许重新替换任务目标。
+
 首期支持：
 
 - 单个本地 Git 工作区；
@@ -23,6 +26,7 @@ WP-13 P1 已验收：version 2 模型配置、OpenAI Chat Completions SDK、Gove
 - 本地 SQLite 状态与本地 CLI 审批；
 - Fake Model 离线验收；
 - version 2 OpenAI Chat Completions 真实模型配置。
+- 命令行 Run 指令与审批后恢复。
 
 不包含多 Provider 路由、自动 fallback、Web/TUI、多仓库、分布式执行、隐藏验收或容器级隔离。
 
@@ -44,7 +48,12 @@ python -m ruff format --check .
 guarded-harness --config examples/config/code-understanding.yaml run --json
 guarded-harness --config examples/config/test-repair.yaml run --json
 guarded-harness --config examples/config/model-openai-chat-completions.yaml run --json
+guarded-harness --config examples/config/model-openai-chat-completions.yaml \
+  run --instruction "重点分析登录失败后的状态流转" --json
 ```
+
+`run --instruction` 只替换本次 Run 的有效任务描述；YAML 仍决定权限、路径、预算、审批和验收。
+`resume` 不接受新指令，恢复时使用 Run 中持久化的原指令。
 
 version 1 配置仍只使用可信 `model_factory` 注入；标准入口没有来源时返回
 `CLI_MODEL_UNAVAILABLE`。version 2 配置通过默认安装的 OpenAI SDK 和固定 tokenizer 策略

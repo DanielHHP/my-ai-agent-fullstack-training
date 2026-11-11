@@ -241,12 +241,22 @@ def _approve(fixture: HarnessFixture, run_id: str, approval_id: str) -> None:
         unit.state.release_lease(lease)
 
 
-def _run_start(fixture: HarnessFixture, model: FakeScriptedModel) -> gh.RunResult:
+def _run_start(
+    fixture: HarnessFixture,
+    model: FakeScriptedModel,
+    *,
+    instruction: str | None = None,
+) -> gh.RunResult:
     return gh.Harness(
         config_path=fixture.config_path,
         model=model,
         clock=gh.SystemClock(),
-    ).run(gh.RunRequest(mode=gh.RunMode.START))
+    ).run(
+        gh.RunRequest(
+            mode=gh.RunMode.START,
+            instruction=instruction,
+        )
+    )
 
 
 def _run_resume(
@@ -643,6 +653,114 @@ def test_run_request_requires_mode_specific_run_id() -> None:
         gh.RunRequest(mode=gh.RunMode.START, run_id=f"run_{'0' * 32}")
     with pytest.raises(ValueError):
         gh.RunRequest(mode=gh.RunMode.RESUME)
+
+
+def test_run_request_instruction_is_start_only_and_bounded() -> None:
+    instruction = "Focus on the return value."
+    request = gh.RunRequest(mode=gh.RunMode.START, instruction=instruction)
+    assert request.instruction == instruction
+
+    with pytest.raises(ValueError, match="RESUME requests must not include instruction"):
+        gh.RunRequest(
+            mode=gh.RunMode.RESUME,
+            run_id=f"run_{'0' * 32}",
+            instruction=instruction,
+        )
+    with pytest.raises(ValueError, match="non-whitespace"):
+        gh.RunRequest(mode=gh.RunMode.START, instruction=" \n\t ")
+    with pytest.raises(ValueError):
+        gh.RunRequest(mode=gh.RunMode.START, instruction="x" * 4001)
+
+
+def test_run_instruction_replaces_and_persists_config_description(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    instruction = "CLI_INSTRUCTION_MARKER: explain only the numeric return value."
+    model = FakeScriptedModel((final_answer("candidate"),))
+
+    result = _run_start(fixture, model, instruction=instruction)
+
+    assert result.status == gh.RunStatus.COMPLETED
+    assert result.acceptance_status == gh.AcceptanceStatus.REJECTED
+    rendered_messages = str(model.calls[0].messages)
+    assert instruction in rendered_messages
+    assert "Explain value without changing source." not in rendered_messages
+    assert _snapshot(fixture, result.run_id).run.task_description == instruction
+
+
+def test_resume_uses_persisted_run_instruction_after_approval(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    instruction = "CLI_INSTRUCTION_MARKER: explain value and update the report."
+    document = _valid_document()
+    start_model = FakeScriptedModel(
+        (
+            tool_call(
+                "read-1",
+                "read_file",
+                {"path": "src/app.py", "offset": 1, "limit": 20},
+            ),
+            tool_call(
+                "write-1",
+                "write_file",
+                {"path": "artifacts/report.md", "content": document},
+            ),
+        )
+    )
+
+    waiting = _run_start(fixture, start_model, instruction=instruction)
+    assert waiting.status == gh.RunStatus.WAITING_APPROVAL
+    assert waiting.approval_id is not None
+    assert _snapshot(fixture, waiting.run_id).run.task_description == instruction
+
+    _approve(fixture, waiting.run_id, waiting.approval_id)
+    resume_model = FakeScriptedModel((final_answer("report updated"),))
+    completed = _run_resume(fixture, waiting.run_id, resume_model)
+
+    assert completed.status == gh.RunStatus.COMPLETED
+    assert completed.acceptance_status == gh.AcceptanceStatus.ACCEPTED
+    rendered_messages = str(resume_model.calls[0].messages)
+    assert instruction in rendered_messages
+    assert "Explain value without changing source." not in rendered_messages
+
+
+def test_resume_rejects_config_change_even_when_cli_instruction_was_used(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    instruction = "CLI_INSTRUCTION_MARKER: explain value and update the report."
+    start_model = FakeScriptedModel(
+        (
+            tool_call(
+                "read-1",
+                "read_file",
+                {"path": "src/app.py", "offset": 1, "limit": 20},
+            ),
+            tool_call(
+                "write-1",
+                "write_file",
+                {"path": "artifacts/report.md", "content": _valid_document()},
+            ),
+        )
+    )
+    waiting = _run_start(fixture, start_model, instruction=instruction)
+    assert waiting.status == gh.RunStatus.WAITING_APPROVAL
+    assert waiting.approval_id is not None
+    _approve(fixture, waiting.run_id, waiting.approval_id)
+
+    config_text = fixture.config_path.read_text(encoding="utf-8")
+    fixture.config_path.write_text(
+        config_text.replace(
+            "Explain value without changing source.",
+            "Explain value after a configuration change.",
+        ),
+        encoding="utf-8",
+    )
+    resume_model = FakeScriptedModel((final_answer("must not run"),))
+
+    with pytest.raises(gh.HarnessError) as exc_info:
+        _run_resume(fixture, waiting.run_id, resume_model)
+
+    assert exc_info.value.code == gh.ErrorCode.HARNESS_CONFIG_RELOAD_FAILED
+    assert resume_model.calls == []
 
 
 def test_test_repair_baseline_patch_and_final_acceptance(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ from pydantic import (
     StringConstraints,
     ValidationError,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -1249,6 +1250,14 @@ class RunRequest(StrictDomainModel):
     schema_version: Literal[1] = 1
     mode: RunMode
     run_id: RunId | None = None
+    instruction: str | None = Field(default=None, min_length=1, max_length=4000)
+
+    @field_validator("instruction")
+    @classmethod
+    def _validate_instruction(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("instruction must contain non-whitespace text")
+        return value
 
     @model_validator(mode="after")
     def _validate_mode_and_run_id(self) -> RunRequest:
@@ -1256,6 +1265,8 @@ class RunRequest(StrictDomainModel):
             raise ValueError("START requests must not include run_id")
         if self.mode == RunMode.RESUME and self.run_id is None:
             raise ValueError("RESUME requests require run_id")
+        if self.mode == RunMode.RESUME and self.instruction is not None:
+            raise ValueError("RESUME requests must not include instruction")
         return self
 
 

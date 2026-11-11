@@ -113,6 +113,7 @@ WP-04，后续真实工具接入和生命周期扩展仍可在 WP-05、WP-06 中
 | WP-11 CLI 与人工恢复 | run、resume、approvals、inspect 共享受控运行链 | WP-07、WP-10 | P5-04、P5-05、P5-07 | 审批后新进程恢复，写操作只执行一次 |
 | WP-12 故障加固与交付 | 全局故障矩阵、样例配置、测试与运维文档形成最终交付 | WP-00 至 WP-11 | P6-01 至 P6-07 | 两类任务端到端通过，完整证据链可复验 |
 | WP-13 真实模型 Provider 与调用治理 | version 2 模型配置、OpenAI Chat Completions v1 Provider、ModelCallGateway、预算预留、审计、恢复和 live smoke | WP-07、WP-10、WP-11、WP-12 | WP13-T00 至 WP13-T09 | P0 回归通过；离线 Provider 契约通过；固定快照 live smoke 显式 opt-in |
+| WP-14 CLI Run 指令输入 | `run --instruction`、有效任务描述持久化和审批后恢复 | WP-10、WP-11、WP-13 | WP14-T01 至 WP14-T06 | 指令替换、权限不变、RESUME 禁止重传、恢复和配置指纹测试通过 |
 
 ## 5. 依赖关系与施工顺序
 
@@ -975,6 +976,36 @@ reservation 语义、隐式重试关闭、响应校验和 `MODEL_CALL_UNKNOWN` �
 
 **不在本包内**：任意 Provider 插件、LiteLLM/多 Provider 路由、模型质量评估、Web 配置界面、
 远程密钥托管、隐藏推理存储、自动 fallback 和自动重放 unknown 调用。
+
+### WP-14 CLI Run 指令输入
+
+**目标**：允许 CLI 为新 Run 提供一次性任务指令，同时保持 YAML 任务契约、审批、恢复和最终验收
+边界不变。
+
+**依赖**：WP-10、WP-11、WP-13 均已 accepted。
+
+**包内文档**：[冻结规格](work-packages/wp-14-cli-run-instruction/spec.md)（v1.0.0 / frozen）、
+[实施计划](work-packages/wp-14-cli-run-instruction/plan.md)（v1.0.0 / done）、
+[验收报告](work-packages/wp-14-cli-run-instruction/acceptance-report.md)。
+
+**主要范围**：
+
+- `RunRequest.instruction` 和 START/RESUME 模式约束；
+- `run --instruction` 参数校验；
+- `Harness` 有效任务描述选择、Run 持久化和 continuation context；
+- CLI、Harness 和领域契约测试；
+- D-101、设计、运维和测试计划同步。
+
+**退出条件**：
+
+- 有指令时替换 YAML `task.description`，无指令时保持原行为；
+- 有效指令写入 `Run.task_description`，审批后恢复不依赖原命令行；
+- RESUME 拒绝重新提供指令；
+- CLI 指令不扩大任何权限，配置指纹和工作区校验保持不变；
+- 目标测试、全量测试、Ruff lint 和格式检查通过。
+
+**不在本包内**：system prompt 覆盖、环境变量/.env 指令、`RESUME` 指令修正、多轮会话、
+Web/TUI 输入、SQLite schema 或 Audit schema 变更。
 
 ## 7. 工作包文档拆解模式
 

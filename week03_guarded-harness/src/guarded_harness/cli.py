@@ -52,6 +52,7 @@ Monotonic = Callable[[], float]
 _APPROVAL_LIST_DEFAULT_LIMIT = 100
 _AUDIT_DEFAULT_LIMIT = 100
 _APPROVAL_POLL_SECONDS = 0.5
+_MAX_INSTRUCTION_CHARS = 4000
 
 
 class CLIError(RuntimeError):
@@ -105,6 +106,18 @@ def _approval_status(value: str) -> ApprovalStatus:
         raise argparse.ArgumentTypeError(f"status must be one of: {allowed}") from exc
 
 
+def _instruction_text(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("instruction must contain non-whitespace text")
+    if len(value) > _MAX_INSTRUCTION_CHARS:
+        raise argparse.ArgumentTypeError(
+            f"instruction must be at most {_MAX_INSTRUCTION_CHARS} characters"
+        )
+    if "\x00" in value:
+        raise argparse.ArgumentTypeError("instruction must not contain NUL characters")
+    return value
+
+
 def _json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="emit one stable JSON envelope")
 
@@ -120,6 +133,12 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     run_parser = commands.add_parser("run", help="start a governed Agent run")
+    run_parser.add_argument(
+        "--instruction",
+        type=_instruction_text,
+        metavar="TEXT",
+        help="run-scoped task instruction; does not override task permissions",
+    )
     run_parser.add_argument(
         "--wait-for-approval",
         type=_wait_seconds,
@@ -227,6 +246,7 @@ def main(
             result = _run_command(
                 config_path=args.config,
                 config=config,
+                instruction=args.instruction,
                 wait_seconds=args.wait_for_approval,
                 model_factory=active_model_factory,
                 tool_factory=tool_factory,
@@ -418,6 +438,7 @@ def _run_command(
     *,
     config_path: Path,
     config: ResolvedHarnessConfig,
+    instruction: str | None,
     wait_seconds: int | None,
     model_factory: ModelFactory,
     tool_factory: ToolFactory | None,
@@ -438,7 +459,12 @@ def _run_command(
         id_factory=id_factory,
         command_policy=command_policy,
         fault_injector=fault_injector,
-    ).run(RunRequest(mode=RunMode.START))
+    ).run(
+        RunRequest(
+            mode=RunMode.START,
+            instruction=instruction,
+        )
+    )
     return _wait_if_requested(
         result,
         wait_seconds=wait_seconds,

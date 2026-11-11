@@ -313,6 +313,82 @@ def test_usage_errors_are_strict_and_json(
     assert payload["error"]["code"] == ErrorCode.CLI_CONFIG_REQUIRED.value
 
 
+def test_run_instruction_replaces_config_description_and_persists(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    instruction = "CLI_INSTRUCTION_MARKER: explain value before updating the report."
+    factory = SequenceModelFactory((_waiting_script(),))
+
+    code, payload, _text, stderr = _invoke(
+        fixture,
+        ["run", "--instruction", instruction, "--json"],
+        model_factory=factory,
+    )
+
+    assert code == 3, stderr
+    assert payload is not None
+    rendered_messages = str(factory.models[0].calls[0].messages)
+    assert instruction in rendered_messages
+    assert "Explain value and update the report without changing source." not in rendered_messages
+    with sqlite3.connect(fixture.database_path) as connection:
+        persisted = connection.execute(
+            "SELECT task_description FROM runs WHERE run_id = ?",
+            (payload["data"]["run_id"],),
+        ).fetchone()
+    assert persisted == (instruction,)
+
+
+def test_run_without_instruction_uses_config_description(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    config = gh.load_config(fixture.config_path)
+    factory = SequenceModelFactory(((final_answer("candidate"),),))
+
+    code, _payload, _text, stderr = _invoke(
+        fixture,
+        ["run", "--json"],
+        model_factory=factory,
+    )
+
+    assert code == 7, stderr
+    rendered_messages = str(factory.models[0].calls[0].messages)
+    assert config.config.task.description in rendered_messages
+
+
+def test_instruction_validation_and_resume_rejection(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    for invalid_instruction in (" \n\t ", "x" * 4001, "safe\x00unsafe"):
+        code, payload, _text, _stderr = _invoke(
+            fixture,
+            ["run", "--instruction", invalid_instruction, "--json"],
+        )
+        assert code == 2
+        assert payload is not None
+        assert payload["error"]["code"] == ErrorCode.CLI_USAGE_ERROR.value
+
+    code, payload, _text, _stderr = _invoke(
+        fixture,
+        [
+            "resume",
+            f"run_{'0' * 32}",
+            "--instruction",
+            "replace the instruction",
+            "--json",
+        ],
+    )
+    assert code == 2
+    assert payload is not None
+    assert payload["error"]["code"] == ErrorCode.CLI_USAGE_ERROR.value
+
+    for command in (
+        ["approvals", "list", "--instruction", "not allowed", "--json"],
+        ["inspect", f"run_{'0' * 32}", "--instruction", "not allowed", "--json"],
+    ):
+        code, payload, _text, _stderr = _invoke(fixture, command)
+        assert code == 2
+        assert payload is not None
+        assert payload["error"]["code"] == ErrorCode.CLI_USAGE_ERROR.value
+    assert not fixture.database_path.exists()
+
+
 def test_run_without_model_factory_fails_before_workspace_side_effects(
     tmp_path: Path,
 ) -> None:

@@ -4,11 +4,11 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档状态 | P0 完成基线 + WP-13 P1 实现与 live 验收完成 |
+| 文档状态 | P0 完成基线 + WP-13 P1 与 WP-14 CLI 指令升级完成 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
 | 对应决策 | [decisions.md](decisions.md) |
-| 对应工作包 | [WP-12 规格](work-packages/wp-12-fault-hardening-delivery/spec.md)；[WP-13 规格](work-packages/wp-13-real-model-provider/spec.md) |
+| 对应工作包 | [WP-12 规格](work-packages/wp-12-fault-hardening-delivery/spec.md)；[WP-13 规格](work-packages/wp-13-real-model-provider/spec.md)；[WP-14 规格](work-packages/wp-14-cli-run-instruction/spec.md) |
 | 飞书来源 | `SvsPd37Zpo6v1ExX73Dc54H5nSf` revision 14；“核心验收”内嵌工作簿 revision 11 |
 
 本文定义 P0 测试层级、命令、安全/故障矩阵和证据格式，并记录 WP-13 P1 真实模型的测试草案。
@@ -38,7 +38,7 @@
 | Gate | `tests/test_gate.py` | 固定检查链、审批、重复、预算、零 handler 拒绝 |
 | Completion | `tests/test_completion.py` | 代码理解/测试修复程序化验收和旧证据失效 |
 | Agent/Harness | `tests/test_harness_loop.py` | Fake Model、原生 `ToolCallingAgent`、预算和终态 |
-| CLI | `tests/test_cli.py` | run/resume/approval/inspect、跨进程和退出码 |
+| CLI | `tests/test_cli.py` | run/resume/approval/inspect、`--instruction`、跨进程和退出码 |
 | WP-12 故障矩阵 | `tests/test_fault_recovery.py` | 硬进程退出、DB 锁、Checkpoint 损坏、租约和正式样例 |
 | P1 模型配置/运行时 | `tests/test_model_config.py`、`tests/test_model_runtime.py` | version 2 配置、凭据、Provider、响应、usage、超时和重试 |
 | P1 模型调用生命周期 | `tests/test_model_calls.py` | STARTED/结果、预算 reservation、Audit、崩溃和 unknown |
@@ -235,6 +235,10 @@ WP-12 验收前至少执行：
 WP-13 验收前还必须复跑模型目标测试、P0 全量测试、Ruff lint、格式检查和显式 live smoke；
 离线结果、真实 Provider 结果及剩余限制分别写入
 `work-packages/wp-13-real-model-provider/acceptance-report.md`。
+
+WP-14 至少复跑 `tests/test_cli.py` 和 `tests/test_harness_loop.py`，再执行全量测试、Ruff lint
+和格式检查。测试必须证明指令替换、持久化恢复、RESUME 拒绝重传、输入边界和配置指纹不变；
+结果写入 `work-packages/wp-14-cli-run-instruction/acceptance-report.md`。
 
 WP-08 至 WP-11 的语义审查、CLI 操作走查和测试 diff 审查使用
 [manual-acceptance-wp08-wp11.md](manual-acceptance-wp08-wp11.md)；人工结果不能替代失败的自动化门禁。

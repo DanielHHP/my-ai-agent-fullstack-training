@@ -54,5 +54,8 @@
 | [WP-13 规格](work-packages/wp-13-real-model-provider/spec.md) | frozen：真实模型 Provider、模型调用治理、预算预留、审计、恢复和 P1 验收边界 |
 | [WP-13 计划](work-packages/wp-13-real-model-provider/plan.md) | done：离线实现、SDK 协议和 live smoke 验收完成 |
 | [WP-13 验收报告](work-packages/wp-13-real-model-provider/acceptance-report.md) | v1.1 accepted：P0 回归、SDK 协议和 DeepSeek live smoke 通过 |
+| [WP-14 规格](work-packages/wp-14-cli-run-instruction/spec.md) | frozen：`run --instruction`、有效指令持久化、RESUME 禁止重传和权限边界 |
+| [WP-14 计划](work-packages/wp-14-cli-run-instruction/plan.md) | done：领域、Harness、CLI、恢复和文档修改 |
+| [WP-14 验收报告](work-packages/wp-14-cli-run-instruction/acceptance-report.md) | v1.0 accepted：11/11 AC、402 项全量测试和入口门禁通过 |
 
 新增设计、决策或测试文档后，应同步更新本索引。
