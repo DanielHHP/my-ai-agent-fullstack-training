@@ -786,6 +786,10 @@ def test_test_repair_baseline_patch_and_final_acceptance(tmp_path: Path) -> None
         "read_file",
         "final_answer",
     }
+    initial_context = str(start_model.calls[0].messages)
+    assert "tests/test_app.py" in initial_context
+    assert "test_value" in initial_context
+    assert "program-captured test data" in initial_context
     pending = _snapshot(fixture, waiting.run_id)
     assert pending.steps
     storage = gh.SQLiteStorage(

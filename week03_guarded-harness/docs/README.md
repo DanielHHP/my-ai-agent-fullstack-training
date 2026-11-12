@@ -12,6 +12,7 @@
 | [task-breakdown.md](task-breakdown.md) | 按里程碑和能力工作包组织的 P0 开发计划、执行规程、`spec.md`/`plan.md`/`acceptance-report.md` 包内文档模式、依赖、验收条件与文件任务追溯 |
 | [test-plan.md](test-plan.md) | P0 测试层级、六个必须测试文件、飞书场景、故障矩阵、命令和证据格式 |
 | [operations.md](operations.md) | 本地运行、审批、恢复、状态数据库、日志、退出码、平台限制和禁止操作 |
+| [demo-validation.md](demo-validation.md) | 两个 demo 的项目分析、真实模型配置、审批模式、审计与 Checkpoint 检查步骤 |
 | [manual-acceptance-wp08-wp11.md](manual-acceptance-wp08-wp11.md) | WP-08 至 WP-11 的环境准备、人工执行步骤、观察项、结果记录和剩余风险核对 |
 | [work-packages/index.md](work-packages/index.md) | 已进入详细设计的工作包规格、计划、当前状态和冻结版本索引 |
 | [WP-00 验收报告](work-packages/wp-00-engineering-contracts/acceptance-report.md) | WP-00 工程与契约内核的实测证据、场景覆盖、限制和验收结论 |

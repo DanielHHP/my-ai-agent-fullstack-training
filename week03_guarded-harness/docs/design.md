@@ -997,10 +997,20 @@ Completion 自身读取产生的证据不能证明 Agent 已读。自然语言�
 8. P0 不执行 Agent 不可见的额外隐藏测试；Completion 只使用任务配置声明的公开验收命令、
    交付物检查和程序化 diff/测试证据检查。
 
-WP-09 固定使用 pytest JUnit XML。可信适配器只向任务配置的基础命令追加固定
+基线持久化后，Harness 将退出码、计数以及最多 20 个失败节点的脱敏有界摘要作为
+`test_baseline_context` 注入 Agent 任务，并显式标记为不可信仓库数据。模型可据此直接定位问题，
+也可调用 `run_test` 获取修复后的新 observation；最终程序验收仍独立重跑并以报告、节点守恒和
+工作区证据为准。
+
+P0 的 WP-09 固定使用 pytest JUnit XML。可信适配器只向任务配置的基础命令追加固定
 `junit_family=xunit2` 和 `--junitxml` 参数，报告写入与 State 数据库分离的私有临时目录。
 解析器拒绝 DOCTYPE/ENTITY，报告上限 8 MiB、最多 100,000 节点。State 只保存报告摘要、
 计数、节点键和脱敏摘要，不保存报告原文。
+
+真实模型 demo 追加 `node_test_junit_xml`：基础命令必须由可信配置声明 `node ... --test`，
+程序追加 Node 内置 `--test-reporter=junit` 和私有 `--test-reporter-destination`。解析器将
+Node 报告中的绝对测试文件路径归一到当前工作区，越界即拒绝，并使用独立的节点身份域。该适配
+仍执行同一基线、最终报告、节点守恒、工作区范围和 Audit 检查，不放宽命令输入边界。
 
 基线和最终测试均通过独立的 `Gate.invoke_test_verification` 执行：基线只允许 Agent 启动前的
 `RUNNING` 相位，最终只允许 `VERIFYING`；内部工具不进入模型快照，不消耗 Agent 预算。

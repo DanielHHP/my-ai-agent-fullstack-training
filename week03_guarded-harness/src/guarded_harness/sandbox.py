@@ -327,7 +327,7 @@ class WorkspaceComparison:
 class CommandPolicy:
     """Trusted process limits and executable allowlist."""
 
-    allowed_executables: tuple[str, ...] = ("python", "git")
+    allowed_executables: tuple[str, ...] = ("python", "git", "node")
     default_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS
     default_kill_grace_seconds: float = DEFAULT_KILL_GRACE_SECONDS
     default_stdout_limit_bytes: int = DEFAULT_STDOUT_LIMIT_BYTES
@@ -1732,11 +1732,15 @@ class Sandbox:
                 executable = Path(sys.executable).resolve(strict=True)
             elif name == "git":
                 executable = self._git_executable
+            elif name == "node":
+                executable = _find_executable("node")
+                if executable is None:
+                    continue
             else:
                 raise SandboxViolation(
                     ErrorCode.SANDBOX_EXECUTABLE_DENIED,
                     "configure_command_policy",
-                    "only python and git are fixed trusted executable names",
+                    "only python, git and node are fixed trusted executable names",
                 )
             resolved[name] = executable
         return resolved

@@ -142,7 +142,7 @@ class TestRepairAcceptance(_ConfigModel):
     strategy: Literal["test_repair"]
     test_command: tuple[str, ...] = Field(min_length=1)
     baseline_required: Literal[True] = True
-    report_format: Literal["pytest_junit_xml"]
+    report_format: Literal["pytest_junit_xml", "node_test_junit_xml"]
 
     @field_validator("test_command", mode="before")
     @classmethod
@@ -829,7 +829,12 @@ def _validate_semantics(config: HarnessConfig) -> None:
                 "test command arguments must be non-empty trimmed strings",
             )
         command = config.task.acceptance.test_command
-        forbidden = ("--junitxml", "--junit-xml", "junit_family")
+        forbidden = (
+            "--junitxml",
+            "--junit-xml",
+            "junit_family",
+            "--test-reporter",
+        )
         if any(
             part.casefold().startswith(forbidden_option)
             for part in command
@@ -840,11 +845,14 @@ def _validate_semantics(config: HarnessConfig) -> None:
                 "task.acceptance.test_command",
                 "test command must not override verifier-owned JUnit report settings",
             )
-        if config.task.acceptance.report_format != "pytest_junit_xml":
+        report_format = config.task.acceptance.report_format
+        if report_format == "node_test_junit_xml" and not (
+            Path(command[0]).name.casefold() == "node" and "--test" in command[1:]
+        ):
             raise _issue(
                 ErrorCode.CONFIG_SCHEMA_INVALID,
-                "task.acceptance.report_format",
-                "only pytest_junit_xml is supported",
+                "task.acceptance.test_command",
+                "test command does not match the configured report format",
             )
 
 

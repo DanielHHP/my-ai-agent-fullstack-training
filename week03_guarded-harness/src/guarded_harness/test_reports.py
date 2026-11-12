@@ -6,7 +6,7 @@ import hashlib
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from .domain import ErrorCode, TestNodeStatus
 from .redaction import Redactor
@@ -17,6 +17,10 @@ MAX_FIELD_CHARS = 4_096
 MAX_LABEL_CHARS = 512
 MAX_FAILURE_SUMMARY_CHARS = 8 * 1024
 PARSER_VERSION = 1
+_REPORT_FORMATS = {
+    "pytest_junit_xml": "pytest-junit-v1",
+    "node_test_junit_xml": "node-test-junit-v1",
+}
 
 _UNSAFE_XML = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -78,8 +82,10 @@ def parse_junit_report(
     data: bytes,
     *,
     max_nodes: int = MAX_TEST_NODES,
+    report_format: str = "pytest_junit_xml",
+    workspace_root: str | Path | None = None,
 ) -> ParsedTestReport:
-    """Parse one bounded pytest-compatible JUnit XML report."""
+    """Parse one bounded pytest- or Node-compatible JUnit XML report."""
 
     if not isinstance(data, bytes):
         raise TypeError("report data must be bytes")
@@ -92,6 +98,8 @@ def parse_junit_report(
         )
     if type(max_nodes) is not int or not 1 <= max_nodes <= MAX_TEST_NODES:
         raise ValueError("max_nodes is outside the supported range")
+    if report_format not in _REPORT_FORMATS:
+        raise ValueError("report_format is not supported")
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         raise TestReportError(
             ErrorCode.COMPLETION_TEST_REPORT_UNSAFE_XML,
@@ -153,8 +161,17 @@ def parse_junit_report(
                 "each testcase requires a name attribute",
             )
         if not file_name:
+            if report_format == "node_test_junit_xml":
+                raise TestReportError(
+                    ErrorCode.COMPLETION_TEST_REPORT_MALFORMED,
+                    "each Node testcase requires a file attribute",
+                )
             file_name = _derive_test_file(classname)
-        normalized_file = normalize_test_file(file_name)
+        normalized_file = _normalize_report_file(
+            file_name,
+            report_format=report_format,
+            workspace_root=workspace_root,
+        )
         status, failure_code, failure_text = _classify_testcase(element)
         if failure_text is not None:
             failure_texts.append(failure_text)
@@ -162,6 +179,7 @@ def parse_junit_report(
             file=normalized_file,
             classname=classname,
             name=name,
+            report_format=report_format,
         )
         if node_key in seen:
             raise TestReportError(
@@ -202,12 +220,46 @@ def parse_junit_report(
     )
 
 
-def canonical_node_key(*, file: str, classname: str, name: str) -> str:
+def canonical_node_key(
+    *,
+    file: str,
+    classname: str,
+    name: str,
+    report_format: str = "pytest_junit_xml",
+) -> str:
     """Return a stable hash identity for one normalized testcase."""
 
     normalized_file = normalize_test_file(file)
-    payload = (f"pytest-junit-v1\0{normalized_file}\0{classname.strip()}\0{name.strip()}").encode()
+    try:
+        domain = _REPORT_FORMATS[report_format]
+    except KeyError as exc:
+        raise ValueError("report_format is not supported") from exc
+    payload = (f"{domain}\0{normalized_file}\0{classname.strip()}\0{name.strip()}").encode()
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _normalize_report_file(
+    value: str,
+    *,
+    report_format: str,
+    workspace_root: str | Path | None,
+) -> str:
+    if report_format != "node_test_junit_xml" or not Path(value).is_absolute():
+        return normalize_test_file(value)
+    if workspace_root is None:
+        raise TestReportError(
+            ErrorCode.COMPLETION_EVIDENCE_PATH_INVALID,
+            "absolute Node test paths require a workspace root",
+        )
+    try:
+        root = Path(workspace_root).resolve(strict=True)
+        relative = Path(value).resolve(strict=True).relative_to(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise TestReportError(
+            ErrorCode.COMPLETION_EVIDENCE_PATH_INVALID,
+            "Node test file must resolve inside the workspace",
+        ) from exc
+    return normalize_test_file(relative.as_posix())
 
 
 def normalize_test_file(value: str) -> str:

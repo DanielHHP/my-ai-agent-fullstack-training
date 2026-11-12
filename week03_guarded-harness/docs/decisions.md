@@ -7,11 +7,12 @@
 | 文档状态 | P0 与 WP-13 P1 决策均已确认 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | D-01 至 D-100 已确认 |
+| 决策范围 | D-01 至 D-103 已确认 |
 
 本文记录项目设计决策。D-01 至 D-86 是 P0 已确认基线；D-87 至 D-100 是 2026-11-09 至
-2026-11-10 基于真实模型接入评估确认的 WP-13 P1 决策。D-07、D-78 继续约束 P0 和 version 1
-配置，不阻止 version 2 的受控 P1 Provider 扩展。
+2026-11-10 基于真实模型接入评估确认的 WP-13 P1 决策；D-101 至 D-103 是 version 2 demo 的
+CLI 指令、Node 测试适配与基线上下文扩展。D-07、D-78 继续约束 P0 和 version 1 配置，不阻止
+version 2 的受控 P1 Provider 扩展。
 
 ## 2. 已确认决策
 
@@ -118,3 +119,5 @@
 | D-99 | WP-13 Step 与 attempt 身份 | Harness 必须在首次真实模型调用前创建并持久化 Agent Step；所有 STARTED ModelCall 必须绑定非空 `step_id`。每次重试是独立 attempt 和独立计费行，并通过 `logical_model_call_id` 关联同一逻辑调用；不增加第二套可漂移的 attempt 表。 |
 | D-100 | WP-13 网络与 live smoke 约束 | OpenAI/httpx 客户端不继承 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 等环境代理，不允许跨主机 redirect；如未来需要代理，必须作为独立受控配置评审。live smoke 的配置、模型快照、端点和单次预算由发布验收清单固定，自动化不得选择移动别名。 |
 | D-101 | WP-14 START Run 指令覆盖 | CLI `run --instruction TEXT` 可为本 Run 提供一次性任务指令。提供时，该文本替换 `task.description` 作为初始 Agent 任务并持久化为 `Run.task_description`；未提供时继续使用配置描述。YAML 仍决定任务 id/kind、工具、路径、预算、审批、验收和配置指纹。`RESUME` 禁止重新提供指令，恢复必须使用 Run 中持久化的有效指令；指令不扩大任何授权。 |
+| D-102 | Node 测试修复 demo 适配 | P0 的 `pytest_junit_xml` 契约保持不变；真实模型 demo 追加 `node_test_junit_xml`。仅允许可信配置以 `node` 作为基础命令并包含 `--test`，由固定适配器追加 `--test-reporter=junit` 和程序私有报告路径。Node 报告中的绝对测试文件路径必须在解析时归一到当前工作区，越界失败关闭；节点键使用独立的 `node-test-junit-v1` 域分隔值。该扩展不增加 SQLite migration，也不允许模型提交 argv、reporter、报告路径或可执行文件。 |
+| D-103 | 测试基线进入 Agent 上下文 | 测试修复程序在 Agent 启动前执行并持久化基线后，将退出码、计数、最多 20 个失败节点及脱敏有界摘要作为带不可信数据标记的 `test_baseline_context` 注入模型任务；恢复时从持久化事实重建。模型可见 `run_test` 仍用于修复后的反馈，程序内部最终执行仍是唯一验收证据；上下文截断、缺失或读取失败不得被解释为测试通过。 |

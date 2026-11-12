@@ -588,6 +588,7 @@ class Harness:
     def _drive(self, session: _Session, *, task: str) -> RunResult:
         if self._budget_exhausted(session):
             return self._finish_budget_stop(session)
+        task = self._task_with_test_baseline(session, task)
         remaining_steps = self._remaining_steps(session)
         observer = _StepObserver()
         model = self._model
@@ -709,6 +710,19 @@ class Harness:
             else:
                 outcome = _AgentOutcome.failed(ErrorCode.SMOLAGENTS_STREAM_CONTRACT_INVALID.value)
         return self._conclude_outcome(session, outcome)
+
+    def _task_with_test_baseline(self, session: _Session, task: str) -> str:
+        if session.config.config.task.kind != TaskKind.TEST_REPAIR:
+            return task
+        baseline = session.completion.render_test_baseline_context(session.run_id)
+        return (
+            f"{task}\n\n"
+            f"{baseline}\n\n"
+            "Use the persisted baseline facts to locate the failing behavior. After changing "
+            "source or allowed generated tests, call run_test for bounded feedback. Continue "
+            "until the trusted command succeeds; final success is still decided by program "
+            "verification, not by a model claim."
+        )
 
     def _fail_current_step(self, session: _Session, code: ErrorCode) -> None:
         step_id = session.current_step_id

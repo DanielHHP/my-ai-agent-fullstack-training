@@ -18,6 +18,7 @@ from guarded_harness import (
 from guarded_harness.config import MAX_CONFIG_BYTES
 
 FIXTURES = Path(__file__).parent / "fixtures" / "config"
+PROJECT_ROOT = Path(__file__).parents[1]
 
 
 def _payload(
@@ -97,6 +98,24 @@ def test_load_task_fixtures() -> None:
     assert repair.fingerprint == config_fingerprint(repair)
     assert repair.config.task.kind.value == "test_repair"
     assert repair.config.task.acceptance.test_command == ("python", "-m", "pytest", "-q")
+
+
+def test_demo_task_configs_load_with_real_model_profiles() -> None:
+    understanding = load_config(PROJECT_ROOT / "demo" / "config" / "1_login_demo.yaml")
+    repair = load_config(PROJECT_ROOT / "demo" / "config" / "2_bug_fix.yaml")
+
+    assert understanding.config.version == 2
+    assert understanding.config.model is not None
+    assert understanding.config.model.credential_ref == "OPENAI_API_KEY"
+    assert understanding.config.task.kind.value == "code_understanding"
+    assert understanding.deliverables == ("artifacts/login-flow.md",)
+
+    assert repair.config.version == 2
+    assert repair.config.model is not None
+    assert repair.config.task.kind.value == "test_repair"
+    assert repair.config.task.acceptance.report_format == "node_test_junit_xml"
+    assert repair.config.task.approval.ttl_seconds > 600
+    assert "run_test" in repair.config.task.allowed_tools
 
 
 @pytest.mark.parametrize(
@@ -268,6 +287,79 @@ def test_test_repair_report_contract_is_strict_and_fingerprinted(tmp_path: Path)
     with pytest.raises(ConfigurationError) as override:
         load_config(_write_yaml(tmp_path / "override.yaml", overridden))
     assert override.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+
+def test_node_test_repair_report_contract_is_strict(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    payload = _payload(str(workspace))
+    payload["task"]["id"] = "repair_node_fixture"
+    payload["task"]["kind"] = "test_repair"
+    payload["task"]["allowed_tools"] = ["run_test"]
+    payload["task"]["paths"] = {
+        "deny_write": ["tests/**"],
+        "allow_write": ["src/**", "tests/generated/**"],
+    }
+    payload["task"]["acceptance"] = {
+        "strategy": "test_repair",
+        "test_command": [
+            "node",
+            "--import",
+            "tsx",
+            "--test",
+            "tests/**/*.test.ts",
+        ],
+        "baseline_required": True,
+        "report_format": "node_test_junit_xml",
+    }
+    payload["task"]["approval"] = {
+        "required_tools": [],
+        "approver_roles": [],
+        "ttl_seconds": 900,
+        "channel": "local_cli",
+    }
+    loaded = load_config(_write_yaml(tmp_path / "valid-node-repair.yaml", payload))
+    acceptance = loaded.config.task.acceptance
+    assert acceptance.report_format == "node_test_junit_xml"
+
+    mismatched = _payload(str(workspace))
+    mismatched["task"]["id"] = "mismatched_node_fixture"
+    mismatched["task"]["kind"] = "test_repair"
+    mismatched["task"]["allowed_tools"] = ["run_test"]
+    mismatched["task"]["acceptance"] = {
+        "strategy": "test_repair",
+        "test_command": ["python", "-m", "pytest", "-q"],
+        "baseline_required": True,
+        "report_format": "node_test_junit_xml",
+    }
+    mismatched["task"]["approval"] = {
+        "required_tools": [],
+        "approver_roles": [],
+        "ttl_seconds": 900,
+        "channel": "local_cli",
+    }
+    with pytest.raises(ConfigurationError) as wrong_command:
+        load_config(_write_yaml(tmp_path / "mismatched-node-repair.yaml", mismatched))
+    assert wrong_command.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
+
+    overridden = dict(payload)
+    overridden["task"] = dict(payload["task"])
+    overridden["task"]["id"] = "overridden_node_fixture"
+    overridden["task"]["acceptance"] = {
+        "strategy": "test_repair",
+        "test_command": [
+            "node",
+            "--import",
+            "tsx",
+            "--test",
+            "--test-reporter=junit",
+            "tests/**/*.test.ts",
+        ],
+        "baseline_required": True,
+        "report_format": "node_test_junit_xml",
+    }
+    with pytest.raises(ConfigurationError) as reporter_override:
+        load_config(_write_yaml(tmp_path / "overridden-node-repair.yaml", overridden))
+    assert reporter_override.value.code == ErrorCode.CONFIG_SCHEMA_INVALID
 
 
 def test_approval_roles_and_ttl_are_required_and_fingerprinted(tmp_path: Path) -> None:

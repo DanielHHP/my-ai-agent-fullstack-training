@@ -58,9 +58,16 @@ python -m guarded_harness --config PATH ...
 
 - `examples/config/code-understanding.yaml`
 - `examples/config/test-repair.yaml`
+- `demo/config/1_login_demo.yaml`
+- `demo/config/2_bug_fix.yaml`
 
 样例使用 Fake Model 驱动验收；生产 console 标准入口没有受控模型来源时会返回
 `CLI_MODEL_UNAVAILABLE`。
+
+`config/` 下的两个真实模型 demo 使用 version 2 Provider。测试修复 demo 声明
+`node_test_junit_xml`，基础命令固定为 `node ... --test`；适配器自行追加 JUnit reporter 和
+临时报告路径。P0 `pytest_junit_xml` 行为不变。对应人工步骤和证据检查见
+[demo-validation.md](demo-validation.md)。
 
 ## 4. 常用命令
 

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import guarded_harness as gh
+from guarded_harness.completion import build_test_report_argv
 
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 FINGERPRINT = f"sha256:{'a' * 64}"
@@ -421,6 +422,77 @@ def test_parse_junit_report_preserves_nodes_and_rejects_unsafe_xml() -> None:
     with pytest.raises(gh.TestReportError) as unsafe:
         gh.parse_junit_report(b'<!DOCTYPE x [<!ENTITY y "z">]><testsuites/>')
     assert unsafe.value.code == gh.ErrorCode.COMPLETION_TEST_REPORT_UNSAFE_XML
+
+
+def test_parse_node_junit_report_normalizes_workspace_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    test_file = workspace / "tests" / "session.test.ts"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("// test\n", encoding="utf-8")
+    report = f"""<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testcase name="expires now" classname="test" file="{test_file}"/>
+  <testcase name="rejects bad state" classname="test" file="{test_file}">
+    <failure type="testCodeFailure">expected true</failure>
+  </testcase>
+</testsuites>
+""".encode()
+
+    parsed = gh.parse_junit_report(
+        report,
+        report_format="node_test_junit_xml",
+        workspace_root=workspace,
+    )
+
+    assert parsed.total_count == 2
+    assert parsed.passed_count == 1
+    assert parsed.failed_count == 1
+    assert {node.file for node in parsed.nodes} == {"tests/session.test.ts"}
+    assert all(
+        node.node_key
+        == gh.canonical_node_key(
+            file=node.file,
+            classname="test",
+            name=node.label.removeprefix("test::"),
+            report_format="node_test_junit_xml",
+        )
+        for node in parsed.nodes
+    )
+
+    report_path = tmp_path / "report.xml"
+    argv = build_test_report_argv(
+        ("node", "--import", "tsx", "--test", "tests/**/*.test.ts"),
+        report_path,
+        "node_test_junit_xml",
+    )
+    test_index = argv.index("--test")
+    assert argv[test_index + 1 : test_index + 3] == (
+        "--test-reporter=junit",
+        f"--test-reporter-destination={report_path}",
+    )
+    assert gh.canonical_node_key(
+        file="tests/session.test.ts",
+        classname="test",
+        name="expires now",
+        report_format="node_test_junit_xml",
+    ) != gh.canonical_node_key(
+        file="tests/session.test.ts",
+        classname="test",
+        name="expires now",
+    )
+
+    outside = tmp_path / "outside.test.ts"
+    outside.write_text("// outside\n", encoding="utf-8")
+    outside_report = f"""<testsuites>
+  <testcase name="outside" classname="test" file="{outside}"/>
+</testsuites>""".encode()
+    with pytest.raises(gh.TestReportError) as escaped:
+        gh.parse_junit_report(
+            outside_report,
+            report_format="node_test_junit_xml",
+            workspace_root=workspace,
+        )
+    assert escaped.value.code == gh.ErrorCode.COMPLETION_EVIDENCE_PATH_INVALID
 
 
 def test_report_rejects_duplicate_nodes_and_inconsistent_counts() -> None:

@@ -1,0 +1,76 @@
+version: 2
+state_dir: ../.guarded-harness/2_bug_fix
+workspace:
+  root: ../workspace/2_bug_fix/demo-app
+  require_clean_workspace: true
+  protect_other_git_changes: true
+budget:
+  max_steps: 24
+  max_tool_calls: 60
+  max_token_cost: 3
+  max_wall_time_seconds: 1800
+model:
+  provider: openai_chat_completions_v1
+  model_id: deepseek-flash
+  endpoint: https://api.deepseek.com
+  credential_ref: OPENAI_API_KEY
+  tokenizer_id: tiktoken:o200k_base
+  request_timeout_seconds: 120
+  connect_timeout_seconds: 10
+  max_input_tokens: 120000
+  max_output_tokens: 4096
+  max_response_bytes: 1048576
+  max_tool_calls_per_response: 8
+  requests_per_minute: 60
+  max_retry_attempts: 1
+  pricing:
+    version: deepseek-flash-manual-budget-v1
+    input_per_million: "1.00"
+    output_per_million: "2.00"
+task:
+  id: demo_session_test_repair
+  kind: test_repair
+  description: Repair the configured demo using the CLI-provided instruction.
+  allowed_tools:
+    - apply_patch
+    - git_diff
+    - git_status
+    - list_files
+    - read_directory
+    - read_file
+    - run_test
+    - search_code
+    - write_file
+  paths:
+    deny_read:
+      - "**/.env"
+      - "**/*.pem"
+      - "**/*.key"
+      - "**/*.p12"
+      - "**/*.pfx"
+      - "**/credentials"
+      - "**/credentials.json"
+    deny_write:
+      - tests/**
+    allow_write:
+      - src/**
+      - tests/generated/**
+  acceptance:
+    strategy: test_repair
+    test_command:
+      - node
+      - --import
+      - tsx
+      - --test
+      - tests/**/*.test.ts
+    baseline_required: true
+    report_format: node_test_junit_xml
+  approval:
+    required_tools:
+      - apply_patch
+      - run_test
+      - write_file
+    approver_roles:
+      - local_operator
+    ttl_seconds: 1800
+    channel: local_cli

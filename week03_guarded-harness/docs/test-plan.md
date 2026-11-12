@@ -218,6 +218,22 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 WP-13 测试必须使用 fake client/transport 覆盖正常和故障路径；真实服务调用只允许出现在
 `tests/live/` 的显式 opt-in 测试中。
 
+## 12. Node 测试修复 demo 适配
+
+`node_test_junit_xml` 的离线测试必须覆盖：
+
+- 配置拒绝 Node 基础命令与报告格式不匹配；
+- 配置拒绝模型或任务预置 reporter/报告路径；
+- 固定适配器只追加程序拥有的 Node JUnit 参数；
+- Node 绝对测试路径仅在当前工作区内归一，越界路径失败关闭；
+- Node 节点键与 pytest 节点键使用不同域分隔值；
+- 程序基线失败节点以有界、脱敏的不可信上下文进入首个模型调用；
+- 模型 `run_test` observation 与程序最终测试验收保持隔离；
+- 既有 pytest 基线、最终报告、节点守恒、工作区范围和 Audit 测试继续通过。
+
+真实 Node 进程测试不进入默认离线门禁；由
+`demo/workspace/2_bug_fix/demo-app` 的人工 demo 显式验证。
+
 ## 12. 最终复跑
 
 WP-12 验收前至少执行：
