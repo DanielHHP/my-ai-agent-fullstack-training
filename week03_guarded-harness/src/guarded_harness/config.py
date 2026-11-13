@@ -217,6 +217,7 @@ class ModelConfig(_ConfigModel):
     max_tool_calls_per_response: int = Field(default=8, ge=1, le=64)
     requests_per_minute: int = Field(default=60, ge=0, le=100_000)
     max_retry_attempts: int = Field(default=1, ge=0, le=3)
+    tool_choice: Literal["required", "auto", "none"] | None = "required"
     allow_insecure_localhost: bool = False
     pricing: ModelPricingConfig
 

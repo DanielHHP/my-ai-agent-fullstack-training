@@ -208,6 +208,7 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 | 缺失/重复 tool-call ID | fake structured call | `MODEL_TOOL_CALLS_INVALID`，不合成 ID |
 | 响应过大/工具调用非法 | fake response | 不进入 Agent/Gate，失败关闭 |
 | Agent/Gate 穿透 | fake tool call | 模型只看到 GovernedTool，实际执行仍经过 Gate |
+| `tool_choice` 兼容 | config + fake model kwargs | 默认 required；auto/null 精确转发；thinking 模式真实 smoke 返回结构化 tool call |
 | Audit 开始失败 | fault injector | `MODEL_CALL_STARTED` 未提交，network call=0 |
 | Audit schema 兼容 | v7 database + v8 migration | 旧事件按 schema 1 校验，新 `MODEL_*` 事件按 schema 2 校验 |
 | STARTED 后崩溃 | 子进程硬退出 | 恢复为 `MODEL_CALL_UNKNOWN` 且不重发 |

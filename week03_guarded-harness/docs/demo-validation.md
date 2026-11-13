@@ -86,6 +86,9 @@ source ../.venv/bin/activate
 export OPENAI_API_KEY='<your-key>'
 ```
 
+`deepseek-flash` 的 thinking 模式不接受 `tool_choice: required`，因此两份 demo 配置显式使用
+`tool_choice: auto`。该值属于可信 YAML 和配置指纹，不能通过 instruction 或工具参数覆盖。
+
 先做只读配置检查：
 
 ```bash

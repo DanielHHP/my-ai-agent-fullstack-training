@@ -107,11 +107,13 @@ def test_demo_task_configs_load_with_real_model_profiles() -> None:
     assert understanding.config.version == 2
     assert understanding.config.model is not None
     assert understanding.config.model.credential_ref == "OPENAI_API_KEY"
+    assert understanding.config.model.tool_choice == "auto"
     assert understanding.config.task.kind.value == "code_understanding"
     assert understanding.deliverables == ("artifacts/login-flow.md",)
 
     assert repair.config.version == 2
     assert repair.config.model is not None
+    assert repair.config.model.tool_choice == "auto"
     assert repair.config.task.kind.value == "test_repair"
     assert repair.config.task.acceptance.report_format == "node_test_junit_xml"
     assert repair.config.task.approval.ttl_seconds > 600

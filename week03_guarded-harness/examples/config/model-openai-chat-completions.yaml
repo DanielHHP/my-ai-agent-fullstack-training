@@ -23,6 +23,7 @@ model:
   max_tool_calls_per_response: 8
   requests_per_minute: 60
   max_retry_attempts: 1
+  tool_choice: auto
   pricing:
     version: deepseek-flash-manual-budget-v1
     # Trusted governance ceiling for manual acceptance; adjust if provider pricing changes.

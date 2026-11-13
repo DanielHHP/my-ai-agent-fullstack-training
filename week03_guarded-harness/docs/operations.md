@@ -251,6 +251,8 @@ WP-13 已通过外部 live smoke 验收；外部调用继续遵守以下边界�
 - 配置中的 `credential_ref` 是非秘密引用，真实值由受控环境变量或 SecretResolver 提供；
 - 配置必须声明固定 `tokenizer_id`，未知 tokenizer、输入超限、不支持结构化 tool calls 或仅返回
   文本 tool-call 时拒绝；
+- `model.tool_choice` 默认 `required`。Provider 不支持强制工具选择时可设为 `auto`，或设为
+  `null` 省略请求字段；该值进入配置指纹，不能在 Run 中临时覆盖；
 - 不读取 `.env`，不把密钥写入配置、State、Audit、日志或子进程环境；
 - HTTP client 不继承 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`，不跟随跨主机 redirect；
 - `run/resume` 才创建 Provider；`approvals` 和 `inspect` 不读取凭据、不访问网络；

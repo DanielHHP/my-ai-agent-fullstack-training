@@ -112,6 +112,31 @@ class MissingCallIdModel(Model):
         )
 
 
+class ToolChoiceRecordingModel(Model):
+    def __init__(self) -> None:
+        super().__init__(model_id="tool-choice-recorder")
+        self.tool_choice: object = ...
+
+    def generate(self, messages, stop_sequences=None, response_format=None, **kwargs):
+        del messages, stop_sequences, response_format
+        self.tool_choice = kwargs.get("tool_choice")
+        return ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            tool_calls=[
+                ChatMessageToolCall(
+                    id="call-final",
+                    type="function",
+                    function=ChatMessageToolCallFunction(
+                        name="final_answer",
+                        arguments={"answer": "candidate"},
+                    ),
+                )
+            ],
+            token_usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
 def _workspace(tmp_path: Path) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     workspace = tmp_path / "workspace"
@@ -137,6 +162,7 @@ def _config(
     *,
     max_token_cost: float = 1,
     max_response_bytes: int = 65536,
+    tool_choice: str | None = "required",
 ) -> tuple[Path, Path]:
     workspace = _workspace(tmp_path)
     payload: dict[str, Any] = {
@@ -160,6 +186,7 @@ def _config(
             "max_response_bytes": max_response_bytes,
             "max_tool_calls_per_response": 4,
             "max_retry_attempts": 1,
+            "tool_choice": tool_choice,
             "pricing": {
                 "version": "price-v1",
                 "input_per_million": "1",
@@ -241,6 +268,15 @@ def test_real_model_tool_candidate_still_passes_through_gate(tmp_path: Path) -> 
         assert snapshot.invocations[0].tool_call_id == "read-1"
         assert snapshot.invocations[0].status.value == "SUCCEEDED"
         assert len(snapshot.model_calls) == 2
+
+
+def test_configured_tool_choice_is_forwarded_to_provider(tmp_path: Path) -> None:
+    config, _workspace_path = _config(tmp_path, tool_choice="auto")
+    model = ToolChoiceRecordingModel()
+
+    _run(config, model)
+
+    assert model.tool_choice == "auto"
 
 
 def test_budget_rejection_happens_before_model_call(tmp_path: Path) -> None:

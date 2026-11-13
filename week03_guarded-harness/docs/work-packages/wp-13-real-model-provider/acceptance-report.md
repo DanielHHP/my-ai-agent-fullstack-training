@@ -6,8 +6,8 @@
 | --- | --- |
 | 工作包 | WP-13 真实模型 Provider 与模型调用治理 |
 | 报告状态 | accepted |
-| 报告版本 | 1.1.0 |
-| 验收日期 | 2026-11-10 |
+| 报告版本 | 1.2.0 |
+| 验收日期 | 2026-11-10；补充复核 2026-11-14 |
 | 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
 | 对应计划 | [plan.md](plan.md) v1.0.0 / done |
 | 代码基线 | `417d3fa`；本次 WP-13 改动仍在工作区 |
@@ -24,6 +24,12 @@ migration 和 OpenAI SDK Chat Completions 本地协议仿真。
 需求方于 2026-11-10 在 DeepSeek OpenAI-compatible 服务上执行 `live_model` smoke test，
 确认真实模型 Provider 构造和生成调用通过。该外部证据关闭 WP13-AC-018，报告状态更新为
 `accepted`。本次反馈未提供原始 stdout、Provider 请求 ID 或 usage 明细，因此报告不补造这些值。
+
+2026-11-14 补充复核发现，当时执行的 smoke test 只发送纯文本请求，没有携带工具定义，因此不能
+证明真实 DeepSeek 服务支持 `ToolCallingAgent` 所需的结构化 tool call。需求方随后使用
+`tool_choice="auto"` 和省略 `tool_choice` 两种方式执行真实 echo-tool 请求，均返回了带非空调用
+ID 的 `echo` tool call。据此增加受控 `model.tool_choice` 配置，并将 live smoke 测试升级为工具
+调用断言；完整 Governed Agent → Gate → Completion 的真实任务闭环仍需通过 demo 复跑记录。
 
 ## 3. 交付物
 
@@ -115,8 +121,13 @@ GUARDED_HARNESS_LIVE_CONFIG=examples/config/model-openai-chat-completions.yaml \
 python -m pytest tests/live/test_live_model_smoke.py -q -m live_model
 ```
 
-结果：PASS。需求方反馈 smoke test 已在 DeepSeek OpenAI-compatible 服务上通过。外部请求的原始
-输出、Provider 请求 ID、usage 和账单明细未纳入本报告，保留为未归档证据。
+结果：PASS（文本生成 smoke）。需求方反馈 smoke test 已在 DeepSeek OpenAI-compatible 服务上
+通过；该次证据未携带工具，不能用于证明真实工具调用能力。外部请求的原始输出、Provider 请求
+ID、usage 和账单明细未纳入本报告。
+
+补充工具探测（2026-11-14）：PASS。`tool_choice="auto"` 与 `tool_choice=None` 均返回单个
+`echo` 结构化 tool call，调用 ID 非空。该结果确认真实 Provider 协议兼容，但不替代完整任务
+Completion 验收。
 
 ## 5. 验收条件映射
 
@@ -139,13 +150,14 @@ python -m pytest tests/live/test_live_model_smoke.py -q -m live_model
 | WP13-AC-015 | PASS | 配置指纹和 Harness 既有恢复校验 |
 | WP13-AC-016 | PASS | v2 approvals 零 Provider 测试 |
 | WP13-AC-017 | PASS | `MODEL_*` 错误码和 CLI 映射 |
-| WP13-AC-018 | PASS | 需求方在 DeepSeek 服务上执行 live smoke 通过 |
+| WP13-AC-018 | PASS | 文本 live smoke 于 2026-11-10 通过；结构化 tool-call 补充探测于 2026-11-14 通过；完整 Governed E2E 待 demo 记录 |
 | WP13-AC-019 | PASS | v7→v8 migration 和旧 Audit 链测试 |
 | WP13-AC-020 | PASS | 395 passed、Ruff lint 和格式检查 |
 
 ## 6. 剩余风险
 
 - live smoke 已通过，但原始 Provider 请求 ID、usage 和账单输出未归档；
+- 2026-11-10 live smoke 未携带工具；真实工具调用已另行探测，但尚未归档完整 Gate/Completion E2E；
 - `tiktoken` 编码资源首次使用可能需要本地缓存或可用下载路径；生产应预置缓存并再次审计网络边界；
 - 配置价格是治理预算，不等于 Provider 最终账单；
 - `deepseek-flash` 是移动模型别名，实际版本可能漂移；

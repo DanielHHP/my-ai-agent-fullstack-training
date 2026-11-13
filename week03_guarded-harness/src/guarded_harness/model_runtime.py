@@ -428,6 +428,7 @@ class GovernedModel(Model):
             request_kwargs = dict(kwargs)
             request_kwargs.setdefault("max_tokens", self._model_config.max_output_tokens)
             request_kwargs.setdefault("timeout", context.timeout_seconds)
+            request_kwargs.setdefault("tool_choice", self._model_config.tool_choice)
             try:
                 response = self._delegate.generate(
                     messages,

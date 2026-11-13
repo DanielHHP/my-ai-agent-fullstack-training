@@ -1181,6 +1181,7 @@ model:
   max_tool_calls_per_response: 8
   requests_per_minute: 60
   max_retry_attempts: 1
+  tool_choice: auto
   pricing:
     version: provider-price-v1
     input_per_million: "2.50"
@@ -1199,6 +1200,8 @@ model:
 - endpoint 默认 HTTPS，拒绝 userinfo、URL 凭据、`file:`/`data:` 和跨主机 redirect；
 - localhost/私网 HTTP 需要显式窄范围开关并记录审计；HTTP 客户端 `trust_env=False`，不继承
   代理环境变量；
+- `tool_choice` 仍是固定枚举或 `null`，默认 `required`；GovernedModel 在每次调用时显式传递，
+  不支持该值的 thinking 模型可配置为 `auto` 或 `null`，不得由模型或 CLI 临时覆盖；
 - `tokenizer_id` 必须来自固定 registry，用于调用前输入 token 上界检查；未知 tokenizer 或无法
   计数时失败关闭；
 - 价格策略使用 Decimal 和版本号，不从响应、环境或远端动态价格读取；

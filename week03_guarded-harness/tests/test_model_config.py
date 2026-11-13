@@ -84,11 +84,16 @@ def test_v2_model_profile_loads_and_is_fingerprinted(tmp_path: Path) -> None:
     assert loaded.config.model is not None
     assert loaded.config.model.provider == "openai_chat_completions_v1"
     assert loaded.config.model.tokenizer_id == "tiktoken:o200k_base"
+    assert loaded.config.model.tool_choice == "required"
     assert loaded.fingerprint == config_fingerprint(loaded)
 
     changed = _payload(tmp_path / "workspace")
     changed["model"]["model_id"] = "gpt-test-other"  # type: ignore[index]
     assert load_config(_write(tmp_path, changed)).fingerprint != loaded.fingerprint
+
+    automatic = _payload(tmp_path / "workspace")
+    automatic["model"]["tool_choice"] = "auto"  # type: ignore[index]
+    assert load_config(_write(tmp_path, automatic)).fingerprint != loaded.fingerprint
 
 
 @pytest.mark.parametrize(
@@ -97,6 +102,7 @@ def test_v2_model_profile_loads_and_is_fingerprinted(tmp_path: Path) -> None:
         ("provider", "openai_compatible"),
         ("credential_ref", "ARBITRARY_SECRET"),
         ("tokenizer_id", "remote:unknown"),
+        ("tool_choice", "always"),
         ("endpoint", "https://user:pass@example.invalid/v1"),
         ("endpoint", "https://example.invalid/v1?query=1"),
         ("endpoint", "http://127.0.0.1:8000/v1"),
