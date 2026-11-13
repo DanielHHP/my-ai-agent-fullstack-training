@@ -10,6 +10,8 @@
 以下路径都相对于 `demo/`。两份配置分别是 `config/1_login_demo.yaml` 和
 `config/2_bug_fix.yaml`。任务需求必须通过
 `run --instruction` 传入；YAML 只声明权限、路径、预算、审批、测试命令和程序验收。
+下面的指令刻意使用日常表达，不重复罗列 YAML 已经约束的路径、审批和预算；程序仍会负责
+格式、权限和最终验收。
 
 ## 1. Demo 分析
 
@@ -98,7 +100,7 @@ guarded-harness --config config/2_bug_fix.yaml approvals list --limit 1 --json
 ### 3.1 启动
 
 ```bash
-INSTRUCTION_1='分析 1_login_demo 的登录调用链，说明 HTTP 入口、路由挂载、认证服务、用户仓储、数据来源、密码校验、token 签发与鉴权中间件；生成 artifacts/login-flow.md。文档必须严格按“## 事实、## 推断、## 代码依据”的顺序组织。事实必须使用带 [E1] 引用的 Markdown 列表；代码依据必须使用形如 “- E1: `src/routes/login.ts:7-25`” 的列表，并确保路径和行号真实可读。只读取实际源码，不修改源码。'
+INSTRUCTION_1='帮我看下这个登录 demo 的登录流程，整理成 artifacts/login-flow.md。按“事实、推断、代码依据”分段，事实要有 [E1] 这种引用，代码依据带文件行号，别改源码。'
 
 set +e
 guarded-harness --config config/1_login_demo.yaml \
@@ -163,7 +165,7 @@ guarded-harness --config config/1_login_demo.yaml \
 ### 4.1 终端 A 启动
 
 ```bash
-INSTRUCTION_2='先使用程序提供的失败基线定位问题，再修复 src/auth/session-policy.ts 的会话过期判断，使到期时刻及之后立即失效、到期前仍然有效。如需补充测试，只能新增到 tests/generated/ 下；不得修改、删除、跳过或弱化 tests/ 下已有测试。每次修复后调用 run_test 获取反馈，完成后让全部 Node 测试通过，并说明源码改动。'
+INSTRUCTION_2='这个登录会话 demo 有几个测试挂了，帮我查下原因并修好。要补测试就放 tests/generated，已有测试别动；改完跑测试确认一下。'
 
 set +e
 guarded-harness --config config/2_bug_fix.yaml \
@@ -181,6 +183,9 @@ Agent 首次调用模型前，程序已经独立执行失败基线；有界、�
 `test_baseline_context` 注入模型上下文。模型修复后可调用受控 `run_test` 获取新的退出码和
 输出，`run_test` 的 observation 会回到 ReAct 循环。模型自查结束后，程序仍会用同一可信命令
 独立执行最终验收，模型调用或“测试通过”自述都不能替代该结果。
+
+因此日常指令不需要再写“先检查基线”或指定具体缺陷文件；这些信息由程序基线和模型自己读取
+源码获得。
 
 ### 4.2 终端 B 审批
 
