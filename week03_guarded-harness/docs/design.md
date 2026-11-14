@@ -495,7 +495,7 @@ Gate 对每个调用按下列顺序检查，前一步失败后立即返回，不
 | --- | --- | --- |
 | 1. 可见性与注册 | 工具存在、属于当前 Agent 的任务可见白名单 | `GATE_TOOL_NOT_FOUND`、`GATE_TOOL_NOT_VISIBLE` |
 | 2. 参数 schema | `jsonschema` draft 2020-12 严格校验，拒绝类型错误和未声明字段 | `GATE_INVALID_ARGUMENT` |
-| 3. 语义与规范化 | 参数边界、路径格式、命令规格、规范化参数摘要 | `GATE_SEMANTIC_INVALID`、`SANDBOX_PATH_OUT_OF_WORKSPACE` |
+| 3. 语义与规范化 | 参数边界、路径格式、命令规格、脱敏可恢复性、规范化参数摘要 | `GATE_SEMANTIC_INVALID`、`TOOL_ARGUMENTS_NOT_RECOVERABLE`、`SANDBOX_PATH_OUT_OF_WORKSPACE` |
 | 4. 权限 | 当前 actor、任务、模式具备读/写/执行权限 | `GATE_PERMISSION_DENIED` |
 | 5. 风险与模式 | plan 模式禁止写；风险等级必须被任务策略允许 | `GATE_RISK_DENIED`、`GATE_MODE_DENIED` |
 | 6. 审批 | 审批对象、有效期、绑定摘要和一次性消费均有效 | `APPROVAL_REQUIRED`、`APPROVAL_INVALID`、`APPROVAL_EXPIRED`、`APPROVAL_REPLAYED` |
@@ -505,6 +505,12 @@ Gate 对每个调用按下列顺序检查，前一步失败后立即返回，不
 所有 Allow 与 Deny 都要写入 Audit。拒绝审计写失败时，拒绝结果仍可返回，但不得执行 handler；
 允许审计或执行意图写失败时直接拒绝执行。Sandbox 预检在执行前完成，handler 内部仍需复用同一
 边界对象完成实际落点校验，防止检查后目标变化。
+
+参数进入 PREPARED Invocation 或审批前必须通过脱敏可恢复性检查：Gate 使用与 StateStore
+相同的 Redactor 处理规范化参数，只有脱敏结果与输入完全一致且未截断时才继续。结果变化时在
+语义阶段返回可重试的结构化拒绝，模型可在同一 Run 内以新 `tool_call_id` 改写；不得先创建审批
+再在跨进程恢复时才发现参数不可重放。恢复 PREPARED 调用时任何 Gate 拒绝都终止为不可恢复，
+不得继续恢复循环或写入同一 `APPROVAL_SETTLED` 边界。
 
 模型工具调用走普通 `invoke()`；Completion 只能走 `invoke_internal()`。后者不接受模型生成的
 工具名/args 组合作为执行授权，只查找独立内部 Registry 中已固定的只读定义，并以系统 actor

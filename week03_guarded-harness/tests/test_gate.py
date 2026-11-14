@@ -720,6 +720,61 @@ def test_sandbox_path_escape_and_command_injection_are_denied(tmp_path: Path) ->
     assert command.code == ErrorCode.GATE_INVALID_ARGUMENT.value
 
 
+def test_redaction_changed_write_arguments_are_denied_before_invocation(
+    tmp_path: Path,
+) -> None:
+    fixture = _gate_fixture(tmp_path)
+
+    observation = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-unrecoverable-write",
+            tool="write_file",
+            args={
+                "path": "artifacts/out.md",
+                "content": "token = super-secret-token",
+            },
+        )
+    )
+
+    assert observation.status == ObservationStatus.DENIED
+    assert observation.code == ErrorCode.TOOL_ARGUMENTS_NOT_RECOVERABLE.value
+    assert observation.phase == GatePhase.SEMANTIC
+    assert observation.retryable is True
+    assert fixture.write_handler_calls == []
+    with fixture.storage.transaction(actor="auditor") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+        assert snapshot.invocations == ()
+        assert snapshot.approvals == ()
+        events = unit.audit.list_tool_events(RUN_ID, "call-unrecoverable-write")
+    assert [event.code for event in events] == [ErrorCode.TOOL_ARGUMENTS_NOT_RECOVERABLE.value]
+    assert "super-secret-token" not in str(events[0].input_summary)
+    assert "super-secret-token" not in str(events[0].output_summary)
+
+
+def test_existing_redaction_placeholders_remain_recoverable(tmp_path: Path) -> None:
+    fixture = _gate_fixture(tmp_path)
+
+    observation = fixture.gate.invoke(
+        _request(
+            fixture,
+            call_id="call-recoverable-write",
+            tool="write_file",
+            args={
+                "path": "artifacts/out.md",
+                "content": "token = [REDACTED]",
+            },
+        )
+    )
+
+    assert observation.status == ObservationStatus.WAITING_APPROVAL
+    with fixture.storage.transaction(actor="auditor") as unit:
+        snapshot = unit.state.get_run_snapshot(RUN_ID)
+    assert len(snapshot.invocations) == 1
+    assert snapshot.invocations[0].status == InvocationStatus.PREPARED
+    assert len(snapshot.approvals) == 1
+
+
 def test_g3_wait_and_g4_one_time_execution(tmp_path: Path) -> None:
     fixture = _gate_fixture(tmp_path)
     request = _request(

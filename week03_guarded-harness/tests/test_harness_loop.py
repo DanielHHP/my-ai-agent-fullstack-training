@@ -525,6 +525,131 @@ def test_unknown_tool_is_denied_and_audited_before_final_answer(tmp_path: Path) 
     assert "unknown-1" in second_call_text
 
 
+def test_unrecoverable_write_observation_allows_same_run_correction(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    document = _valid_document()
+    start_model = FakeScriptedModel(
+        (
+            tool_call(
+                "read-1",
+                "read_file",
+                {"path": "src/app.py", "offset": 1, "limit": 20},
+            ),
+            tool_call(
+                "bad-write",
+                "write_file",
+                {
+                    "path": "artifacts/report.md",
+                    "content": "token = super-secret-token",
+                },
+            ),
+            tool_call(
+                "good-write",
+                "write_file",
+                {"path": "artifacts/report.md", "content": document},
+            ),
+        )
+    )
+
+    waiting = _run_start(fixture, start_model)
+
+    assert waiting.status == gh.RunStatus.WAITING_APPROVAL
+    assert waiting.approval_id is not None
+    start_model.assert_consumed()
+    correction_context = str(start_model.calls[2].messages)
+    assert gh.ErrorCode.TOOL_ARGUMENTS_NOT_RECOVERABLE.value in correction_context
+    assert "rewrite them without secret-like key/value assignments" in correction_context
+    assert "use a new tool_call_id" in correction_context
+    pending = _snapshot(fixture, waiting.run_id)
+    assert [call.tool_call_id for call in pending.invocations] == ["read-1", "good-write"]
+    assert pending.invocations[0].status == gh.InvocationStatus.SUCCEEDED
+    assert pending.invocations[1].status == gh.InvocationStatus.PREPARED
+    assert len(pending.approvals) == 1
+    with sqlite3.connect(fixture.database_path) as connection:
+        persisted = "\n".join(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT input_summary_json FROM audit_events WHERE run_id = ?",
+                (waiting.run_id,),
+            )
+        )
+    assert "super-secret-token" not in persisted
+
+    _approve(fixture, waiting.run_id, waiting.approval_id)
+    resume_model = FakeScriptedModel((final_answer("The explanation is complete."),))
+    completed = _run_resume(fixture, waiting.run_id, resume_model)
+
+    assert completed.status == gh.RunStatus.COMPLETED
+    assert completed.acceptance_status == gh.AcceptanceStatus.ACCEPTED
+    assert (fixture.workspace / "artifacts" / "report.md").read_text(encoding="utf-8") == document
+    resume_model.assert_consumed()
+
+
+def test_recovery_binding_conflict_blocks_without_checkpoint_loop(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    document = _valid_document()
+    start_model = FakeScriptedModel(
+        (
+            tool_call(
+                "write-1",
+                "write_file",
+                {"path": "artifacts/report.md", "content": document},
+            ),
+        )
+    )
+    waiting = _run_start(fixture, start_model)
+    assert waiting.status == gh.RunStatus.WAITING_APPROVAL
+    assert waiting.approval_id is not None
+    start_model.assert_consumed()
+
+    with sqlite3.connect(fixture.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE tool_calls
+            SET normalized_args_json = ?
+            WHERE run_id = ? AND tool_call_id = ?
+            """,
+            (
+                '{"content":"token = [REDACTED]","path":"artifacts/report.md"}',
+                waiting.run_id,
+                "write-1",
+            ),
+        )
+    _approve(fixture, waiting.run_id, waiting.approval_id)
+
+    resume_model = FakeScriptedModel((final_answer("unused"),))
+    result = _run_resume(fixture, waiting.run_id, resume_model)
+
+    assert result.status == gh.RunStatus.BLOCKED
+    assert result.stop_reason == gh.StopReason.GATE_BLOCKED
+    assert result.error_code == gh.ErrorCode.GATE_TOOL_CALL_ID_CONFLICT.value
+    assert resume_model.calls == []
+    assert not (fixture.workspace / "artifacts" / "report.md").exists()
+    with sqlite3.connect(fixture.database_path) as connection:
+        approval_settled = connection.execute(
+            """
+            SELECT COUNT(*) FROM checkpoints
+            WHERE run_id = ? AND boundary_kind = 'APPROVAL_SETTLED'
+            """,
+            (waiting.run_id,),
+        ).fetchone()[0]
+        denied_events = connection.execute(
+            """
+            SELECT COUNT(*) FROM audit_events
+            WHERE run_id = ? AND event_type = 'GATE_DECISION'
+              AND status = 'DENIED'
+              AND code = 'GATE_TOOL_CALL_ID_CONFLICT'
+            """,
+            (waiting.run_id,),
+        ).fetchone()[0]
+    assert approval_settled == 0
+    assert denied_events == 1
+
+
 def test_schema_injection_is_denied_before_invocation(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     result = _run_start(

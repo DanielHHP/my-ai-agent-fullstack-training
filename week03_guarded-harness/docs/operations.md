@@ -111,11 +111,17 @@ run
 - role 必须命中任务允许审批角色；
 - 审批绑定工具名、规范化参数、Run、任务、工作区、配置指纹和有效期；
 - 审批一次性消费，重放、过期、跨 Run、跨工作区和参数变化均拒绝；
+- Gate 在创建 PREPARED 调用或审批前检查规范化参数的脱敏可恢复性；若持久化脱敏会改变参数，
+  返回 `TOOL_ARGUMENTS_NOT_RECOVERABLE` 给模型，不创建审批。模型必须使用新 `tool_call_id`
+  并改写参数，不能复用原 ID 搭配新参数；
 - `CLAIMED` 不按审批 TTL 自动释放；
 - 拒绝或过期会原子停止 Run，模型不能换工具继续同一目标。
 
 `--wait-for-approval SECONDS` 只改变是否在同一进程等待；本地超时保持
 `WAITING_APPROVAL`，不是审批过期，也不会自动批准或拒绝。
+
+resume 重新校验 PREPARED 调用时若 Gate 拒绝，Run 进入 `BLOCKED/GATE_BLOCKED`，保留具体拒绝
+错误码；不得反复 resume 或手工改写摘要绕过绑定检查。
 
 ## 6. 状态数据库
 

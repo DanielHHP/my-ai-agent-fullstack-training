@@ -7,12 +7,13 @@
 | 文档状态 | P0 与 WP-13 P1 决策均已确认 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | D-01 至 D-104 已确认 |
+| 决策范围 | D-01 至 D-107 已确认 |
 
 本文记录项目设计决策。D-01 至 D-86 是 P0 已确认基线；D-87 至 D-100 是 2026-11-09 至
 2026-11-10 基于真实模型接入评估确认的 WP-13 P1 决策；D-101 至 D-104 是 version 2 demo 的
-CLI 指令、Node 测试适配、基线上下文与 Provider 工具选择兼容扩展。D-07、D-78 继续约束 P0
-和 version 1 配置，不阻止 version 2 的受控 P1 Provider 扩展。
+CLI 指令、Node 测试适配、基线上下文与 Provider 工具选择兼容扩展；D-105 至 D-107 是真实
+模型失败分类、租约心跳和脱敏参数恢复缺陷加固。D-07、D-78 继续约束 P0 和 version 1 配置，
+不阻止 version 2 的受控 P1 Provider 扩展。
 
 ## 2. 已确认决策
 
@@ -124,3 +125,4 @@ CLI 指令、Node 测试适配、基线上下文与 Provider 工具选择兼容�
 | D-104 | Provider 工具选择兼容 | version 2 `model.tool_choice` 只允许固定枚举 `required`、`auto`、`none` 或省略值 `null`，默认 `required` 保持既有行为并进入配置指纹。GovernedModel 在每次 Provider 调用时显式传递该值；`null` 表示省略请求字段。DeepSeek thinking 模式不接受 `required`，真实模型 demo 配置使用 `auto`。该字段只能由可信 YAML 设置，模型、CLI instruction 或工具参数不能覆盖。 |
 | D-105 | 模型失败分类审计 | `MODEL_CALL_FAILED` 等失败事件除稳定 `MODEL_*` 错误码外，在 `output_summary` 保存固定 `reason_code` 和可选的有界诊断：调用总数、允许上限、首个无效位置、无效数量、最多 16 个工具名及截断标志。分类摘要不增加 SQLite 列或 migration，与失败状态同事务写入并经过 Audit 脱敏；禁止保存 tool-call arguments、完整 content、prompt 或 provider raw payload。 |
 | D-106 | Harness 租约心跳生命周期 | Harness 必须从 Run 取得租约后持续运行独立心跳线程，覆盖阻塞模型调用、工具、测试、Checkpoint 和最终验收，而不是只在业务事件之间续租。心跳使用独立 SQLite 短事务；连续两次失败使用 `STATE_LEASE_HEARTBEAT_FAILED` 停止后续 Agent 动作。释放租约前必须先停止并 join 心跳线程，无法按时退出时不得释放租约。心跳只维持单写者租约，不承诺取消已经发出的 Provider 请求。 |
+| D-107 | 脱敏后的参数可恢复性 | Gate 在持久化 Invocation 或创建审批前，必须使用与 StateStore 相同的 Redactor 对规范化参数做比较。若脱敏会改变或截断参数，返回 `DENIED/TOOL_ARGUMENTS_NOT_RECOVERABLE`、`retryable=true` 的结构化 observation，不创建 Invocation/审批，也不触达 handler；模型可在同一 Run 内使用新 `tool_call_id` 改写。已存在的等价 `[REDACTED]` 占位符若 Redactor 输出与输入完全一致则允许。恢复 PREPARED 调用时任何 Gate 拒绝都转为 `BLOCKED/GATE_BLOCKED` 并保留具体错误码，禁止继续写同名 `APPROVAL_SETTLED` Checkpoint 或循环重放。不得为恢复而保存原始 token/password；需要继续时启动新 Run。 |

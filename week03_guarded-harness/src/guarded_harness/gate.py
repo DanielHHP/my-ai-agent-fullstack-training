@@ -854,6 +854,7 @@ class Gate:
                 ) from exc
 
         self._normalize_paths(definition, arguments)
+        self._ensure_arguments_recoverable(arguments)
         if (
             enforce_execute_shape
             and definition.spec.risk == ToolRisk.EXECUTE
@@ -875,6 +876,35 @@ class Gate:
                 "GATE_SEMANTIC_V1",
             ) from exc
         return _PreparedCall(definition, arguments, digest)
+
+    def _ensure_arguments_recoverable(
+        self,
+        arguments: dict[str, JsonValue],
+    ) -> None:
+        """Reject arguments that redaction would make impossible to replay exactly."""
+
+        try:
+            redacted = self._redactor.redact(arguments)
+        except RedactionError as exc:
+            raise _GateDenial(
+                ErrorCode.TOOL_ARGUMENTS_NOT_RECOVERABLE,
+                GatePhase.SEMANTIC,
+                "normalized arguments cannot be prepared for deterministic recovery",
+                "GATE_ARGUMENTS_RECOVERABILITY_V1",
+                retryable=True,
+            ) from exc
+        if redacted.truncated or redacted.value != arguments:
+            raise _GateDenial(
+                ErrorCode.TOOL_ARGUMENTS_NOT_RECOVERABLE,
+                GatePhase.SEMANTIC,
+                (
+                    "normalized arguments would be changed by persistence redaction; "
+                    "rewrite them without secret-like key/value assignments and "
+                    "use a new tool_call_id"
+                ),
+                "GATE_ARGUMENTS_RECOVERABILITY_V1",
+                retryable=True,
+            )
 
     def _normalize_paths(
         self,
@@ -1613,7 +1643,7 @@ class Gate:
             message,
             approval_id=denial.approval_id,
             evidence_ids=denial.evidence_ids,
-            retryable=False,
+            retryable=denial.retryable,
         )
 
     def _run_lock(self, run_id: str) -> threading.Lock:

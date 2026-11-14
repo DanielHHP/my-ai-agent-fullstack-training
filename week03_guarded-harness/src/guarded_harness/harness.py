@@ -608,6 +608,13 @@ class Harness:
                 context,
                 session.lease.token,
             )
+            if observation.status == ObservationStatus.DENIED:
+                return self._finish_failure(
+                    session,
+                    RunStatus.BLOCKED,
+                    observation.code,
+                    stop_reason=StopReason.GATE_BLOCKED,
+                )
             handled = self._handle_observation(session, observation)
             if handled is not None:
                 return self._conclude_outcome(session, handled)

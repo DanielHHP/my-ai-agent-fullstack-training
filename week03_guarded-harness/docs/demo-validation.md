@@ -90,6 +90,11 @@ export OPENAI_API_KEY='<your-key>'
 `deepseek-flash` 的 thinking 模式不接受 `tool_choice: required`，因此两份 demo 配置显式使用
 `tool_choice: auto`。该值属于可信 YAML 和配置指纹，不能通过 instruction 或工具参数覆盖。
 
+若模型提交的 `write_file` 参数包含会被持久化脱敏改变的 token/password 键值形式，Gate 会在
+创建审批前返回 `TOOL_ARGUMENTS_NOT_RECOVERABLE` 的结构化 observation。模型应在同一 Run 内用
+新的 `tool_call_id` 改写文档，例如只引用文件和行号或使用 `[REDACTED]`。不要继续 resume 一个
+已经产生参数绑定冲突的旧 Run；该 Run 会转为 `BLOCKED/GATE_BLOCKED`。
+
 先做只读配置检查：
 
 ```bash

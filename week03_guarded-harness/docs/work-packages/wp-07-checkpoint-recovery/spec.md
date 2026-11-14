@@ -546,6 +546,10 @@ WP-07 提供 Checkpoint 入口，不规定 Agent 何时调用；WP-10 必须在�
 - `MARK_UNKNOWN_RESULT`/`MANUAL_REVIEW`：不自动调用模型执行副作用；WP-11 只能展示事实和人工
   核对入口。
 
+恢复 `PREPARED` 调用时，若持久化参数与审批摘要不再一致或参数已因脱敏不可恢复，立即保留具体
+Gate 错误码并把 Run 收口为 `BLOCKED/GATE_BLOCKED`。恢复器不得把普通拒绝当作可继续的安全
+边界递归，也不得创建第二个同 boundary_ref 但快照不同的 Checkpoint。
+
 ### 7.5 证据与审批版本校验
 
 - 文件型 Evidence（READ、DOCUMENT、带 path 的 DIFF）必须用 Sandbox 安全读取当前文件并比较
@@ -567,7 +571,7 @@ WP-07 必须对以下窗口有确定性测试。“无明确结果”一律保�
 | --- | --- | --- | --- |
 | W0 | 无本次执行意图 | `CONTINUE_AGENT` | 模型可通过新 Agent 重新提议；重新经过正常 Gate |
 | W1 | Invocation `PREPARED`，无审批且未 STARTED | `REENTER_GATE` | 使用同一持久化调用重新门禁；不直接调用 handler |
-| W2 | Invocation `PREPARED`，审批 `APPROVED` | `REENTER_GATE` | Gate 重新绑定、claim、预算和权限检查后最多执行一次 |
+| W2 | Invocation `PREPARED`，审批 `APPROVED` | `REENTER_GATE` | Gate 重新绑定、claim、预算和权限检查后最多执行一次；任何 Gate 拒绝都转为 `BLOCKED/GATE_BLOCKED` |
 | W3 | Invocation `PREPARED`，审批 `CLAIMED` | `RESUME_CLAIM_THEN_REENTER_GATE` | `resume_claim` 后写 STARTED，再执行；claim 不重复 |
 | W4 | Invocation `STARTED`，无确定结果 | `MARK_UNKNOWN_RESULT` | 原子标记 UNKNOWN；Run `BLOCKED/UNKNOWN_RESULT/NOT_EVALUATED`；禁止自动重放 |
 | W5 | handler 已返回但结果事务未提交，状态仍为 `STARTED` | `MARK_UNKNOWN_RESULT` | 与 W4 相同；不得按工作区变化猜测成功 |

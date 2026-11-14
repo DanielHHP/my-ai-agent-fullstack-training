@@ -35,9 +35,9 @@
 | 领域/契约 | `tests/test_domain.py`、`tests/test_config.py`、`tests/test_registry_policy.py` | 严格模型、schema、配置、指纹和稳定错误码 |
 | 持久化/审计 | `tests/test_audit.py`、`tests/test_state_checkpoint.py` | SQLite 事务、append-only、租约、Checkpoint 和恢复 |
 | Sandbox/工具 | `tests/test_sandbox.py`、`tests/test_tools.py` | 路径、敏感文件、命令、进程、输出和真实工具 |
-| Gate | `tests/test_gate.py` | 固定检查链、审批、重复、预算、零 handler 拒绝 |
+| Gate | `tests/test_gate.py` | 固定检查链、审批、脱敏可恢复性、重复、预算、零 handler 拒绝 |
 | Completion | `tests/test_completion.py` | 代码理解/测试修复程序化验收和旧证据失效 |
-| Agent/Harness | `tests/test_harness_loop.py` | Fake Model、原生 `ToolCallingAgent`、预算和终态 |
+| Agent/Harness | `tests/test_harness_loop.py` | Fake Model、原生 `ToolCallingAgent`、observation 纠正、恢复收口、预算和终态 |
 | CLI | `tests/test_cli.py` | run/resume/approval/inspect、`--instruction`、跨进程和退出码 |
 | WP-12 故障矩阵 | `tests/test_fault_recovery.py` | 硬进程退出、DB 锁、Checkpoint 损坏、租约和正式样例 |
 | P1 模型配置/运行时 | `tests/test_model_config.py`、`tests/test_model_runtime.py` | version 2 配置、凭据、Provider、响应、usage、超时和重试 |
@@ -48,11 +48,11 @@
 
 | 文件 | 必须覆盖 |
 | --- | --- |
-| `tests/test_gate.py` | schema 注入、权限/风险、审批绑定/重放/过期、重复调用、预算、拒绝不触达 handler、审计关联 |
+| `tests/test_gate.py` | schema 注入、权限/风险、审批绑定/重放/过期、脱敏可恢复性、重复调用、预算、拒绝不触达 handler、审计关联 |
 | `tests/test_sandbox.py` | `..`/绝对路径/符号链接逃逸、敏感读写、命令 allowlist、环境清理、超时、进程组和输出裁剪 |
 | `tests/test_state_checkpoint.py` | 完整状态、合法状态机、幂等预算、租约、Checkpoint、跨重开恢复、已确定写入不重放 |
 | `tests/test_audit.py` | append-only、事件顺序、ID 关联、脱敏、决策链回放、审计失败失败关闭 |
-| `tests/test_harness_loop.py` | Fake Model 正常/拒绝/审批/预算/异常、统一入口、两类任务、smolagents 兼容 |
+| `tests/test_harness_loop.py` | Fake Model 正常/拒绝/审批/预算/异常、脱敏参数同 Run 纠正、恢复拒绝一次收口、统一入口、两类任务、smolagents 兼容 |
 | `tests/test_completion.py` | 代码理解与测试修复验收、无证据声明、越界 diff、测试丢失/跳过、过期证据和未知结果 |
 
 额外文件只能增加覆盖，不得减少或替代以上文件。

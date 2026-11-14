@@ -284,7 +284,7 @@ Gate 必须按以下顺序处理每个候选调用。前一阶段拒绝后立即
 | --- | --- | --- |
 | 1. 可见性 | 校验请求 envelope；工具已注册；在当前任务/Agent 可见 | `GATE_TOOL_NOT_FOUND`、`GATE_TOOL_NOT_VISIBLE` |
 | 2. Schema | `additionalProperties=false`；类型、必填、边界和 JSON 值合法 | `GATE_INVALID_ARGUMENT` |
-| 3. 语义/规范化 | JSON canonicalization；工具 normalizer；路径参数经 Sandbox；命令只接受可信 ID；摘要 | `GATE_SEMANTIC_INVALID`、Sandbox/Gate 稳定错误 |
+| 3. 语义/规范化 | JSON canonicalization；工具 normalizer；路径参数经 Sandbox；脱敏可恢复性；命令只接受可信 ID；摘要 | `GATE_SEMANTIC_INVALID`、`TOOL_ARGUMENTS_NOT_RECOVERABLE`、Sandbox/Gate 稳定错误 |
 | 4. 权限 | 可信角色的权限并集覆盖工具全部 `required_permissions` | `GATE_PERMISSION_DENIED` |
 | 5. 模式/风险 | `PLAN` 禁止写/执行；风险和执行模式匹配可信任务策略 | `GATE_MODE_DENIED`、`GATE_RISK_DENIED` |
 | 6. 审批 | 缺失审批进入等待；已有审批校验绑定、有效期和一次性语义 | `APPROVAL_REQUIRED`、`APPROVAL_*` |
@@ -311,6 +311,11 @@ create PREPARED invocation
 
 该事务不得调用 handler。已有同一 `(run_id, tool_call_id)` 的 PENDING/APPROVED 审批时返回原审批，
 不重复创建；Resume 后仍从阶段 1 开始重新校验，再执行阶段 7、8 和批准 claim。
+
+审批创建前的可恢复性检查使用与 StateStore 相同的 Redactor。脱敏输出必须与规范化参数完全一致
+且未截断；否则在语义阶段返回 `DENIED/TOOL_ARGUMENTS_NOT_RECOVERABLE`，设置
+`retryable=true`，不创建 Invocation 或审批。模型可在同一 Run 内使用新 `tool_call_id` 改写。
+该检查不得保存或返回原始敏感值，也不得为了恢复保存未脱敏参数。
 
 ## 8. 参数、语义与摘要
 
@@ -529,6 +534,7 @@ WP-04 至少追加以下稳定错误码：
 GATE_TOOL_NOT_FOUND
 GATE_TOOL_NOT_VISIBLE
 GATE_INVALID_ARGUMENT
+TOOL_ARGUMENTS_NOT_RECOVERABLE
 GATE_SEMANTIC_INVALID
 GATE_PERMISSION_DENIED
 GATE_RISK_DENIED
@@ -618,6 +624,7 @@ Gate 通用错误。错误码只追加，不复用为不同含义。
 | WP04-AC-028 | handler 返回非法结果 | `GATE_RESULT_INVALID`，不伪造成功 |
 | WP04-AC-029 | 模型可见白名单不等于执行授权 | 快照可见后仍重新做权限/风险/审批检查 |
 | WP04-AC-030 | 离线确定性 | fake handler/clock/fault，无真实模型、网络和用户凭据 |
+| WP04-AC-031 | 参数经脱敏后不可原样恢复 | 审批和 Invocation 为 0、handler=0，返回可重试 |
 
 ## 15. 已确认决策
 

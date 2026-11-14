@@ -279,6 +279,11 @@ Harness.run(request: RunRequest) -> RunResult
 10. 对不可恢复的暂停或未知结果抛出 Harness 私有控制异常/停止信号，由 Harness 转为公开
     Run 状态。
 
+`TOOL_ARGUMENTS_NOT_RECOVERABLE` 属于模型可纠正的语义拒绝：它必须作为对应 tool call 的
+observation 返回，不停止 Run，模型使用新 `tool_call_id` 改写后继续。恢复既有 PREPARED 调用时
+若 Gate 拒绝，包括参数绑定冲突，Harness 必须直接收口为 `BLOCKED/GATE_BLOCKED`，不得再次进入
+模型或递归创建同一 Checkpoint。
+
 构造 Agent 时固定：
 
 ```text
@@ -676,6 +681,7 @@ WP10-AC 至少覆盖以下场景：
 | WP10-AC-023 | `smolagents` 版本/签名不兼容 | 启动前返回稳定 SMOLAGENTS 错误，未访问仓库 |
 | WP10-AC-024 | 测试修复闭环 | Agent 修复后由 WP-09 最终报告验收；H2 旧证据不通过 |
 | WP10-AC-025 | 全量确定性 | 测试无需网络、真实模型、凭据或本机绝对路径 |
+| WP10-AC-026 | 脱敏不可恢复参数 | 模型收到结构化拒绝并在同一 Run 改写；恢复绑定冲突一次收口为 BLOCKED，无循环 |
 
 所有拒绝场景除错误码外还必须断言 handler、文件写入和进程启动计数符合预期，并验证 Audit
 关联；仅检查返回字符串不算通过。
