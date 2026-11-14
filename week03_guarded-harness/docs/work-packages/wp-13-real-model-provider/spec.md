@@ -5,17 +5,18 @@
 | 项目 | 内容 |
 | --- | --- |
 | 工作包 | WP-13 真实模型 Provider 与模型调用治理 |
-| 文档状态 | frozen |
-| 规格版本 | 1.0.0 |
+| 文档状态 | frozen（D-105 修订） |
+| 规格版本 | 1.1.0 |
 | 创建日期 | 2026-11-09 |
 | 冻结日期 | 2026-11-10 |
+| 修订日期 | 2026-11-14 |
 | 优先级 | P1 |
 | 依赖 | WP-07 accepted；WP-10 accepted；WP-11 accepted；WP-12 accepted |
 | 间接依赖 | WP-01 State/Audit、WP-04 Gate、WP-05/WP-06 工具边界 |
 | 下游工作包 | 无；后续 Provider 扩展需单独评审 |
 | 对应需求 | `REQ-MODEL-001` 至 `REQ-MODEL-018` |
 | 对应设计 | `design.md` 第 3、4、5.5、9、10、12、13、14、15 节 |
-| 相关决策 | D-07、D-14、D-16、D-17、D-19、D-20、D-73、D-77、D-78、D-87 至 D-100 |
+| 相关决策 | D-07、D-14、D-16、D-17、D-19、D-20、D-73、D-77、D-78、D-87 至 D-100、D-104、D-105 |
 
 本文定义 WP-13 在 P1 阶段接入真实模型服务时必须满足的行为、安全边界、持久化语义和验收条件。
 version 2 Provider、SecretResolver、模型调用审计、预算、migration v8 和本地真实 SDK 协议测试
@@ -256,7 +257,28 @@ WP13-BEH-012：同一次响应内最多允许 `max_tool_calls_per_response` 个�
 `final_answer` 与其它工具混合的响应绕过 Gate。
 
 WP13-BEH-013：完整响应、chain-of-thought、`raw` provider payload 和完整消息列表不得写入
-State/Audit；只保存有界摘要、协议版本、工具名、调用 ID、usage、耗时和结果状态。
+State/Audit；只保存有界摘要、协议版本、工具名、调用 ID、usage、耗时和结果状态。模型响应校验
+失败时，`MODEL_CALL_FAILED` 的 `output_summary` 至少保存稳定 `reason_code`；可用诊断包括
+`tool_call_count`、`allowed_limit`、从零开始的 `invalid_index`、`invalid_count`、最多 16 个
+有界 `tool_names` 及 `tool_names_truncated`。不得保存 tool-call arguments、完整 content 或
+provider raw payload。
+
+固定分类至少包括：
+
+```text
+CHAT_MESSAGE_INVALID
+TOOL_CALLS_MISSING
+TOOL_CALL_LIMIT_EXCEEDED
+TOOL_CALL_ID_MISSING
+TOOL_CALL_ID_DUPLICATE
+TOOL_CALL_NAME_MISSING
+FINAL_ANSWER_MIXED_WITH_TOOLS
+TOKEN_USAGE_MISSING
+TOKEN_USAGE_INVALID
+TOKEN_USAGE_LIMIT_EXCEEDED
+RESPONSE_NOT_SERIALIZABLE
+RESPONSE_TOO_LARGE
+```
 
 ### 6.4 状态、事务与审计
 
@@ -281,7 +303,8 @@ WP13-BEH-016：Audit 新增 `MODEL_CONFIG_REJECTED`、`MODEL_CALL_STARTED`、
 `MODEL_CALL_SUCCEEDED`、`MODEL_CALL_FAILED`、`MODEL_CALL_TIMED_OUT`、
 `MODEL_CALL_RATE_LIMITED`、`MODEL_CALL_UNKNOWN`、`MODEL_CALL_USAGE_INVALID`，并支持
 `model_call_id` 关联。新事件使用 `audit_schema=2`，旧事件保持 schema 1 canonical payload 和
-哈希语义；不得重写或重算历史链。不得保存原始消息或凭据。
+哈希语义；不得重写或重算历史链。不得保存原始消息或凭据。失败分类摘要与失败状态在同一事务
+写入；分类摘要脱敏或审计写入失败时不得降级为无摘要放行。
 
 WP13-BEH-017：模型调用 STARTED 后进程崩溃、结果事务未提交，恢复必须保留该 call 为不可确认
 状态；`inspect` 可显示模型、开始时间、reservation 和关联 Step，但不自动重新发送。

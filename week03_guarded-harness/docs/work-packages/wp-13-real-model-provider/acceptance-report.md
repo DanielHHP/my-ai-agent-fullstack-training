@@ -6,9 +6,9 @@
 | --- | --- |
 | 工作包 | WP-13 真实模型 Provider 与模型调用治理 |
 | 报告状态 | accepted |
-| 报告版本 | 1.2.0 |
+| 报告版本 | 1.3.0 |
 | 验收日期 | 2026-11-10；补充复核 2026-11-14 |
-| 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
+| 对应规格 | [spec.md](spec.md) v1.1.0 / frozen（D-105 修订） |
 | 对应计划 | [plan.md](plan.md) v1.0.0 / done |
 | 代码基线 | `417d3fa`；本次 WP-13 改动仍在工作区 |
 | 操作系统 | Darwin 22.6.0 x86_64 |
@@ -31,6 +31,10 @@ migration 和 OpenAI SDK Chat Completions 本地协议仿真。
 ID 的 `echo` tool call。据此增加受控 `model.tool_choice` 配置，并将 live smoke 测试升级为工具
 调用断言；完整 Governed Agent → Gate → Completion 的真实任务闭环仍需通过 demo 复跑记录。
 
+同日增加模型失败分类审计：响应校验、工具调用和 usage 错误在保留通用 `MODEL_*` 错误码的同时，
+把固定 `reason_code` 和经过脱敏、限长的诊断摘要写入对应 `MODEL_CALL_FAILED` 的
+`output_summary`。该改动不增加数据库列或 migration，旧 Audit 链保持不变。
+
 ## 3. 交付物
 
 | 交付物 | 状态 | 说明 |
@@ -39,6 +43,7 @@ ID 的 `echo` tool call。据此增加受控 `model.tool_choice` 配置，并将
 | `config.py` version 2 model profile | PASS | 固定 Provider、端点、tokenizer、额度、重试和价格 |
 | `storage.py` migration v8 | PASS | `model_calls`、reservation、Audit schema 字段 |
 | `state_store.py` model-call lifecycle | PASS | STARTED、usage、成本、失败、unknown 和查询 |
+| `domain.py` model failure classification | PASS | 固定失败分类、严格字段和 16 项工具名上限 |
 | `audit.py` schema 2 | PASS | `model_call_id` 和 `MODEL_*` 事件，旧链保持 schema 1 |
 | `harness.py` integration | PASS | 首次模型调用前创建 Step、Run 包装、unknown 恢复阻塞 |
 | `cli.py` v2 Provider | PASS | run/resume 默认可构造 Provider；只读命令不创建 |
@@ -128,6 +133,32 @@ ID、usage 和账单明细未纳入本报告。
 补充工具探测（2026-11-14）：PASS。`tool_choice="auto"` 与 `tool_choice=None` 均返回单个
 `echo` 结构化 tool call，调用 ID 非空。该结果确认真实 Provider 协议兼容，但不替代完整任务
 Completion 验收。
+
+### 4.6 模型失败分类审计补充回归
+
+```bash
+python -m pytest \
+  tests/test_model_config.py \
+  tests/test_model_runtime.py \
+  tests/test_model_provider.py \
+  tests/test_cli.py -q
+```
+
+结果：`58 passed in 109.73s`。
+
+覆盖工具调用超限、空/重复 ID、空工具名、`final_answer` 混用、usage 缺失、文本 fallback
+和响应过大。测试确认失败事件记录固定 `reason_code`、调用数量、允许上限、无效位置/数量和
+最多 16 个工具名，不记录 tool-call arguments，并保持 Audit 哈希链有效。
+
+```bash
+python -m pytest -q
+python -m ruff check .
+python -m ruff format --check .
+git diff --check
+```
+
+结果：`411 passed, 1 skipped in 297.42s`；Ruff lint、格式检查和 diff 检查均 PASS。唯一 skip
+仍为默认离线模式跳过显式 live smoke。
 
 ## 5. 验收条件映射
 

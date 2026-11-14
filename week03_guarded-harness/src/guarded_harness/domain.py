@@ -144,6 +144,23 @@ class ModelCallStatus(str, Enum):
     REJECTED = "REJECTED"
 
 
+class ModelFailureReason(str, Enum):
+    """Stable sub-classifications for governed model failures."""
+
+    CHAT_MESSAGE_INVALID = "CHAT_MESSAGE_INVALID"
+    TOOL_CALLS_MISSING = "TOOL_CALLS_MISSING"
+    TOOL_CALL_LIMIT_EXCEEDED = "TOOL_CALL_LIMIT_EXCEEDED"
+    TOOL_CALL_ID_MISSING = "TOOL_CALL_ID_MISSING"
+    TOOL_CALL_ID_DUPLICATE = "TOOL_CALL_ID_DUPLICATE"
+    TOOL_CALL_NAME_MISSING = "TOOL_CALL_NAME_MISSING"
+    FINAL_ANSWER_MIXED_WITH_TOOLS = "FINAL_ANSWER_MIXED_WITH_TOOLS"
+    TOKEN_USAGE_MISSING = "TOKEN_USAGE_MISSING"
+    TOKEN_USAGE_INVALID = "TOKEN_USAGE_INVALID"
+    TOKEN_USAGE_LIMIT_EXCEEDED = "TOKEN_USAGE_LIMIT_EXCEEDED"
+    RESPONSE_NOT_SERIALIZABLE = "RESPONSE_NOT_SERIALIZABLE"
+    RESPONSE_TOO_LARGE = "RESPONSE_TOO_LARGE"
+
+
 class ObservationStatus(str, Enum):
     """Statuses visible to the model in a tool observation."""
 
@@ -686,6 +703,35 @@ class StrictDomainModel(BaseModel):
         arbitrary_types_allowed=False,
         allow_inf_nan=False,
     )
+
+
+class ModelFailureClassification(StrictDomainModel):
+    """Bounded, non-secret diagnostics for one model failure."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        frozen=True,
+        validate_assignment=True,
+        validate_default=True,
+        use_enum_values=False,
+        arbitrary_types_allowed=False,
+        allow_inf_nan=False,
+    )
+
+    schema_version: Literal[1] = 1
+    reason_code: ModelFailureReason
+    tool_call_count: int | None = Field(default=None, ge=0)
+    allowed_limit: int | None = Field(default=None, ge=1, le=64)
+    invalid_index: int | None = Field(default=None, ge=0)
+    invalid_count: int | None = Field(default=None, ge=0)
+    tool_names: tuple[str, ...] = Field(default=(), max_length=16)
+    tool_names_truncated: bool = False
+
+    def audit_summary(self) -> dict[str, JsonValue]:
+        """Return the bounded JSON summary persisted on the failure event."""
+
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class ValidationIssue(StrictDomainModel):

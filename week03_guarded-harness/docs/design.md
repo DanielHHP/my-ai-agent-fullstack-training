@@ -1271,6 +1271,11 @@ attempt、状态、usage、成本、稳定错误和请求摘要，不保存完�
 Audit 同时增加 `audit_schema=2`、可空 `model_call_id` 和 `MODEL_*` 事件；v1 旧事件仍按原
 canonical schema 校验哈希，不回写或重算历史链。
 
+模型校验失败除通用 `MODEL_*` 错误码外，还要在对应 `MODEL_CALL_FAILED` 的 `output_summary`
+中记录固定 `reason_code`。工具候选相关诊断可以有界记录调用总数、允许上限、首个无效位置、
+无效数量和最多 16 个工具名；不记录 tool-call arguments、完整 content 或 provider raw payload。
+诊断摘要与失败状态同事务提交，并继续经过 Audit 的递归脱敏和大小限制。
+
 事务规则：
 
 - STARTED、reservation 和开始 Audit 同事务提交；

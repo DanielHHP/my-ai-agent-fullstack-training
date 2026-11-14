@@ -23,6 +23,8 @@ from .domain import (
     ErrorCode,
     ModelCallRecord,
     ModelCallStatus,
+    ModelFailureClassification,
+    ModelFailureReason,
 )
 from .state_store import StateStoreError
 from .storage import SQLiteStorage, StorageError
@@ -39,6 +41,8 @@ _TOKENIZER_ALLOWLIST = {
     "tiktoken:p50k_base",
 }
 _MAX_ERROR_TEXT = 1000
+_MAX_DIAGNOSTIC_TOOL_NAMES = 16
+_MAX_DIAGNOSTIC_TOOL_NAME_CHARS = 64
 
 
 class ModelRuntimeError(RuntimeError):
@@ -51,11 +55,13 @@ class ModelRuntimeError(RuntimeError):
         *,
         unknown: bool = False,
         retryable: bool = False,
+        classification: ModelFailureClassification | None = None,
     ) -> None:
         self.code = code
         self.message = message[:_MAX_ERROR_TEXT]
         self.unknown = unknown
         self.retryable = retryable
+        self.classification = classification
         super().__init__(f"{code.value}: {self.message}")
 
 
@@ -338,6 +344,7 @@ class ModelCallService:
         status: ModelCallStatus,
         code: ErrorCode,
         provider_request_id: str | None = None,
+        classification: ModelFailureClassification | None = None,
     ) -> None:
         """Persist a terminal failure or unknown outcome."""
 
@@ -348,6 +355,7 @@ class ModelCallService:
                     status=status,
                     error_code=code,
                     provider_request_id=provider_request_id,
+                    classification=classification,
                     lease_token=self._lease_token,
                 )
         except (StateStoreError, StorageError) as exc:
@@ -446,6 +454,7 @@ class GovernedModel(Model):
                     context,
                     status=terminal_status,
                     code=error.code,
+                    classification=error.classification,
                 )
                 if error.retryable and attempt_number < attempts:
                     continue
@@ -461,6 +470,7 @@ class GovernedModel(Model):
                         ModelCallStatus.UNKNOWN_RESULT if exc.unknown else ModelCallStatus.FAILED
                     ),
                     code=exc.code,
+                    classification=exc.classification,
                 )
                 raise
         raise ModelRuntimeError(
@@ -543,33 +553,80 @@ def _validate_chat_message(message: object, config: ModelConfig) -> None:
         raise ModelRuntimeError(
             ErrorCode.MODEL_RESPONSE_INVALID,
             "provider did not return ChatMessage",
+            classification=_classification(ModelFailureReason.CHAT_MESSAGE_INVALID),
         )
     tool_calls = message.tool_calls or []
     if not tool_calls:
         raise ModelRuntimeError(
             ErrorCode.MODEL_PROTOCOL_UNSUPPORTED,
             "provider did not return structured tool calls",
+            classification=_tool_call_classification(
+                ModelFailureReason.TOOL_CALLS_MISSING,
+                tool_calls,
+            ),
         )
     if len(tool_calls) > config.max_tool_calls_per_response:
         raise ModelRuntimeError(
             ErrorCode.MODEL_TOOL_CALLS_INVALID,
             "provider returned too many tool calls",
+            classification=_tool_call_classification(
+                ModelFailureReason.TOOL_CALL_LIMIT_EXCEEDED,
+                tool_calls,
+                allowed_limit=config.max_tool_calls_per_response,
+            ),
         )
+    id_values = [getattr(call, "id", None) for call in tool_calls]
+    missing_id_count = sum(not isinstance(call_id, str) or not call_id for call_id in id_values)
+    duplicate_id_count = 0
+    seen_ids: set[str] = set()
+    for call_id in id_values:
+        if isinstance(call_id, str) and call_id:
+            if call_id in seen_ids:
+                duplicate_id_count += 1
+            seen_ids.add(call_id)
+    missing_name_count = sum(
+        not isinstance(getattr(getattr(call, "function", None), "name", None), str)
+        or not getattr(getattr(call, "function", None), "name", None)
+        for call in tool_calls
+    )
     ids: set[str] = set()
     names: list[str] = []
-    for call in tool_calls:
+    for index, call in enumerate(tool_calls):
         call_id = getattr(call, "id", None)
         function = getattr(call, "function", None)
         name = getattr(function, "name", None)
-        if not isinstance(call_id, str) or not call_id or call_id in ids:
+        if not isinstance(call_id, str) or not call_id:
             raise ModelRuntimeError(
                 ErrorCode.MODEL_TOOL_CALLS_INVALID,
-                "tool call IDs must be non-empty and unique",
+                "tool call IDs must be non-empty",
+                classification=_tool_call_classification(
+                    ModelFailureReason.TOOL_CALL_ID_MISSING,
+                    tool_calls,
+                    invalid_index=index,
+                    invalid_count=missing_id_count,
+                ),
+            )
+        if call_id in ids:
+            raise ModelRuntimeError(
+                ErrorCode.MODEL_TOOL_CALLS_INVALID,
+                "tool call IDs must be unique",
+                classification=_tool_call_classification(
+                    ModelFailureReason.TOOL_CALL_ID_DUPLICATE,
+                    tool_calls,
+                    invalid_index=index,
+                    invalid_count=duplicate_id_count,
+                ),
             )
         if not isinstance(name, str) or not name:
             raise ModelRuntimeError(
                 ErrorCode.MODEL_TOOL_CALLS_INVALID,
                 "tool call name is missing",
+                classification=_tool_call_classification(
+                    ModelFailureReason.TOOL_CALL_NAME_MISSING,
+                    tool_calls,
+                    invalid_index=index,
+                    invalid_count=missing_name_count,
+                ),
             )
         ids.add(call_id)
         names.append(name)
@@ -577,11 +634,16 @@ def _validate_chat_message(message: object, config: ModelConfig) -> None:
         raise ModelRuntimeError(
             ErrorCode.MODEL_TOOL_CALLS_INVALID,
             "final_answer cannot be combined with another tool call",
+            classification=_tool_call_classification(
+                ModelFailureReason.FINAL_ANSWER_MIXED_WITH_TOOLS,
+                tool_calls,
+            ),
         )
     _validated_usage(
         message.token_usage,
         max_input=config.max_input_tokens,
         max_output=config.max_output_tokens,
+        tool_calls=tool_calls,
     )
     try:
         encoded = json.dumps(
@@ -598,11 +660,19 @@ def _validate_chat_message(message: object, config: ModelConfig) -> None:
         raise ModelRuntimeError(
             ErrorCode.MODEL_RESPONSE_INVALID,
             "model response is not serializable",
+            classification=_tool_call_classification(
+                ModelFailureReason.RESPONSE_NOT_SERIALIZABLE,
+                tool_calls,
+            ),
         ) from exc
     if len(encoded) > config.max_response_bytes:
         raise ModelRuntimeError(
             ErrorCode.MODEL_RESPONSE_TOO_LARGE,
             "model response exceeds max_response_bytes",
+            classification=_tool_call_classification(
+                ModelFailureReason.RESPONSE_TOO_LARGE,
+                tool_calls,
+            ),
         )
 
 
@@ -611,22 +681,70 @@ def _validated_usage(
     *,
     max_input: int,
     max_output: int,
+    tool_calls: Sequence[object] = (),
 ) -> TokenUsage:
     if usage is None:
-        raise ModelRuntimeError(ErrorCode.MODEL_USAGE_INVALID, "token usage is missing")
+        raise ModelRuntimeError(
+            ErrorCode.MODEL_USAGE_INVALID,
+            "token usage is missing",
+            classification=_tool_call_classification(
+                ModelFailureReason.TOKEN_USAGE_MISSING,
+                tool_calls,
+            ),
+        )
     if (
         type(usage.input_tokens) is not int
         or type(usage.output_tokens) is not int
         or usage.input_tokens < 0
         or usage.output_tokens < 0
     ):
-        raise ModelRuntimeError(ErrorCode.MODEL_USAGE_INVALID, "token usage is invalid")
+        raise ModelRuntimeError(
+            ErrorCode.MODEL_USAGE_INVALID,
+            "token usage is invalid",
+            classification=_tool_call_classification(
+                ModelFailureReason.TOKEN_USAGE_INVALID,
+                tool_calls,
+            ),
+        )
     if usage.input_tokens > max_input or usage.output_tokens > max_output:
         raise ModelRuntimeError(
             ErrorCode.MODEL_USAGE_INVALID,
             "token usage exceeds configured request limits",
+            classification=_tool_call_classification(
+                ModelFailureReason.TOKEN_USAGE_LIMIT_EXCEEDED,
+                tool_calls,
+            ),
         )
     return usage
+
+
+def _tool_call_classification(
+    reason_code: ModelFailureReason,
+    tool_calls: Sequence[object],
+    *,
+    allowed_limit: int | None = None,
+    invalid_index: int | None = None,
+    invalid_count: int | None = None,
+) -> ModelFailureClassification:
+    names: list[str] = []
+    for call in tool_calls[:_MAX_DIAGNOSTIC_TOOL_NAMES]:
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None)
+        if isinstance(name, str) and name:
+            names.append(name[:_MAX_DIAGNOSTIC_TOOL_NAME_CHARS])
+    return ModelFailureClassification(
+        reason_code=reason_code,
+        tool_call_count=len(tool_calls),
+        allowed_limit=allowed_limit,
+        invalid_index=invalid_index,
+        invalid_count=invalid_count,
+        tool_names=tuple(names),
+        tool_names_truncated=len(tool_calls) > _MAX_DIAGNOSTIC_TOOL_NAMES,
+    )
+
+
+def _classification(reason_code: ModelFailureReason) -> ModelFailureClassification:
+    return ModelFailureClassification(reason_code=reason_code)
 
 
 def _provider_request_id(message: ChatMessage) -> str | None:

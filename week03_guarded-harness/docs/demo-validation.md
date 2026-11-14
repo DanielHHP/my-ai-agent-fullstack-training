@@ -237,6 +237,7 @@ guarded-harness --config "$CONFIG" \
 - `data.run.status`、`stop_reason`、`acceptance_status`；
 - `data.run.last_checkpoint_id`；
 - `data.audit.valid=true`、`head_sequence`、`truncated` 和稳定排序事件；
+- 模型失败事件的 `output_summary.reason_code`、最多 16 个 `tool_names`、调用数量和允许上限；
 - `data.recoveries`：只包含可见 `RECOVERY_RECORDED` 审计事实；
 - `data.invocations`：工具开始/结束、审批、结果摘要和 Evidence ID；
 - `data.completion`：程序化验收项和最终结论。
@@ -269,7 +270,8 @@ queries = {
     """,
     "audit": """
         SELECT sequence, event_type, status, decision, code, rule_id,
-               tool_name, tool_call_id, approval_id, model_call_id
+               tool_name, tool_call_id, approval_id, model_call_id,
+               input_summary_json, output_summary_json
         FROM audit_events WHERE run_id = ? ORDER BY sequence
     """,
 }

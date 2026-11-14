@@ -52,9 +52,9 @@
 | [WP-12 规格](work-packages/wp-12-fault-hardening-delivery/spec.md) | 已冻结：项目级故障矩阵、正式样例、飞书核心验收映射、最终质量门禁和交付证据 |
 | [WP-12 计划](work-packages/wp-12-fault-hardening-delivery/plan.md) | 已完成：故障注入、跨进程恢复、两类任务 E2E、样例、测试矩阵、风险和回滚 |
 | [WP-12 验收报告](work-packages/wp-12-fault-hardening-delivery/acceptance-report.md) | v1.1 accepted：9 项目标、372 项全量测试、故障/E2E 和人工验收通过；P0 完成 |
-| [WP-13 规格](work-packages/wp-13-real-model-provider/spec.md) | frozen：真实模型 Provider、模型调用治理、预算预留、审计、恢复和 P1 验收边界 |
+| [WP-13 规格](work-packages/wp-13-real-model-provider/spec.md) | v1.1 frozen：真实模型 Provider、调用治理、预算、失败分类审计和 P1 验收边界 |
 | [WP-13 计划](work-packages/wp-13-real-model-provider/plan.md) | done：离线实现、SDK 协议和 live smoke 验收完成 |
-| [WP-13 验收报告](work-packages/wp-13-real-model-provider/acceptance-report.md) | v1.2 accepted：补充区分文本 live smoke 与真实结构化 tool-call 探测，完整 Governed E2E 待 demo 记录 |
+| [WP-13 验收报告](work-packages/wp-13-real-model-provider/acceptance-report.md) | v1.3 accepted：结构化 tool-call 探测完成，模型失败分类审计已通过 411 项回归 |
 | [WP-14 规格](work-packages/wp-14-cli-run-instruction/spec.md) | frozen：`run --instruction`、有效指令持久化、RESUME 禁止重传和权限边界 |
 | [WP-14 计划](work-packages/wp-14-cli-run-instruction/plan.md) | done：领域、Harness、CLI、恢复和文档修改 |
 | [WP-14 验收报告](work-packages/wp-14-cli-run-instruction/acceptance-report.md) | v1.0 accepted：11/11 AC、402 项全量测试和入口门禁通过 |

@@ -29,6 +29,7 @@ from .domain import (
     LeasePolicy,
     ModelCallRecord,
     ModelCallStatus,
+    ModelFailureClassification,
     PlanItem,
     Run,
     RunBudget,
@@ -785,6 +786,7 @@ class StateStore:
         error_code: ErrorCode,
         provider_request_id: str | None,
         lease_token: str,
+        classification: ModelFailureClassification | None = None,
     ) -> ModelCallRecord:
         """Close one STARTED model call as failed, timed out, or unknown."""
 
@@ -852,6 +854,11 @@ class StateStore:
             ModelCallStatus.TIMED_OUT: AuditStatus.TIMED_OUT,
             ModelCallStatus.UNKNOWN_RESULT: AuditStatus.UNKNOWN_RESULT,
         }[status]
+        output_summary: dict[str, object] = {
+            "provider_request_id": provider_request_id,
+        }
+        if classification is not None:
+            output_summary.update(classification.audit_summary())
         self._append_event(
             run_id=current.run_id,
             phase=GatePhase.MODEL,
@@ -861,7 +868,7 @@ class StateStore:
             step_id=current.step_id,
             model_call_id=model_call_id,
             input_summary={"status": status.value},
-            output_summary={"provider_request_id": provider_request_id},
+            output_summary=output_summary,
         )
         updated = self._connection.execute(
             "SELECT * FROM model_calls WHERE model_call_id = ?",

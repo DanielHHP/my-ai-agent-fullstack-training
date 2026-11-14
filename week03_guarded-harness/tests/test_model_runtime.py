@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pytest
 import yaml
 from fake_model import FakeScriptedModel, ScriptedResponse, final_answer, tool_call
 from smolagents import Model
@@ -20,10 +21,12 @@ from smolagents.monitoring import TokenUsage
 
 from guarded_harness import (
     AcceptanceStatus,
+    AuditEventType,
     ErrorCode,
     Harness,
     ModelCallService,
     ModelCallStatus,
+    ModelFailureReason,
     Run,
     RunBudget,
     RunMode,
@@ -110,6 +113,32 @@ class MissingCallIdModel(Model):
             ],
             token_usage=TokenUsage(input_tokens=1, output_tokens=1),
         )
+
+
+class ConfiguredToolCallsModel(Model):
+    def __init__(self, tool_calls: tuple[ChatMessageToolCall, ...]) -> None:
+        super().__init__(model_id="configured-tool-calls")
+        self._tool_calls = tool_calls
+
+    def generate(self, messages, stop_sequences=None, response_format=None, **kwargs):
+        del messages, stop_sequences, response_format, kwargs
+        return ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            tool_calls=list(self._tool_calls),
+            token_usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+def _chat_tool_call(call_id: str, name: str) -> ChatMessageToolCall:
+    return ChatMessageToolCall(
+        id=call_id,
+        type="function",
+        function=ChatMessageToolCallFunction(
+            name=name,
+            arguments={"path": "src/app.py"},
+        ),
+    )
 
 
 class ToolChoiceRecordingModel(Model):
@@ -229,6 +258,22 @@ def _model_calls(config: Path, run_id: str, workspace: Path):
         return unit.state.get_model_calls(run_id), unit.audit
 
 
+def _failed_model_event(config: Path, run_id: str, workspace: Path):
+    storage = SQLiteStorage(
+        config.parent / "state" / "harness.sqlite3",
+        workspace,
+        SystemClock(),
+    )
+    storage.initialize()
+    with storage.transaction(actor="test-reader") as unit:
+        calls = unit.state.get_model_calls(run_id)
+        assert calls
+        events = unit.audit.list_model_events(run_id, calls[0].model_call_id)
+        return next(
+            event for event in events if event.event_type == AuditEventType.MODEL_CALL_FAILED
+        )
+
+
 def test_successful_model_call_is_persisted_with_usage_and_step(tmp_path: Path) -> None:
     config, workspace = _config(tmp_path)
     result = _run(config, FakeScriptedModel((final_answer("candidate"),)))
@@ -301,6 +346,8 @@ def test_missing_usage_and_text_fallback_fail_closed(tmp_path: Path) -> None:
     assert model.calls == 1
     calls, _audit = _model_calls(config, result.run_id, workspace)
     assert [call.status for call in calls] == [ModelCallStatus.FAILED]
+    usage_event = _failed_model_event(config, result.run_id, workspace)
+    assert usage_event.output_summary["reason_code"] == ModelFailureReason.TOKEN_USAGE_MISSING.value
 
     text_config, text_workspace = _config(tmp_path / "text")
     text_result = _run(text_config, TextOnlyModel())
@@ -308,6 +355,8 @@ def test_missing_usage_and_text_fallback_fail_closed(tmp_path: Path) -> None:
     assert text_result.error_code == ErrorCode.MODEL_PROTOCOL_UNSUPPORTED.value
     text_calls, _audit = _model_calls(text_config, text_result.run_id, text_workspace)
     assert text_calls[0].status == ModelCallStatus.FAILED
+    text_event = _failed_model_event(text_config, text_result.run_id, text_workspace)
+    assert text_event.output_summary["reason_code"] == ModelFailureReason.TOOL_CALLS_MISSING.value
 
     id_config, id_workspace = _config(tmp_path / "missing-id")
     id_result = _run(id_config, MissingCallIdModel())
@@ -315,6 +364,87 @@ def test_missing_usage_and_text_fallback_fail_closed(tmp_path: Path) -> None:
     assert id_result.error_code == ErrorCode.MODEL_TOOL_CALLS_INVALID.value
     id_calls, _audit = _model_calls(id_config, id_result.run_id, id_workspace)
     assert id_calls[0].status == ModelCallStatus.FAILED
+    id_event = _failed_model_event(id_config, id_result.run_id, id_workspace)
+    assert id_event.output_summary["reason_code"] == ModelFailureReason.TOOL_CALL_ID_MISSING.value
+
+
+@pytest.mark.parametrize(
+    ("tool_calls", "expected"),
+    [
+        pytest.param(
+            tuple(_chat_tool_call(f"call-{index}", "read_file") for index in range(18)),
+            {
+                "reason_code": "TOOL_CALL_LIMIT_EXCEEDED",
+                "tool_call_count": 18,
+                "allowed_limit": 4,
+                "tool_names_truncated": True,
+            },
+            id="too-many-calls",
+        ),
+        pytest.param(
+            (
+                _chat_tool_call("duplicate", "read_file"),
+                _chat_tool_call("duplicate", "read_file"),
+                _chat_tool_call("duplicate", "read_file"),
+            ),
+            {
+                "reason_code": "TOOL_CALL_ID_DUPLICATE",
+                "tool_call_count": 3,
+                "invalid_index": 1,
+                "invalid_count": 2,
+            },
+            id="duplicate-id",
+        ),
+        pytest.param(
+            (_chat_tool_call("empty-name", ""),),
+            {
+                "reason_code": "TOOL_CALL_NAME_MISSING",
+                "tool_call_count": 1,
+                "invalid_index": 0,
+                "invalid_count": 1,
+            },
+            id="missing-name",
+        ),
+        pytest.param(
+            (
+                _chat_tool_call("answer", "final_answer"),
+                _chat_tool_call("read", "read_file"),
+            ),
+            {
+                "reason_code": "FINAL_ANSWER_MIXED_WITH_TOOLS",
+                "tool_call_count": 2,
+                "tool_names": ["final_answer", "read_file"],
+            },
+            id="mixed-final-answer",
+        ),
+    ],
+)
+def test_tool_call_validation_records_bounded_audit_classification(
+    tmp_path: Path,
+    tool_calls: tuple[ChatMessageToolCall, ...],
+    expected: dict[str, object],
+) -> None:
+    config, workspace = _config(tmp_path)
+    result = _run(config, ConfiguredToolCallsModel(tool_calls))
+
+    assert result.status == RunStatus.FAILED
+    assert result.error_code == ErrorCode.MODEL_TOOL_CALLS_INVALID.value
+    event = _failed_model_event(config, result.run_id, workspace)
+    assert event.code == ErrorCode.MODEL_TOOL_CALLS_INVALID.value
+    assert isinstance(event.output_summary, dict)
+    for key, value in expected.items():
+        assert event.output_summary[key] == value
+    assert "arguments" not in event.output_summary
+    assert len(event.output_summary["tool_names"]) <= 16
+
+    storage = SQLiteStorage(
+        config.parent / "state" / "harness.sqlite3",
+        workspace,
+        SystemClock(),
+    )
+    storage.initialize()
+    with storage.transaction(actor="test-reader") as unit:
+        assert unit.audit.verify_chain(result.run_id).valid
 
 
 def test_rate_limit_retry_is_explicit_and_grouped(tmp_path: Path) -> None:
@@ -356,6 +486,8 @@ def test_oversized_response_fails_before_agent_tool_execution(tmp_path: Path) ->
     assert result.error_code == ErrorCode.MODEL_RESPONSE_TOO_LARGE.value
     calls, _audit = _model_calls(config, result.run_id, workspace)
     assert calls[0].status == ModelCallStatus.FAILED
+    event = _failed_model_event(config, result.run_id, workspace)
+    assert event.output_summary["reason_code"] == ModelFailureReason.RESPONSE_TOO_LARGE.value
 
 
 def test_model_audit_chain_uses_schema_two(tmp_path: Path) -> None:
