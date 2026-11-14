@@ -19,6 +19,7 @@
 
 这是 Express + TypeScript 示例，没有测试套件。
 
+- 当前配置允许单次模型响应最多返回 12 个工具调用，整个 Run 的总工具调用上限仍为 40。
 - `src/server.ts` 监听 3001，`src/app.ts` 将登录和 Profile 路由挂载到 `/api`。
 - `POST /api/login` 在 `src/routes/login.ts` 校验 email/password 后调用
   `AuthService.login`。

@@ -20,7 +20,7 @@ model:
   max_input_tokens: 120000
   max_output_tokens: 32768
   max_response_bytes: 1048576
-  max_tool_calls_per_response: 8
+  max_tool_calls_per_response: 12
   requests_per_minute: 60
   max_retry_attempts: 1
   tool_choice: auto
