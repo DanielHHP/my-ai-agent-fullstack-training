@@ -180,8 +180,11 @@ def _build_definitions(sandbox: Sandbox) -> tuple[ToolDefinition, ...]:
             spec=_spec(
                 name="search_code",
                 description=(
-                    "Search text files using a literal string and optional case folding. "
-                    "Returns bounded matches with line numbers, context and content digests."
+                    "Search text under a workspace-relative path using a literal string and "
+                    "optional case folding. For broad search, pass a directory; to search one "
+                    "file, omit glob or use read_file. glob matches the full workspace-relative "
+                    "path: use `**/*.ts` for nested files, not `*.ts`. Returns bounded matches "
+                    "with line numbers, context and content digests."
                 ),
                 input_schema=object_schema(
                     {

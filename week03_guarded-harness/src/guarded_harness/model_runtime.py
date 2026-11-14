@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +27,7 @@ from .domain import (
     ModelFailureClassification,
     ModelFailureReason,
 )
+from .redaction import RedactionError, RedactionLimits, Redactor
 from .state_store import StateStoreError
 from .storage import SQLiteStorage, StorageError
 
@@ -43,6 +45,7 @@ _TOKENIZER_ALLOWLIST = {
 _MAX_ERROR_TEXT = 1000
 _MAX_DIAGNOSTIC_TOOL_NAMES = 16
 _MAX_DIAGNOSTIC_TOOL_NAME_CHARS = 64
+_DEBUG_MODEL_PROTOCOL_ENV = "GUARDED_HARNESS_DEBUG_MODEL_PROTOCOL"
 
 
 class ModelRuntimeError(RuntimeError):
@@ -557,6 +560,7 @@ def _validate_chat_message(message: object, config: ModelConfig) -> None:
         )
     tool_calls = message.tool_calls or []
     if not tool_calls:
+        _debug_model_protocol_response(message)
         raise ModelRuntimeError(
             ErrorCode.MODEL_PROTOCOL_UNSUPPORTED,
             "provider did not return structured tool calls",
@@ -674,6 +678,92 @@ def _validate_chat_message(message: object, config: ModelConfig) -> None:
                 tool_calls,
             ),
         )
+
+
+def _debug_model_protocol_response(message: ChatMessage) -> None:
+    """Print one bounded, redacted response to stderr for explicit local debugging."""
+
+    if os.environ.get(_DEBUG_MODEL_PROTOCOL_ENV) != "1":
+        return
+
+    response = {
+        "message_type": type(message).__name__,
+        "role": _debug_scalar(message.role),
+        "content": message.content,
+        "tool_calls": [
+            {
+                "id": getattr(call, "id", None),
+                "type": getattr(call, "type", None),
+                "name": getattr(getattr(call, "function", None), "name", None),
+                "arguments": getattr(getattr(call, "function", None), "arguments", None),
+            }
+            for call in (message.tool_calls or [])
+        ],
+        "token_usage": _debug_token_usage(message.token_usage),
+        "raw": _debug_json_value(message.raw),
+    }
+    try:
+        sensitive_values = [
+            value for name in _CREDENTIAL_ALLOWLIST if (value := os.environ.get(name))
+        ]
+        result = Redactor(
+            sensitive_values=sensitive_values,
+            limits=RedactionLimits(
+                max_output_bytes=32_768,
+                max_lines=256,
+                max_depth=16,
+                max_nodes=10_000,
+            ),
+        ).redact(response)
+        diagnostic = {
+            "event": "MODEL_PROTOCOL_UNSUPPORTED_DEBUG",
+            "error_code": ErrorCode.MODEL_PROTOCOL_UNSUPPORTED.value,
+            "reason_code": ModelFailureReason.TOOL_CALLS_MISSING.value,
+            "redaction_count": result.redaction_count,
+            "truncated": result.truncated,
+            "response": result.value,
+        }
+    except RedactionError:
+        diagnostic = {
+            "event": "MODEL_PROTOCOL_UNSUPPORTED_DEBUG",
+            "error_code": ErrorCode.MODEL_PROTOCOL_UNSUPPORTED.value,
+            "reason_code": ModelFailureReason.TOOL_CALLS_MISSING.value,
+            "debug_error": ErrorCode.REDACTION_FAILED.value,
+        }
+    sys.stderr.write(json.dumps(diagnostic, ensure_ascii=False, sort_keys=True) + "\n")
+    sys.stderr.flush()
+
+
+def _debug_token_usage(usage: TokenUsage | None) -> dict[str, object] | None:
+    if usage is None:
+        return None
+    return {
+        "input_tokens": getattr(usage, "input_tokens", None),
+        "output_tokens": getattr(usage, "output_tokens", None),
+    }
+
+
+def _debug_scalar(value: object) -> object:
+    return getattr(value, "value", value)
+
+
+def _debug_json_value(value: object) -> object:
+    if value is None:
+        return None
+    try:
+        return json.loads(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                default=_json_default,
+                sort_keys=True,
+            )
+        )
+    except (TypeError, ValueError, RecursionError):
+        return {
+            "type": type(value).__name__,
+            "repr": repr(value)[:4096],
+        }
 
 
 def _validated_usage(

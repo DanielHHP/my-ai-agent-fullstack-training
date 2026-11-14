@@ -186,6 +186,9 @@ return structured ReadFileOutput + HandlerResult(SUCCEEDED, evidence)
 
 ### 4.5 `search_code`
 
+模型可见说明必须提示：广泛搜索优先使用目录；单文件搜索省略 `glob` 或使用 `read_file`；
+`glob` 匹配完整工作区相对路径，嵌套文件使用 `**/*.ts` 而不是 `*.ts`。
+
 ```text
 scope = sandbox.check_read(path)  # 已由 Gate 做一次，Sandbox helper 仍按公共接口复核
 files = enumerate files from sandbox file walk under scope

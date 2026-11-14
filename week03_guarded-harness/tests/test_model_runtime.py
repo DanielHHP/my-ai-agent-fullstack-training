@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,19 @@ class TextOnlyModel(Model):
         return ChatMessage(
             role=MessageRole.ASSISTANT,
             content="final answer without a tool call",
+            token_usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+
+
+class SensitiveTextOnlyModel(Model):
+    def __init__(self) -> None:
+        super().__init__(model_id="sensitive-text-only")
+
+    def generate(self, messages, stop_sequences=None, response_format=None, **kwargs):
+        del messages, stop_sequences, response_format, kwargs
+        return ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="I would write token=super-secret-token without a tool call",
             token_usage=TokenUsage(input_tokens=1, output_tokens=1),
         )
 
@@ -366,6 +380,49 @@ def test_missing_usage_and_text_fallback_fail_closed(tmp_path: Path) -> None:
     assert id_calls[0].status == ModelCallStatus.FAILED
     id_event = _failed_model_event(id_config, id_result.run_id, id_workspace)
     assert id_event.output_summary["reason_code"] == ModelFailureReason.TOOL_CALL_ID_MISSING.value
+
+
+def test_model_protocol_debug_output_is_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("GUARDED_HARNESS_DEBUG_MODEL_PROTOCOL", raising=False)
+    config, _workspace_path = _config(tmp_path)
+
+    result = _run(config, TextOnlyModel())
+
+    assert result.error_code == ErrorCode.MODEL_PROTOCOL_UNSUPPORTED.value
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "MODEL_PROTOCOL_UNSUPPORTED_DEBUG" not in captured.err
+
+
+def test_model_protocol_debug_output_is_redacted_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("GUARDED_HARNESS_DEBUG_MODEL_PROTOCOL", "1")
+    config, _workspace_path = _config(tmp_path)
+
+    result = _run(config, SensitiveTextOnlyModel())
+
+    assert result.error_code == ErrorCode.MODEL_PROTOCOL_UNSUPPORTED.value
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    diagnostic = json.loads(captured.err)
+    assert diagnostic["event"] == "MODEL_PROTOCOL_UNSUPPORTED_DEBUG"
+    assert diagnostic["error_code"] == ErrorCode.MODEL_PROTOCOL_UNSUPPORTED.value
+    assert diagnostic["reason_code"] == ModelFailureReason.TOOL_CALLS_MISSING.value
+    assert diagnostic["response"]["role"] == "assistant"
+    assert diagnostic["response"]["tool_calls"] == []
+    assert diagnostic["response"]["token_usage"] == {
+        "input_tokens": 1,
+        "output_tokens": 1,
+    }
+    assert "super-secret-token" not in captured.err
+    assert "[REDACTED]" in captured.err
 
 
 @pytest.mark.parametrize(

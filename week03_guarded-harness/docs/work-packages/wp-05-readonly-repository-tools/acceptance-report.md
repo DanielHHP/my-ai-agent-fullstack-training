@@ -72,6 +72,17 @@ CLI 或 Completion 已完成。
 
 测试无失败、error、skip 或 xfail；不访问真实模型、网络或用户凭据。
 
+### 4.1 `search_code` 模型说明修订
+
+2026-11-15 根据真实模型 Demo 中“文件路径 + `*.ts` 被 glob 排除后返回 0 files scanned”的反馈，
+修订模型可见 `search_code` 说明：广泛搜索优先传目录；单文件搜索省略 `glob` 或使用
+`read_file`；`glob` 匹配完整工作区相对路径，嵌套文件应使用 `**/*.ts`。该修订只改善模型提示，
+不改变 schema、路径权限、Gate 或 handler 执行语义。
+
+复验包含 `test_readonly_factory_registers_stable_snapshot` 和
+`test_literal_search_scope_glob_case_and_context`，并与模型协议调试测试共同得到 `4 passed`。
+全量回归为 `425 passed, 1 skipped in 282.96s (0:04:42)`；Ruff lint 和格式检查通过。
+
 ## 5. 规格场景映射
 
 | 规格场景 | 结果 | 主要测试证据 |

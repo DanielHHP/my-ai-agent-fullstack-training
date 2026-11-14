@@ -112,6 +112,46 @@ guarded-harness --config config/2_bug_fix.yaml approvals list --limit 1 --json
 
 这两个查询不会创建模型、读取凭据或访问网络。
 
+### 2.1 模型协议失败调试
+
+需要检查模型原文时，可以临时开启模型协议诊断：
+
+```bash
+export GUARDED_HARNESS_DEBUG_MODEL_PROTOCOL=1
+```
+
+该开关默认关闭；开启后，仅当模型响应缺少结构化 tool calls、最终错误为
+`MODEL_PROTOCOL_UNSUPPORTED` / `TOOL_CALLS_MISSING` 时，向 stderr 输出一行 JSON 调试记录。
+stdout 中 `--json` 的正常结果不受影响。建议分别保存 stdout 和 stderr：
+
+```bash
+DEBUG_INSTRUCTION='帮我看下这个登录 demo 的登录流程，整理成 artifacts/login-flow.md。按 ## 事实、## 推断、## 代码依据 分段，事实要有 [E1] 这种引用，代码依据带文件行号，别改源码。'
+
+set +e
+guarded-harness --config config/1_login_demo.yaml \
+  run --instruction "$DEBUG_INSTRUCTION" --json \
+  >/tmp/governed-demo1-run.json \
+  2>/tmp/governed-demo1-model-debug.log
+demo1_run_exit=$?
+set -e
+printf 'exit=%s\n' "$demo1_run_exit"
+cat /tmp/governed-demo1-model-debug.log
+```
+
+调试记录的 `response` 包含 `content`、`tool_calls`、`token_usage`、脱敏后的 provider `raw`
+以及 `message_type` 和 `role`。输出受 32 KiB/256 行上限约束；已知模型凭据值、Bearer/JWT、
+token/password 键值和常见密钥格式会在显示前脱敏。该记录不写入 State 或 Audit，也不改变
+Gate、Sandbox、审批或预算行为。
+
+调试结束后关闭开关：
+
+```bash
+unset GUARDED_HARNESS_DEBUG_MODEL_PROTOCOL
+```
+
+不要将未复核的 stderr 文件作为长期日志或验收材料保存。即使已经脱敏，模型正文仍可能包含仓库
+内容；分享前应再次人工检查。
+
 ## 3. 场景一：非阻塞审批
 
 ### 3.1 启动

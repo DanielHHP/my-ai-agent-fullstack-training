@@ -538,6 +538,10 @@ def test_readonly_factory_registers_stable_snapshot(tmp_path: Path) -> None:
     )
     snapshot = fixture.registry.snapshot(fixture.context, fixture.policy)
     assert tuple(spec.name for spec in snapshot) == fixture.registry.names()
+    search_spec = next(spec for spec in snapshot if spec.name == "search_code")
+    assert "For broad search, pass a directory" in search_spec.description
+    assert "to search one file, omit glob or use read_file" in search_spec.description
+    assert "use `**/*.ts` for nested files, not `*.ts`" in search_spec.description
     for spec in snapshot:
         assert spec.risk == gh.ToolRisk.READ
         assert spec.approval_requirement == gh.ApprovalRequirement.NEVER
