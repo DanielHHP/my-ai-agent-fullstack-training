@@ -18,7 +18,7 @@ model:
   request_timeout_seconds: 120
   connect_timeout_seconds: 10
   max_input_tokens: 120000
-  max_output_tokens: 4096
+  max_output_tokens: 32768
   max_response_bytes: 1048576
   max_tool_calls_per_response: 8
   requests_per_minute: 60
