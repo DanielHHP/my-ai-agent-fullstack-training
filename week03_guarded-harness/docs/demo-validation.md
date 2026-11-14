@@ -127,14 +127,14 @@ stdout 中 `--json` 的正常结果不受影响。建议分别保存 stdout 和 
 ```bash
 DEBUG_INSTRUCTION='帮我看下这个登录 demo 的登录流程，整理成 artifacts/login-flow.md。按 ## 事实、## 推断、## 代码依据 分段，事实要有 [E1] 这种引用，代码依据带文件行号，别改源码。'
 
-set +e
+demo1_run_exit=0
 guarded-harness --config config/1_login_demo.yaml \
   run --instruction "$DEBUG_INSTRUCTION" --json \
   >/tmp/governed-demo1-run.json \
-  2>/tmp/governed-demo1-model-debug.log
-demo1_run_exit=$?
-set -e
+  2>/tmp/governed-demo1-model-debug.log \
+  || demo1_run_exit=$?
 printf 'exit=%s\n' "$demo1_run_exit"
+cat /tmp/governed-demo1-run.json
 cat /tmp/governed-demo1-model-debug.log
 ```
 
@@ -159,13 +159,18 @@ unset GUARDED_HARNESS_DEBUG_MODEL_PROTOCOL
 ```bash
 INSTRUCTION_1='帮我看下这个登录 demo 的登录流程，整理成 artifacts/login-flow.md。按 ## 事实、## 推断、## 代码依据 分段，事实要有 [E1] 这种引用，代码依据带文件行号，别改源码。'
 
-set +e
+demo1_run_exit=0
 guarded-harness --config config/1_login_demo.yaml \
-  run --instruction "$INSTRUCTION_1" --json | tee /tmp/governed-demo1-run.json
-demo1_run_exit=${PIPESTATUS[0]}
-set -e
+  run --instruction "$INSTRUCTION_1" --json \
+  >/tmp/governed-demo1-run.json \
+  || demo1_run_exit=$?
+cat /tmp/governed-demo1-run.json
 printf 'exit=%s\n' "$demo1_run_exit"
 ```
+
+上述命令使用 `command || exit_code=$?` 捕获非零退出码，不再切换 `set -e`。即使调用者 shell
+已经开启 `errexit`，`WAITING_APPROVAL` 的退出码 `3` 也不会让终端或外层脚本意外退出。需要把
+`0` 以外的退出码视为允许值时，应由调用者在命令结束后显式判断。
 
 预期退出码是 `3`，状态为 `WAITING_APPROVAL`；此时 `artifacts/login-flow.md` 尚未创建或修改。
 退出码 `0` 表示本次直接通过程序验收；其他退出码应结合 JSON 错误码和 `inspect` 判定。
@@ -209,8 +214,13 @@ guarded-harness --config config/1_login_demo.yaml \
 然后恢复 Run：
 
 ```bash
+demo1_resume_exit=0
 guarded-harness --config config/1_login_demo.yaml \
-  resume "$RUN1_ID" --json | tee /tmp/governed-demo1-resume.json
+  resume "$RUN1_ID" --json \
+  >/tmp/governed-demo1-resume.json \
+  || demo1_resume_exit=$?
+cat /tmp/governed-demo1-resume.json
+printf 'exit=%s\n' "$demo1_resume_exit"
 ```
 
 每个写工具调用使用一次性审批。如果模型再次写文档，`resume` 会以退出码 `3` 返回新的
@@ -224,12 +234,13 @@ guarded-harness --config config/1_login_demo.yaml \
 ```bash
 INSTRUCTION_2='这个登录会话 demo 有几个测试挂了，帮我查下原因并修好。要补测试就放 tests/generated，已有测试别动；改完跑测试确认一下。'
 
-set +e
+demo2_run_exit=0
 guarded-harness --config config/2_bug_fix.yaml \
   run --instruction "$INSTRUCTION_2" \
-  --wait-for-approval 600 --json | tee /tmp/governed-demo2-run.json
-demo2_run_exit=${PIPESTATUS[0]}
-set -e
+  --wait-for-approval 600 --json \
+  >/tmp/governed-demo2-run.json \
+  || demo2_run_exit=$?
+cat /tmp/governed-demo2-run.json
 printf 'exit=%s\n' "$demo2_run_exit"
 ```
 
@@ -266,8 +277,13 @@ guarded-harness --config config/2_bug_fix.yaml \
 
 ```bash
 RUN2_ID='<从 /tmp/governed-demo2-run.json 提取 data.run_id>'
+demo2_resume_exit=0
 guarded-harness --config config/2_bug_fix.yaml \
-  resume "$RUN2_ID" --wait-for-approval 600 --json
+  resume "$RUN2_ID" --wait-for-approval 600 --json \
+  >/tmp/governed-demo2-resume.json \
+  || demo2_resume_exit=$?
+cat /tmp/governed-demo2-resume.json
+printf 'exit=%s\n' "$demo2_resume_exit"
 ```
 
 预期最终退出码 `0`，`status=COMPLETED`，`acceptance_status=ACCEPTED`。程序级验收会独立复跑
@@ -282,8 +298,13 @@ CONFIG=config/1_login_demo.yaml
 RUN_ID="$RUN1_ID"
 STATE_DB=.guarded-harness/1_login_demo/harness.sqlite3
 
+inspect_exit=0
 guarded-harness --config "$CONFIG" \
-  inspect "$RUN_ID" --audit-limit 1000 --json | tee /tmp/governed-inspect.json
+  inspect "$RUN_ID" --audit-limit 1000 --json \
+  >/tmp/governed-inspect.json \
+  || inspect_exit=$?
+cat /tmp/governed-inspect.json
+printf 'exit=%s\n' "$inspect_exit"
 ```
 
 `inspect` 先验证完整 Audit 哈希链，再返回有界投影。重点字段：
