@@ -543,6 +543,67 @@ def test_valid_code_understanding_is_accepted(tmp_path: Path) -> None:
     assert stored.completion == result
 
 
+@pytest.mark.parametrize(
+    ("facts", "inference", "evidence"),
+    [
+        ("一、事实", "二、推断", "三、代码依据"),
+        ("1. 事实", "2. 推断", "3. 代码依据"),
+        ("(1) 事实", "(2) 推断", "(3) 代码依据"),
+    ],
+)
+def test_numbered_code_understanding_headings_are_accepted(
+    tmp_path: Path,
+    facts: str,
+    inference: str,
+    evidence: str,
+) -> None:
+    fixture = _fixture(tmp_path, kind=gh.TaskKind.CODE_UNDERSTANDING)
+    _read_source(fixture)
+    _write_deliverable(
+        fixture,
+        f"""## {facts}
+
+- `value()` 返回 1。[E1]
+
+## {inference}
+
+- 无
+
+## {evidence}
+
+- E1: `src/app.py:1-2`
+""",
+    )
+
+    result = _verify(fixture)
+
+    assert result.acceptance_status == gh.AcceptanceStatus.ACCEPTED, result.failure_summary
+
+
+def test_numbered_heading_does_not_bypass_duplicate_section_check() -> None:
+    document = """## 事实
+
+- `value()` 返回 1。[E1]
+
+## 一、事实
+
+- duplicate
+
+## 推断
+
+- 无
+
+## 代码依据
+
+- E1: `src/app.py:1-2`
+"""
+
+    with pytest.raises(ValueError) as error:
+        gh.parse_code_understanding_document(document)
+
+    assert error.value.code == gh.ErrorCode.COMPLETION_SECTION_DUPLICATE
+
+
 def test_missing_deliverable_and_unsupported_claim_are_rejected(tmp_path: Path) -> None:
     fixture = _fixture(
         tmp_path,

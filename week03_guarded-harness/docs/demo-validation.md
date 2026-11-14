@@ -10,8 +10,13 @@
 以下路径都相对于 `demo/`。两份配置分别是 `config/1_login_demo.yaml` 和
 `config/2_bug_fix.yaml`。任务需求必须通过
 `run --instruction` 传入；YAML 只声明权限、路径、预算、审批、测试命令和程序验收。
-下面的指令刻意使用日常表达，不重复罗列 YAML 已经约束的路径、审批和预算；程序仍会负责
-格式、权限和最终验收。
+下面的指令刻意使用日常表达，不重复罗列 YAML 已经约束的路径、审批和预算；Harness 会把当前
+任务类型的受信任验收格式写入 system prompt，程序仍负责权限和最终验收。
+
+| 场景 | `max_steps` | `max_tool_calls` | `max_token_cost` |
+| --- | ---: | ---: | ---: |
+| Demo 1 | 32 | 80 | 4 |
+| Demo 2 | 48 | 120 | 6 |
 
 ## 1. Demo 分析
 
@@ -19,7 +24,7 @@
 
 这是 Express + TypeScript 示例，没有测试套件。
 
-- 当前配置允许单次模型响应最多返回 12 个工具调用，整个 Run 的总工具调用上限仍为 40。
+- 当前配置允许单次模型响应最多返回 12 个工具调用，整个 Run 的总工具调用上限为 80。
 - `src/server.ts` 监听 3001，`src/app.ts` 将登录和 Profile 路由挂载到 `/api`。
 - `POST /api/login` 在 `src/routes/login.ts` 校验 email/password 后调用
   `AuthService.login`。
@@ -32,8 +37,9 @@
 - 两个不能用于生产的事实：`password.ts` 直接比较 `"hash:" + 明文`；`token.ts` 只做
   base64url 编码和前缀检查，没有签名防伪。
 
-代码理解任务的唯一允许写入是 `artifacts/login-flow.md`，源码和测试路径禁止写入。验收要求文档
-严格包含 `## 事实`、`## 推断`、`## 代码依据`，事实必须引用 `[E<n>]`。代码依据使用以下形式：
+代码理解任务的唯一允许写入是 `artifacts/login-flow.md`，源码和测试路径禁止写入。规范格式使用
+`## 事实`、`## 推断`、`## 代码依据`，事实必须引用 `[E<n>]`。解析器也兼容 `## 一、事实` 这类
+单个常见序号前缀，但规范标题仍由 system prompt 明确提供。代码依据使用以下形式：
 
 ```text
 - E1: `src/routes/login.ts:7-25`
@@ -109,7 +115,7 @@ guarded-harness --config config/2_bug_fix.yaml approvals list --limit 1 --json
 ### 3.1 启动
 
 ```bash
-INSTRUCTION_1='帮我看下这个登录 demo 的登录流程，整理成 artifacts/login-flow.md。按“事实、推断、代码依据”分段，事实要有 [E1] 这种引用，代码依据带文件行号，别改源码。'
+INSTRUCTION_1='帮我看下这个登录 demo 的登录流程，整理成 artifacts/login-flow.md。按 ## 事实、## 推断、## 代码依据 分段，事实要有 [E1] 这种引用，代码依据带文件行号，别改源码。'
 
 set +e
 guarded-harness --config config/1_login_demo.yaml \

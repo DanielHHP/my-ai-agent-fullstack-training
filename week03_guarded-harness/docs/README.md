@@ -8,7 +8,7 @@
 | --- | --- |
 | [requirements.md](requirements.md) | 项目整体需求、职责边界、必须交付物与整体验收标准 |
 | [design.md](design.md) | 系统概要设计：模块划分、运行链路、安全边界、状态与恢复、验收策略 |
-| [decisions.md](decisions.md) | 已确认的 D-01 至 D-107 设计决策及约束 |
+| [decisions.md](decisions.md) | 已确认的 D-01 至 D-108 设计决策及约束 |
 | [task-breakdown.md](task-breakdown.md) | 按里程碑和能力工作包组织的 P0 开发计划、执行规程、`spec.md`/`plan.md`/`acceptance-report.md` 包内文档模式、依赖、验收条件与文件任务追溯 |
 | [test-plan.md](test-plan.md) | P0 测试层级、六个必须测试文件、飞书场景、故障矩阵、命令和证据格式 |
 | [operations.md](operations.md) | 本地运行、审批、恢复、状态数据库、日志、退出码、平台限制和禁止操作 |
@@ -37,9 +37,9 @@
 | [WP-07 规格](work-packages/wp-07-checkpoint-recovery/spec.md) | 已冻结的 Checkpoint 快照、恢复窗口、租约、续接上下文、飞书 C1-C4 映射和 D-53 至 D-58 |
 | [WP-07 计划](work-packages/wp-07-checkpoint-recovery/plan.md) | WP-07 migration v5、恢复设计、任务卡、测试矩阵、风险和回滚计划 |
 | [WP-07 验收报告](work-packages/wp-07-checkpoint-recovery/acceptance-report.md) | Checkpoint/恢复实现、101 项目标测试、249 项全量测试、场景映射和验收结论 |
-| [WP-08 规格](work-packages/wp-08-completion-code-understanding/spec.md) | 已冻结的验收引擎、内部只读控制面、代码理解文档结构、Evidence 追溯、工作区 diff、飞书 H1/H2/H3/A2/T1 映射和 D-59 至 D-64 |
+| [WP-08 规格](work-packages/wp-08-completion-code-understanding/spec.md) | 已冻结的验收引擎、内部只读控制面、代码理解文档结构、Evidence 追溯、工作区 diff、飞书 H1/H2/H3/A2/T1 映射、D-59 至 D-64 和 D-108 标题兼容 |
 | [WP-08 计划](work-packages/wp-08-completion-code-understanding/plan.md) | Completion 实现、24/24 AC 补测和人工语义验收已完成 |
-| [WP-08 验收报告](work-packages/wp-08-completion-code-understanding/acceptance-report.md) | v1.2 accepted：24 个 WP08-AC 自动化和人工语义复核通过 |
+| [WP-08 验收报告](work-packages/wp-08-completion-code-understanding/acceptance-report.md) | v1.3 accepted：24 个 WP08-AC、人工语义复核和 D-108 兼容修订通过 |
 | [WP-09 规格](work-packages/wp-09-test-repair-acceptance/spec.md) | 已冻结的测试修复基线、JUnit 节点守恒、H2 证据失效、飞书核心验收映射和 D-65 至 D-72 |
 | [WP-09 计划](work-packages/wp-09-test-repair-acceptance/plan.md) | 测试报告、migration v6、基线/最终验收、32/32 AC 补测和人工测试质量验收已完成 |
 | [WP-09 验收报告](work-packages/wp-09-test-repair-acceptance/acceptance-report.md) | v1.2 accepted：32 个 WP09-AC 自动化和人工测试质量复核通过 |

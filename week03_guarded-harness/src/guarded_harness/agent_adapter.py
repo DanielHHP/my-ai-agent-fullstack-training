@@ -249,12 +249,14 @@ class HarnessToolCallingAgent(ToolCallingAgent):
         adapter: HarnessAgentAdapter,
         step_callbacks: list[Callable[..., Any]] | None = None,
         final_answer_checks: list[Callable[..., Any]] | None = None,
+        instructions: str | None = None,
         max_steps: int = 20,
     ) -> None:
         self._harness_adapter = adapter
         super().__init__(
             tools=tools,
             model=model,
+            instructions=instructions,
             max_tool_threads=1,
             step_callbacks=step_callbacks,
             final_answer_checks=final_answer_checks,
@@ -405,6 +407,7 @@ def build_tool_calling_agent(
     adapter: HarnessAgentAdapter,
     step_callbacks: list[Callable[..., Any]] | None = None,
     final_answer_checks: list[Callable[..., Any]] | None = None,
+    instructions: str | None = None,
     max_steps: int = 20,
 ) -> HarnessToolCallingAgent:
     """Construct the native ToolCallingAgent subclass from trusted inputs."""
@@ -420,6 +423,7 @@ def build_tool_calling_agent(
         adapter=adapter,
         step_callbacks=step_callbacks,
         final_answer_checks=final_answer_checks,
+        instructions=instructions,
         max_steps=max_steps,
     )
 

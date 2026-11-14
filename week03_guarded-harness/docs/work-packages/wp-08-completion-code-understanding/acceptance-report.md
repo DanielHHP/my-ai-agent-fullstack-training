@@ -6,11 +6,12 @@
 | --- | --- |
 | 工作包 | WP-08 验收引擎与代码理解 |
 | 报告状态 | accepted |
-| 报告版本 | 1.2.0 |
-| 对应规格 | [spec.md](spec.md) v1.0.0 / frozen |
-| 对应计划 | [plan.md](plan.md) v1.0.0 / in-progress |
+| 报告版本 | 1.3.0 |
+| 对应规格 | [spec.md](spec.md) v1.1.0 / frozen |
+| 对应计划 | [plan.md](plan.md) v1.1.0 / done |
 | 代码基线 | `618b114`；2026-11-07 WP-12 补测时的工作区改动 |
 | 验收日期 | 2026-11-08 |
+| 兼容修订日期 | 2026-11-14 |
 | Python | 3.13.5（仓库 `.venv`） |
 | 平台 | Darwin 22.6.0 x86_64 |
 
@@ -84,6 +85,24 @@ python -m ruff format --check .
 ```
 
 结果：lint 通过；`105 files already formatted`。所有命令无关键 skip。
+
+### 3.1 D-108 兼容修订复验
+
+2026-11-14 增加可选的单层标题序号归一和受信任 system prompt 验收格式提示，未放宽事实、证据、
+路径、行号或工作区规则。复验命令与结果：
+
+```text
+python -m pytest \
+  tests/test_config.py::test_demo_task_configs_load_with_real_model_profiles \
+  tests/test_completion.py::test_numbered_code_understanding_headings_are_accepted \
+  tests/test_completion.py::test_numbered_heading_does_not_bypass_duplicate_section_check \
+  tests/test_harness_loop.py::test_code_understanding_acceptance_contract_is_in_system_prompt \
+  tests/test_harness_loop.py::test_test_repair_baseline_patch_and_final_acceptance -q
+```
+
+结果：`7 passed`。完整回归为 `423 passed, 1 skipped in 265.64s (0:04:25)`；skip 为显式 opt-in
+的真实模型 live smoke。`ruff check .` 通过，`ruff format --check .` 为
+`118 files already formatted`。
 
 ## 4. 验收场景映射
 

@@ -846,6 +846,28 @@ def test_run_instruction_replaces_and_persists_config_description(tmp_path: Path
     assert _snapshot(fixture, result.run_id).run.task_description == instruction
 
 
+def test_code_understanding_acceptance_contract_is_in_system_prompt(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    model = FakeScriptedModel((final_answer("candidate"),))
+
+    _run_start(fixture, model)
+
+    system_messages = [
+        str(message.content)
+        for message in model.calls[0].messages
+        if getattr(message.role, "value", None) == "system"
+    ]
+    assert system_messages
+    system_prompt = "\n".join(system_messages)
+    assert "Program acceptance contract for code understanding" in system_prompt
+    assert "`## 事实`" in system_prompt
+    assert "`## 推断`" in system_prompt
+    assert "`## 代码依据`" in system_prompt
+    assert "`- E<n>: `workspace-relative/path:start[-end]``" in system_prompt
+    assert "do not put either section in a table" in system_prompt
+    assert "Minimum accepted structure:" in system_prompt
+
+
 def test_resume_uses_persisted_run_instruction_after_approval(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     instruction = "CLI_INSTRUCTION_MARKER: explain value and update the report."
@@ -949,6 +971,7 @@ def test_test_repair_baseline_patch_and_final_acceptance(tmp_path: Path) -> None
     assert "tests/test_app.py" in initial_context
     assert "test_value" in initial_context
     assert "program-captured test data" in initial_context
+    assert "Program acceptance contract for test repair" in initial_context
     pending = _snapshot(fixture, waiting.run_id)
     assert pending.steps
     storage = gh.SQLiteStorage(

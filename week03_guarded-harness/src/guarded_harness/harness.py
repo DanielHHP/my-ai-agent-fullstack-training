@@ -24,7 +24,11 @@ from .agent_adapter import (
 )
 from .audit import AuditStoreError
 from .checkpoint import CheckpointService, CheckpointServiceError
-from .completion import CompletionChecker, CompletionCheckerError
+from .completion import (
+    CompletionChecker,
+    CompletionCheckerError,
+    render_acceptance_instructions,
+)
 from .config import ResolvedHarnessConfig, TestRepairAcceptance, load_config
 from .domain import (
     AcceptanceStatus,
@@ -667,6 +671,7 @@ class Harness:
             model=model,
             adapter=session.adapter,
             step_callbacks=[observer],
+            instructions=render_acceptance_instructions(session.config.config.task.kind),
             max_steps=remaining_steps,
         )
         generator = agent.run(task, stream=True, reset=True)

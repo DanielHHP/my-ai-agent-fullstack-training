@@ -85,6 +85,9 @@ _SECTION_FACTS = "事实"
 _SECTION_INFERENCE = "推断"
 _SECTION_EVIDENCE = "代码依据"
 _REQUIRED_SECTIONS = (_SECTION_FACTS, _SECTION_INFERENCE, _SECTION_EVIDENCE)
+_HEADING_NUMBER_PREFIX = re.compile(
+    r"^(?:(?:[一二三四五六七八九十]+|\d+)\s*[、.．:：)）]|[(（]\s*(?:[一二三四五六七八九十]+|\d+)\s*[)）])\s*"
+)
 _FACT_REFERENCE = re.compile(r"\[E([1-9][0-9]*)\]")
 _EVIDENCE_DEFINITION = re.compile(r"^- E([1-9][0-9]*): `([^`]+):([1-9][0-9]*)(?:-([1-9][0-9]*))?`$")
 _LIST_ITEM = re.compile(r"^\s*-\s+(.+)$")
@@ -1941,8 +1944,52 @@ class _DocumentViolation(ValueError):
         super().__init__(message)
 
 
+def render_acceptance_instructions(task_kind: TaskKind) -> str | None:
+    """Return trusted system-prompt guidance for one supported task kind."""
+
+    if task_kind == TaskKind.CODE_UNDERSTANDING:
+        return (
+            "Program acceptance contract for code understanding:\n"
+            f"- The deliverable must use the exact H2 headings `## {_SECTION_FACTS}`, "
+            f"`## {_SECTION_INFERENCE}`, and `## {_SECTION_EVIDENCE}`, once each and in that "
+            "order.\n"
+            "- Every list item in `事实` must cite one or more defined evidence IDs such as "
+            "`[E1]`.\n"
+            "- Every evidence definition in `代码依据` must use "
+            "`- E<n>: `workspace-relative/path:start[-end]`` with a non-zero line number.\n"
+            "- Use Markdown list items for facts and evidence definitions; do not put either "
+            "section in a table.\n"
+            "- Cite only files and complete line ranges that were actually read during this Run. "
+            "Do not claim certainty for redacted or unread content.\n"
+            "- A final-answer claim does not replace the deliverable, evidence traceability, "
+            "workspace checks, or program verification.\n\n"
+            "Minimum accepted structure:\n\n"
+            f"## {_SECTION_FACTS}\n\n"
+            "- A verified fact. [E1]\n\n"
+            f"## {_SECTION_INFERENCE}\n\n"
+            "- An inference, or `无`.\n\n"
+            f"## {_SECTION_EVIDENCE}\n\n"
+            "- E1: `src/example.py:1-2`"
+        )
+    if task_kind == TaskKind.TEST_REPAIR:
+        return (
+            "Program acceptance contract for test repair:\n"
+            "- Final success is determined only by the trusted baseline and final test command, "
+            "not by a model claim or a tool summary.\n"
+            "- Use `run_test` only for bounded feedback. Do not alter, delete, skip, or weaken "
+            "existing tests unless the task contract explicitly allows it.\n"
+            "- Keep changes within configured write paths and stop only after program acceptance "
+            "has been run by the Harness."
+        )
+    return None
+
+
 def parse_code_understanding_document(text: str) -> _ParsedDocument:
-    """Parse the frozen three-section code-understanding document format."""
+    """Parse the three-section code-understanding document format.
+
+    Canonical headings are exact. A single common numbering prefix is also accepted so
+    documents such as ``## 一、事实`` and ``## 1. 事实`` parse as the same section.
+    """
 
     if not isinstance(text, str) or not text.strip():
         raise _DocumentViolation(ErrorCode.COMPLETION_DOCUMENT_INVALID, "document is empty")
@@ -1953,6 +2000,7 @@ def parse_code_understanding_document(text: str) -> _ParsedDocument:
         line = raw_line.rstrip()
         if line.startswith("## "):
             heading = line[3:].strip()
+            heading = _HEADING_NUMBER_PREFIX.sub("", heading, count=1).strip()
             if heading not in _REQUIRED_SECTIONS:
                 current = None
                 continue
@@ -2501,6 +2549,7 @@ __all__ = [
     "CompletionCheckerError",
     "detect_completion_claim",
     "parse_code_understanding_document",
+    "render_acceptance_instructions",
     "workspace_baseline_from_json",
     "workspace_baseline_to_json",
 ]
