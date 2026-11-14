@@ -62,6 +62,7 @@ from .domain import (
     Uuid4IdFactory,
 )
 from .gate import Gate
+from .lease_heartbeat import LeaseHeartbeat
 from .model_runtime import (
     ModelRuntimeError,
     TokenCounter,
@@ -165,6 +166,7 @@ class _Session:
     run_id: str
     task_description: str
     startup_workspace: WorkspaceBaseline
+    heartbeat: LeaseHeartbeat | None = None
     current_step_id: str | None = None
 
 
@@ -222,6 +224,7 @@ class Harness:
         fault_injector: FaultInjector | None = None,
         token_cost_policy: TokenCostPolicy | None = None,
         token_counter: TokenCounter | None = None,
+        lease_policy: LeasePolicy | None = None,
     ) -> None:
         self._config_path = Path(config_path)
         self._model = model
@@ -232,6 +235,9 @@ class Harness:
         self._fault_injector = fault_injector
         self._token_cost_policy = token_cost_policy or TokenCostPolicy()
         self._token_counter = token_counter
+        self._lease_policy = lease_policy or LeasePolicy()
+        if not isinstance(self._lease_policy, LeasePolicy):
+            raise TypeError("lease_policy must be a LeasePolicy")
         self._lock = threading.RLock()
 
     def run(self, request: RunRequest) -> RunResult:
@@ -296,7 +302,7 @@ class Harness:
                 lease = unit.state.create_run(
                     run,
                     owner_id=_HARNESS_ACTOR,
-                    lease_policy=LeasePolicy(),
+                    lease_policy=self._lease_policy,
                 )
                 unit.state.record_workspace_baseline(
                     run.run_id,
@@ -328,22 +334,26 @@ class Harness:
                 task_description=run.task_description,
                 startup_workspace=startup_workspace,
             )
-            if isinstance(config.config.task.acceptance, TestRepairAcceptance):
-                try:
-                    completion.capture_test_baseline(
-                        run.run_id,
-                        lease.token,
-                        startup_workspace=startup_workspace,
-                    )
-                except CompletionCheckerError as exc:
-                    return self._finish_failure(session, RunStatus.FAILED, exc.code.value)
-            self._create_checkpoint(
-                session,
-                kind=CheckpointBoundaryKind.RUN_STARTED,
-                boundary_ref="run-start",
-                summary="Run started with persisted workspace baseline",
-            )
-            return self._drive(session, task=run.task_description)
+            self._start_heartbeat(session)
+            try:
+                if isinstance(config.config.task.acceptance, TestRepairAcceptance):
+                    try:
+                        completion.capture_test_baseline(
+                            run.run_id,
+                            lease.token,
+                            startup_workspace=startup_workspace,
+                        )
+                    except CompletionCheckerError as exc:
+                        return self._finish_failure(session, RunStatus.FAILED, exc.code.value)
+                self._create_checkpoint(
+                    session,
+                    kind=CheckpointBoundaryKind.RUN_STARTED,
+                    boundary_ref="run-start",
+                    summary="Run started with persisted workspace baseline",
+                )
+                return self._drive(session, task=run.task_description)
+            finally:
+                self._stop_heartbeat(session)
         except (HarnessError, AgentAdapterError) as exc:
             raise HarnessError(_error_code(exc), _safe_message(exc)) from exc
         except (
@@ -415,7 +425,11 @@ class Harness:
                         ErrorCode.HARNESS_CONFIG_RELOAD_FAILED,
                         "resume configuration fingerprint does not match the run",
                     )
-                lease = unit.state.acquire_lease(run_id, owner_id=_HARNESS_ACTOR)
+                lease = unit.state.acquire_lease(
+                    run_id,
+                    owner_id=_HARNESS_ACTOR,
+                    lease_policy=self._lease_policy,
+                )
                 startup_workspace = unit.state.get_workspace_baseline(run_id)
             if startup_workspace is None:
                 return self._finish_missing_baseline(
@@ -438,15 +452,19 @@ class Harness:
                 task_description=run.task_description,
                 startup_workspace=startup_workspace,
             )
-            interrupted = tuple(
-                call
-                for call in self._snapshot(session).model_calls
-                if call.status.value == "STARTED"
-            )
-            if interrupted:
-                return self._finish_interrupted_model_calls(session, interrupted)
-            plan = checkpoints.prepare_recovery(run_id, lease.token)
-            return self._handle_recovery(session, plan)
+            self._start_heartbeat(session)
+            try:
+                interrupted = tuple(
+                    call
+                    for call in self._snapshot(session).model_calls
+                    if call.status.value == "STARTED"
+                )
+                if interrupted:
+                    return self._finish_interrupted_model_calls(session, interrupted)
+                plan = checkpoints.prepare_recovery(run_id, lease.token)
+                return self._handle_recovery(session, plan)
+            finally:
+                self._stop_heartbeat(session)
         except (HarnessError, AgentAdapterError) as exc:
             raise HarnessError(_error_code(exc), _safe_message(exc)) from exc
         except (
@@ -510,6 +528,41 @@ class Harness:
             ErrorCode.HARNESS_RESUME_NOT_ALLOWED,
             "run has no persisted baseline and is not resumable",
         )
+
+    def _start_heartbeat(self, session: _Session) -> None:
+        if session.heartbeat is not None:
+            return
+
+        def request_stop(code: ErrorCode, message: str) -> None:
+            _LOGGER.error("Run lease heartbeat failed: %s: %s", code.value, message)
+            session.adapter.request_stop(code.value)
+
+        interval = self._lease_policy.heartbeat_interval_seconds
+        if interval is None:
+            interval = min(10, self._lease_policy.ttl_seconds // 3)
+        heartbeat = LeaseHeartbeat(
+            storage=session.storage,
+            lease=session.lease,
+            ttl_seconds=self._lease_policy.ttl_seconds,
+            interval_seconds=float(interval),
+            on_failure=request_stop,
+        )
+        session.heartbeat = heartbeat
+        heartbeat.start()
+
+    def _stop_heartbeat(self, session: _Session) -> None:
+        heartbeat = session.heartbeat
+        if heartbeat is None:
+            return
+        heartbeat.stop()
+        session.lease = heartbeat.lease
+        session.heartbeat = None
+
+    def _heartbeat_failure(self, session: _Session) -> ErrorCode | None:
+        heartbeat = session.heartbeat
+        if heartbeat is None:
+            return None
+        return heartbeat.failure_code
 
     def _handle_recovery(self, session: _Session, plan: RecoveryPlan) -> RunResult:
         if plan.action in {
@@ -614,6 +667,12 @@ class Harness:
         final_seen = False
         try:
             for event in generator:
+                heartbeat_failure = self._heartbeat_failure(session)
+                if outcome is None and heartbeat_failure is not None:
+                    outcome = _AgentOutcome.failed(heartbeat_failure.value)
+                    session.adapter.request_stop(heartbeat_failure.value)
+                    agent.interrupt()
+                    break
                 if isinstance(event, ToolCall):
                     self._ensure_step(session, f"Agent tool call: {event.name}")
                     session.adapter.activate(
@@ -672,10 +731,14 @@ class Harness:
                     )
         except HarnessAgentStopSignal as exc:
             if outcome is None:
-                outcome = _AgentOutcome.failed(ErrorCode.HARNESS_INTERNAL_ERROR.value)
-                outcome = _AgentOutcome(
-                    outcome.kind, error_code=outcome.error_code, message=exc.reason
-                )
+                heartbeat_failure = self._heartbeat_failure(session)
+                if heartbeat_failure is not None:
+                    outcome = _AgentOutcome.failed(heartbeat_failure.value)
+                else:
+                    outcome = _AgentOutcome.failed(ErrorCode.HARNESS_INTERNAL_ERROR.value)
+                    outcome = _AgentOutcome(
+                        outcome.kind, error_code=outcome.error_code, message=exc.reason
+                    )
         except HarnessError as exc:
             _LOGGER.exception("Harness control error during Agent stream")
             outcome = _AgentOutcome.failed(exc.code.value)
@@ -702,6 +765,10 @@ class Harness:
                 )
         finally:
             session.adapter.deactivate()
+        if outcome is None:
+            heartbeat_failure = self._heartbeat_failure(session)
+            if heartbeat_failure is not None:
+                outcome = _AgentOutcome.failed(heartbeat_failure.value)
         if outcome is None:
             if final_seen:
                 outcome = _AgentOutcome.final()
@@ -1185,6 +1252,7 @@ class Harness:
         error_code: str | None = None,
     ) -> RunResult:
         try:
+            self._stop_heartbeat(session)
             with session.storage.transaction(actor=_HARNESS_ACTOR) as unit:
                 snapshot = unit.state.get_run_snapshot(session.run_id)
                 head = unit.audit.head(session.run_id)

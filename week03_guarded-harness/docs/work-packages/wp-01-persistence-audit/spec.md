@@ -6,8 +6,8 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 文档状态 | frozen |
-| 规格版本 | 0.4.0 |
-| 冻结日期 | 2026-11-05（WP-04 revision 读取兼容修订） |
+| 规格版本 | 0.5.0 |
+| 冻结日期 | 2026-11-14（D-106 Harness 心跳失败码修订） |
 | 依赖 | WP-00 v1.3.0 |
 | 下游工作包 | WP-02、WP-04、WP-07、WP-08、WP-10、WP-11、WP-12 |
 | 对应需求 | `REQ-GATE-002`、`REQ-STATE-001` 至 `REQ-STATE-003`、`REQ-AUDIT-001` 至 `REQ-AUDIT-004`、`REQ-CHECKPOINT-003`，以及第 8 节非功能要求 |
@@ -527,6 +527,7 @@ STATE_INVARIANT_VIOLATION
 STATE_LEASE_INVALID
 STATE_LEASE_EXPIRED
 STATE_LEASE_HELD
+STATE_LEASE_HEARTBEAT_FAILED
 STATE_BUDGET_EXCEEDED
 STATE_INTEGRITY_ERROR
 
@@ -548,6 +549,7 @@ REDACTION_FAILED
 | `STATE_INVALID_TRANSITION` | 状态转换不在冻结状态机中 | 否 |
 | `STATE_LEASE_HELD` | 同一 Run 存在未过期租约 | 可等待或查询持有者，不自动抢锁 |
 | `STATE_LEASE_EXPIRED` | 续期/改写时租约已过期 | 需重新获取租约和重新通过 Gate |
+| `STATE_LEASE_HEARTBEAT_FAILED` | Harness 连续两次续租失败 | 否，停止 Agent 后续动作并进入恢复判定 |
 | `STATE_BUDGET_EXCEEDED` | 增量会使任一 usage 超过上限 | 否，进入停止流程 |
 | `AUDIT_APPEND_ONLY` | 直接更新/删除审计事件 | 否 |
 | `AUDIT_CHAIN_INVALID` | 序号、前序哈希或事件哈希不匹配 | 否，需人工审计 |

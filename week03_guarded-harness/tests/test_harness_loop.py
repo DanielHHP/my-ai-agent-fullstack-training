@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -458,6 +459,39 @@ def test_wall_time_budget_stops_before_completion(tmp_path: Path) -> None:
     assert result.acceptance_status == gh.AcceptanceStatus.NOT_EVALUATED
     snapshot = _snapshot(fixture, result.run_id)
     assert snapshot.run.usage.wall_time_seconds == 1
+
+
+def test_harness_heartbeats_while_blocking_model_generate(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+
+    def wait_for_heartbeat() -> None:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            with sqlite3.connect(fixture.database_path) as connection:
+                row = connection.execute(
+                    "SELECT acquired_at, heartbeat_at FROM run_leases"
+                ).fetchone()
+            if row is not None and row[1] > row[0]:
+                return
+            time.sleep(0.02)
+        raise AssertionError("Run lease was not renewed during model generation")
+
+    model = FakeScriptedModel(
+        (final_answer("candidate"),),
+        before_generate=wait_for_heartbeat,
+    )
+    result = gh.Harness(
+        config_path=fixture.config_path,
+        model=model,
+        lease_policy=gh.LeasePolicy(
+            ttl_seconds=30,
+            heartbeat_interval_seconds=1,
+        ),
+    ).run(gh.RunRequest(mode=gh.RunMode.START))
+
+    assert result.status == gh.RunStatus.COMPLETED
+    with sqlite3.connect(fixture.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM run_leases").fetchone()[0] == 0
 
 
 def test_unknown_tool_is_denied_and_audited_before_final_answer(tmp_path: Path) -> None:

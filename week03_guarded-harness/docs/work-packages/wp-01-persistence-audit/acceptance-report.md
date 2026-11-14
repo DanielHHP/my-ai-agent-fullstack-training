@@ -6,9 +6,9 @@
 | --- | --- |
 | 工作包 | WP-01 持久化与审计底座 |
 | 报告状态 | accepted |
-| 报告版本 | 1.1.0 |
-| 验收日期 | 2026-11-04 |
-| 对应规格 | [spec.md](spec.md) v0.3.0 / frozen |
+| 报告版本 | 1.2.0 |
+| 验收日期 | 2026-11-04；心跳缺陷修复复核 2026-11-14 |
+| 对应规格 | [spec.md](spec.md) v0.5.0 / frozen |
 | 对应计划 | [plan.md](plan.md) v0.3.0 / done |
 | 代码基线 | `8e61d9d1a37dde82c697f0ca4547e69900d1fcac` |
 | 基线工作区 | 代码基线提交时干净，无未提交修改 |
@@ -71,6 +71,17 @@
 
 目标测试和全量测试均无失败、error、skip 或 xfail。并发测试使用独立 SQLite 连接，不依赖真实网络、
 模型、用户凭据或 sleep。
+
+2026-11-14 心跳缺陷修复补充验证：
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 租约/Agent 定向回归 | `101 passed in 54.64s` |
+| 全量回归 | `414 passed, 1 skipped in 282.97s` |
+| Lint、格式、diff | PASS |
+
+新增 `LeaseHeartbeat` Harness 独立心跳、`STATE_LEASE_HEARTBEAT_FAILED`，以及原 TTL 跨越、连续失败
+和阻塞模型期间续租测试。唯一 skip 仍为默认离线模式跳过显式 live smoke。
 
 ## 5. 规格场景映射
 
@@ -145,8 +156,8 @@
 1. 当前只在 Python 3.13.5/macOS x86_64 运行；Python 3.10-3.12 和 Windows runtime 未单独验证。
 2. Windows ACL 未实现等价强隔离；POSIX owner/mode 是当前已验收边界。
 3. 并发测试覆盖独立连接和线程，不是 WP-07 要求的完整崩溃恢复矩阵。
-4. WP-01 只提供租约原语；Harness 独立心跳、handler 取消和 `STARTED` 恢复动作由 WP-10/WP-07
-   实现。
+4. WP-01 提供租约原语；D-106 已补齐 Harness 独立心跳。正在阻塞的 Provider 请求无法被心跳线程
+   强制终止，handler 取消仍需由执行边界结合 Sandbox cancellation 收口。
 5. 同一 `git_root` 内、workspace 外的状态目录排除属于 WP-03；本包只保证目录位于 workspace 外。
 6. Gate、Sandbox、真实工具、审批消费、Checkpoint、Completion 策略和 Agent Loop 不在本包。
 7. Evidence 只支持一个生产 ToolCall；Completion 可以复用 Evidence ID，但同一工具结果需要跨调用
@@ -158,3 +169,4 @@
 
 冻结规格中的 WP-01 场景、T01-T08、目标测试、全量测试、lint、格式和依赖检查均有实际复跑证据。
 WP-02 可以在本报告、StateStore UnitOfWork、migration 和 AuditStore 契约上继续施工。
+2026-11-14 D-106 修订补验通过，Harness 心跳现在覆盖阻塞模型调用与完整 Run 执行窗口。

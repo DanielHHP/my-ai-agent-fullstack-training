@@ -144,6 +144,8 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 | DB 写锁 | 第二 SQLite 连接持锁 | 有界失败、无部分提交 | `test_fault_recovery.py`、`test_audit.py` |
 | Checkpoint 损坏 | 隔离临时库篡改并校验哈希/关联 | 拒绝恢复/读取，不猜测成功 | `test_fault_recovery.py`、`test_state_checkpoint.py` |
 | 租约冲突 | 有效租约 + 第二 owner | 第二次 acquire 拒绝；过期接管后旧 token 失效 | `test_fault_recovery.py`、`test_state_checkpoint.py` |
+| 长模型调用租约 | 阻塞 fake model + 独立时钟/线程 | 心跳延长原到期时间，提交不因原 TTL 到期失败 | `test_harness_loop.py`、`test_state_checkpoint.py` |
+| 心跳连续失败 | 释放租约后启动心跳 | 两次失败后 `STATE_LEASE_HEARTBEAT_FAILED`，线程退出 | `test_state_checkpoint.py` |
 
 测试进程必须保留故障命中标记、子进程退出码/信号和持久化快照。普通 Python 异常不能替代硬退出
 来证明进程崩溃恢复。

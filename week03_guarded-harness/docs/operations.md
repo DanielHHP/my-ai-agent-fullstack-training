@@ -258,6 +258,12 @@ WP-13 已通过外部 live smoke 验收；外部调用继续遵守以下边界�
 - `run/resume` 才创建 Provider；`approvals` 和 `inspect` 不读取凭据、不访问网络；
 - 模型调用超时或结果未落盘时进入模型调用 unknown，不自动重试；
 - 真实 smoke test 必须显式 opt-in，不能由普通测试或模型输入开启。
+- Harness 在取得 Run 租约后启动独立心跳线程，模型调用阻塞时间可以超过单次 TTL；连续两次续租
+  失败返回 `STATE_LEASE_HEARTBEAT_FAILED` 并停止后续动作。TTL 不是任务总时长或模型超时；
+- 心跳发生在独立 SQLite 短事务中；释放租约前必须先停止并 join 心跳。若心跳停止失败，保持
+  Run 不可释放并交给恢复流程处理；
+- 心跳丢失后，已经发出的模型请求仍可能完成并计费。恢复必须按 `MODEL_CALL_UNKNOWN` 处理，
+  不得自动重放。
 
 version 1 配置仍返回 `CLI_MODEL_UNAVAILABLE`，除非调用方注入可信模型工厂。version 2 配置
 使用 `examples/config/model-openai-chat-completions.yaml` 作为起点。缺少凭据或切换端点、

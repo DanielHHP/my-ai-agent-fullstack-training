@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import queue
 import sqlite3
 import stat
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -52,6 +54,7 @@ from guarded_harness import (
     approval_args_digest,
 )
 from guarded_harness.domain import WorkspaceIdentity
+from guarded_harness.lease_heartbeat import LeaseHeartbeat
 
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 LATER = datetime(2026, 1, 2, 3, 4, 6, tzinfo=timezone.utc)
@@ -1134,6 +1137,85 @@ def test_lease_renewal_blocks_second_owner(tmp_path: Path) -> None:
             plan=_plan(),
             lease_token=renewed.token,
         )
+
+
+def test_lease_heartbeat_extends_run_past_original_expiry(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    storage, _ = _storage(tmp_path, clock)
+    storage.initialize()
+    with storage.transaction(actor="test-harness") as unit:
+        lease = unit.state.create_run(
+            _run(),
+            owner_id="owner-1",
+            lease_policy=LeasePolicy(ttl_seconds=10),
+        )
+
+    renewals: queue.Queue[gh.RunLease] = queue.Queue()
+    heartbeat = LeaseHeartbeat(
+        storage=storage,
+        lease=lease,
+        ttl_seconds=10,
+        interval_seconds=0.02,
+        retry_delay_seconds=0.01,
+        on_renew=renewals.put,
+    )
+
+    def next_renewal_after(threshold: datetime) -> gh.RunLease:
+        deadline = time.monotonic() + 2
+        while True:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0
+            renewed = renewals.get(timeout=remaining)
+            if renewed.heartbeat_at >= threshold:
+                return renewed
+
+    heartbeat.start()
+    try:
+        first = next_renewal_after(clock.now())
+        assert first.heartbeat_at >= lease.heartbeat_at
+
+        clock.advance(9)
+        second = next_renewal_after(clock.now())
+        clock.advance(9)
+        third = next_renewal_after(clock.now())
+        assert third.expires_at > second.expires_at
+
+        with storage.transaction(actor="test-harness") as unit:
+            unit.state.verify_lease(RUN_ID, lease.token)
+    finally:
+        heartbeat.stop()
+
+    with storage.transaction(actor="test-harness") as unit:
+        unit.state.release_lease(heartbeat.lease)
+
+
+def test_lease_heartbeat_fails_closed_after_two_consecutive_errors(tmp_path: Path) -> None:
+    clock = MutableClock(NOW)
+    storage, _ = _storage(tmp_path, clock)
+    storage.initialize()
+    with storage.transaction(actor="test-harness") as unit:
+        lease = unit.state.create_run(
+            _run(),
+            owner_id="owner-1",
+            lease_policy=LeasePolicy(ttl_seconds=10),
+        )
+        unit.state.release_lease(lease)
+
+    failed = threading.Event()
+    heartbeat = LeaseHeartbeat(
+        storage=storage,
+        lease=lease,
+        ttl_seconds=10,
+        interval_seconds=0.02,
+        retry_delay_seconds=0.01,
+        on_failure=lambda _code, _message: failed.set(),
+    )
+    heartbeat.start()
+    try:
+        assert failed.wait(timeout=2)
+        assert heartbeat.failure_code == ErrorCode.STATE_LEASE_HEARTBEAT_FAILED
+    finally:
+        heartbeat.stop()
 
 
 def test_expired_lease_can_be_taken_over_and_old_token_is_fenced(tmp_path: Path) -> None:
