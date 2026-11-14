@@ -125,7 +125,7 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 | C4 | P0 | 工作区变化后恢复阻塞 | `tests/test_state_checkpoint.py`、`tests/test_harness_loop.py`、`tests/test_cli.py` |
 | A1 | P0 | 拒绝审计含 rule/decision/actor/toolCallId | `tests/test_audit.py`、`tests/test_gate.py`、`tests/test_cli.py` |
 | A2 | P1 | 完整任务关联 Gate/Sandbox/State/Approval/执行结果 | 两类 E2E 中汇总关联 ID；不阻断 P0 |
-| H1 | P0 | 模型称完成但无交付物被拒绝；system prompt 含可信验收格式，常见标题序号可归一 | `tests/test_completion.py`、`tests/test_harness_loop.py` |
+| H1 | P0 | 模型称完成但无交付物被拒绝；system prompt 含可信验收格式和 `write_file`/`final_answer` 流程，常见标题序号可归一 | `tests/test_completion.py`、`tests/test_harness_loop.py` |
 | H2 | P0 | 测试后源码变化使旧证据失效 | `tests/test_completion.py`、`tests/test_state_checkpoint.py` |
 | H3 | P0 | 预算耗尽固定 `STOPPED/BUDGET_EXHAUSTED/NOT_EVALUATED` | `tests/test_harness_loop.py`、`tests/test_cli.py` |
 | T1 | P0 | 全量 P0 确定性测试可重复通过 | 全量 pytest、WP-12 复跑记录 |

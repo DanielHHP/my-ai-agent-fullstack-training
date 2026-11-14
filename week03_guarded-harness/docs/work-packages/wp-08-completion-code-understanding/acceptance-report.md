@@ -104,6 +104,13 @@ python -m pytest \
 的真实模型 live smoke。`ruff check .` 通过，`ruff format --check .` 为
 `118 files already formatted`。
 
+同日进一步微调代码理解 system prompt，明确要求通过 `write_file` 写入任务声明的交付物、将完整
+Markdown 放入 `content`、不要把正文作为普通 assistant 内容返回，并在全部写入成功后调用
+`final_answer`。目标测试
+`tests/test_harness_loop.py::test_code_understanding_acceptance_contract_is_in_system_prompt`
+与既有写入审批闭环测试复验结果为 `2 passed`；完整回归为
+`423 passed, 1 skipped in 269.02s (0:04:29)`。Ruff lint、格式检查和 `git diff --check` 均通过。
+
 ## 4. 验收场景映射
 
 | AC | 场景 | 现有证据 | 结论 |

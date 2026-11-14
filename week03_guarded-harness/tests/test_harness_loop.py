@@ -865,6 +865,12 @@ def test_code_understanding_acceptance_contract_is_in_system_prompt(tmp_path: Pa
     assert "`## 代码依据`" in system_prompt
     assert "`- E<n>: `workspace-relative/path:start[-end]``" in system_prompt
     assert "do not put either section in a table" in system_prompt
+    assert (
+        "Create or update each task-specified deliverable by calling `write_file`" in system_prompt
+    )
+    assert "put the complete Markdown document in `content`" in system_prompt
+    assert "do not return the document body as plain assistant content" in system_prompt
+    assert "After all required writes have succeeded, call `final_answer`" in system_prompt
     assert "Minimum accepted structure:" in system_prompt
 
 
