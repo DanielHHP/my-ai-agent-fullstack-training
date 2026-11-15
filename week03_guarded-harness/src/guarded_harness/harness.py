@@ -113,6 +113,21 @@ _FATAL_DENIAL_CODES = frozenset(
         ErrorCode.APPROVAL_CHANNEL_UNAVAILABLE.value,
     }
 )
+_RECOVERY_COMPLETION_INSTRUCTIONS = (
+    "RECOVERY COMPLETION RULES:\n"
+    "- Continue from the persisted safe boundary. Do not repeat completed side effects or "
+    "replay a successful write.\n"
+    "- If a required write already succeeded and the deliverable still satisfies the trusted "
+    "acceptance contract, do not call `write_file` again. Only rewrite after identifying a "
+    "concrete missing requirement or acceptance failure.\n"
+    "- Do not rewrite solely to polish wording, reorder equivalent content, or regenerate an "
+    "otherwise valid full-file deliverable.\n"
+    "- When all required writes and checks are complete, call `final_answer` immediately with "
+    "a short status message to end the Agent loop.\n"
+    "- `final_answer` ends model execution only. The Harness then moves the Run to VERIFYING, "
+    "runs final acceptance independently, and records `acceptance_status`. Do not attempt to "
+    "perform or wait for that final acceptance inside the Agent loop."
+)
 
 
 class HarnessError(RuntimeError):
@@ -642,11 +657,8 @@ class Harness:
 
         context = session.checkpoints.build_continuation_context(plan)
         continuation = session.checkpoints.render_continuation(context)
-        task = (
-            f"{session.task_description}\n\n"
-            f"{continuation}\n\n"
-            "Continue from the persisted safe boundary. Do not repeat completed operations "
-            "unless the tools explicitly return replay-suppressed evidence."
+        task = "\n\n".join(
+            (session.task_description, continuation, _RECOVERY_COMPLETION_INSTRUCTIONS)
         )
         return self._drive(session, task=task)
 

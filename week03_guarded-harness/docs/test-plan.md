@@ -128,6 +128,7 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 | H1 | P0 | 模型称完成但无交付物被拒绝；system prompt 含可信验收格式和 `write_file`/`final_answer` 流程，常见标题序号可归一 | `tests/test_completion.py`、`tests/test_harness_loop.py` |
 | H2 | P0 | 测试后源码变化使旧证据失效 | `tests/test_completion.py`、`tests/test_state_checkpoint.py` |
 | H3 | P0 | 预算耗尽固定 `STOPPED/BUDGET_EXHAUSTED/NOT_EVALUATED` | `tests/test_harness_loop.py`、`tests/test_cli.py` |
+| H4 | P0 | Resume 提示禁止无依据重写已成功交付物，要求完成后调用 `final_answer`，并说明之后由 Harness 进入 `VERIFYING` 独立验收 | `tests/test_harness_loop.py` |
 | T1 | P0 | 全量 P0 确定性测试可重复通过 | 全量 pytest、WP-12 复跑记录 |
 | T2 | P1 | 真实模型跑通一类任务 | D-07 下 `NOT_RUN/P1`；Fake Model 不得冒充 |
 

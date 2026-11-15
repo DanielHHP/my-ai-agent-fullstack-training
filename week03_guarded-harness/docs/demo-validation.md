@@ -227,6 +227,10 @@ printf 'exit=%s\n' "$demo1_resume_exit"
 `approval_id`；重复执行 `approvals list/approve/resume`，直到 JSON 中的
 `status=COMPLETED` 且 `acceptance_status=ACCEPTED`。最终成功还应表现为命令退出码 `0`。
 
+Resume 提示会要求模型不要无依据重写已经成功的交付物；完成必要写入和检查后应调用
+`final_answer` 结束 Agent 循环。该调用只结束模型执行，随后 Harness 自动进入 `VERIFYING`，
+独立执行最终验收，并在 JSON 中记录最终 `status` 和 `acceptance_status`。
+
 ## 4. 场景二：阻塞等待十分钟
 
 ### 4.1 终端 A 启动

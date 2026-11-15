@@ -1099,6 +1099,13 @@ P0 只交付和验收 Fake Model 驱动的确定性测试。Harness API 按 `smo
 专属的 Sandbox、Gate、Checkpoint、Completion 和 Agent；`RESUME` 从 StateStore、Checkpoint
 和确定性 continuation context 重建新 Agent，不恢复旧 memory 或旧执行对象。
 
+`RESUME` 的任务提示在 continuation context 之后追加完成规则：不得重放已成功副作用；交付物
+已经成功写入且满足受信验收契约时，不得仅为润色、重排或重新生成等价全文而再次调用
+`write_file`，只有发现具体缺失或验收失败才允许重写；必要写入和检查完成后应立即调用
+`final_answer` 结束 Agent 循环。`final_answer` 只结束模型执行，随后 Harness 才进入
+`VERIFYING`，独立执行最终验收并记录 `acceptance_status`。这些提示不能替代 Gate replay
+suppression、审批绑定或 Completion 的程序检查。
+
 Agent actor 固定为 `agent`，role 固定为 `developer`。该 role 的有效权限只取任务允许工具声明
 权限的并集；Registry 可见性和 Gate 权限检查仍独立执行。模型只能看到受控 `GovernedTool`
 和 smolagents 内置 `final_answer`，不能通过 `RunRequest` 或工具参数覆盖身份与授权。

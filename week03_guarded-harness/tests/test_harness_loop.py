@@ -1079,19 +1079,23 @@ def test_completed_write_replay_is_suppressed_after_resume(tmp_path: Path) -> No
     before = _snapshot(fixture, waiting.run_id)
     _approve(fixture, waiting.run_id, waiting.approval_id)
 
-    completed = _run_resume(
-        fixture,
-        waiting.run_id,
-        FakeScriptedModel(
-            (
-                tool_call("write-replay", "write_file", write_arguments),
-                final_answer("The report is complete."),
-            )
-        ),
+    resume_model = FakeScriptedModel(
+        (
+            tool_call("write-replay", "write_file", write_arguments),
+            final_answer("The report is complete."),
+        )
     )
+    completed = _run_resume(fixture, waiting.run_id, resume_model)
 
     assert completed.status == gh.RunStatus.COMPLETED
     assert completed.acceptance_status == gh.AcceptanceStatus.ACCEPTED
+    resume_context = str(resume_model.calls[0].messages)
+    assert "RECOVERY COMPLETION RULES" in resume_context
+    assert "do not call `write_file` again" in resume_context
+    assert "call `final_answer` immediately" in resume_context
+    assert "The Harness then moves the Run to VERIFYING" in resume_context
+    assert "runs final acceptance independently" in resume_context
+    assert "records `acceptance_status`" in resume_context
     after = _snapshot(fixture, waiting.run_id)
     writes = [call for call in after.invocations if call.tool_name == "write_file"]
     assert len(writes) == 1
