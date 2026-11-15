@@ -67,6 +67,7 @@ _TERMINAL_STATUSES = _DETERMINISTIC_STATUSES | {InvocationStatus.UNKNOWN_RESULT}
 _COMPLETION_ACTOR = "completion-checker"
 _COMPLETION_ROLE = "completion_verifier"
 TEST_VERIFICATION_TOOL = "test_verification"
+_RESUME_READ_REPLAY_RULE = "GATE_RESUME_READ_REPLAY_V1"
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,10 @@ class Gate:
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
         internal_registry: ToolRegistry | None = None,
+        resume_read_replay_allowance: bool = False,
     ) -> None:
+        if type(resume_read_replay_allowance) is not bool:
+            raise TypeError("resume_read_replay_allowance must be a boolean")
         self._storage = storage
         self._registry = registry
         self._policy = policy
@@ -109,6 +113,8 @@ class Gate:
         self._ids = id_factory or Uuid4IdFactory()
         self._redactor = Redactor()
         self._internal_registry = internal_registry
+        self._resume_read_replay_allowance = resume_read_replay_allowance
+        self._resume_read_replay_used: set[tuple[str, str, str]] = set()
         self._lock_guard = threading.Lock()
         self._run_locks: dict[str, threading.Lock] = {}
 
@@ -745,13 +751,18 @@ class Gate:
                 "GATE_PREPARED_RECOVERY_V1",
             )
 
-        self._check_repeat_and_replay(request, snapshot, normalized)
+        repeat_rule = self._check_repeat_and_replay(request, snapshot, normalized)
         self._check_budget(request, snapshot)
 
         if approval is not None:
             self._claim_and_allow(request, normalized, approval)
         else:
-            self._prepare_and_allow(request, normalized)
+            self._prepare_and_allow(
+                request,
+                normalized,
+                rule_id=repeat_rule or "GATE_ALLOW_V1",
+                phase=GatePhase.REPEAT if repeat_rule else GatePhase.EXECUTION,
+            )
 
         self._mark_started(request)
         return self._execute(request, normalized, approval)
@@ -1162,6 +1173,9 @@ class Gate:
         self,
         request: ToolCallRequest,
         prepared: _PreparedCall,
+        *,
+        rule_id: str = "GATE_ALLOW_V1",
+        phase: GatePhase = GatePhase.EXECUTION,
     ) -> None:
         try:
             with self._storage.transaction(actor=request.context.actor) as unit:
@@ -1175,11 +1189,11 @@ class Gate:
                 self._append_decision(
                     unit,
                     request,
-                    phase=GatePhase.EXECUTION,
+                    phase=phase,
                     status=AuditStatus.ALLOWED,
                     decision=AuditDecision.ALLOW,
                     code=ErrorCode.GATE_ALLOWED,
-                    rule_id="GATE_ALLOW_V1",
+                    rule_id=rule_id,
                     args_digest=prepared.args_digest,
                 )
         except _GateDenial:
@@ -1452,7 +1466,7 @@ class Gate:
         request: ToolCallRequest,
         snapshot: RunSnapshot,
         prepared: _PreparedCall,
-    ) -> None:
+    ) -> str | None:
         matching = tuple(
             invocation
             for invocation in snapshot.invocations
@@ -1478,12 +1492,30 @@ class Gate:
             )
         limit = self._policy.execution_limit(prepared.definition.spec)
         if len(matching) >= limit:
+            replay_key = (
+                request.context.run_id,
+                request.tool_name,
+                prepared.args_digest,
+            )
+            allow_replay = False
+            if (
+                self._resume_read_replay_allowance
+                and prepared.definition.spec.risk == ToolRisk.READ
+                and prepared.definition.spec.idempotent
+            ):
+                with self._lock_guard:
+                    if replay_key not in self._resume_read_replay_used:
+                        self._resume_read_replay_used.add(replay_key)
+                        allow_replay = True
+            if allow_replay:
+                return _RESUME_READ_REPLAY_RULE
             raise _GateDenial(
                 ErrorCode.GATE_REPEATED_CALL,
                 GatePhase.REPEAT,
                 "equivalent read call reached its execution limit",
                 "GATE_REPEAT_V1",
             )
+        return None
 
     def _preempt_completed_write_replay(
         self,

@@ -74,7 +74,7 @@ WP-05 完成后仍不负责写文件、patch、测试命令、Checkpoint、恢�
 | 编号 | 优先级 | 飞书通过标准 | WP-05 责任 | 最终归属 |
 | --- | --- | --- | --- | --- |
 | G1 | P0 | 参数缺字段或类型错误时返回明确错误，handler 调用次数为 0 | 直接：六个工具的严格 schema 和 Gate 前拒绝集成测试 | WP-04 / WP-05 / WP-12 |
-| G2 | P0 | 连续三次相同工具和参数，第三次在执行前拦截，handler 只执行两次 | 直接：真实只读 handler 集成 Gate 重复限制 | WP-04 / WP-05 / WP-12 |
+| G2 | P0 | 单次 START 连续三次相同工具和参数，第三次在执行前拦截，handler 只执行两次；新 resume Agent 每个不同只读签名可额外重读一次并审计 | 直接：真实只读 handler 集成 Gate 重复限制和 resume 配额 | WP-04 / WP-05 / WP-07 / WP-12 |
 | S1 | P0 | `artifacts/../../.env` 路径逃逸必须由 Sandbox 拒绝，handler 不执行 | 直接：文件工具把路径声明为受治理 path argument | WP-03 / WP-04 / WP-05 / WP-12 |
 | S2 | P1 | 软链接逃逸或敏感目录访问在真实落点校验后拒绝并留痕 | 直接：直接路径和递归遍历都不得绕过 Sandbox | WP-03 / WP-05 / WP-12 |
 | A1 | P0 | 被拒绝调用审计含 `rule`、`decision`、`actor`、`toolCallId` | 直接：集成测试通过 Gate 审计检查真实只读工具拒绝 | WP-04 / WP-05 / WP-12 |
@@ -289,6 +289,8 @@ GitDiffOutput
 ### 6.6 搜索与目录边界
 
 - `search_code` 只搜索工作区内的普通文本文件；二进制、超过 10 MiB 的文件和 Sandbox 拒绝的条目跳过；
+- 单次 START 的只读执行上限不变；新 resume Agent 对每个不同的幂等只读签名可额外执行一次，用于
+  重建旧 observation，仍受总工具预算、路径和权限约束；
 - `list_files`/`read_directory` 最多检查 20,000 个目录项，超出时返回显式扫描截断，不继续无界遍历；
 - 固定扫描预算为最多 5,000 个文件、64 MiB 文件内容，达到任一上限即停止并返回显式截断事实；
 - 搜索命中上限为 200；达到上限时 `has_more=true` 且结果不得声称没有更多命中；

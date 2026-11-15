@@ -419,7 +419,8 @@ ContinuationContext(
 - 步骤与 observation 按稳定顺序保留最近 10 项，单项摘要不超过 4,000 字符；
 - 完整 continuation context 不超过 64 KiB，渲染文本不超过 64 KiB；
 - valid evidence 只含当前文件版本仍匹配的事实；失效证据以 ID 加入 `invalid_evidence_ids`，
-  但不得继续作为可引用的“已读事实”；
+  但不得继续作为可引用的“已读事实”；渲染有效 Evidence 时必须包含
+  `path:line_start-line_end` 和内容摘要，不能只显示路径；
 - pending invocation 只包含工具名、调用 ID、规范化参数摘要、状态、审批 ID 和下一步动作，
   不包含 handler、内部异常栈或可绕过 Gate 的执行对象；
 - remaining budget 使用非负值，跨数据库重开后从持久化 usage 计算，不重置；
@@ -537,7 +538,8 @@ WP-07 提供 Checkpoint 入口，不规定 Agent 何时调用；WP-10 必须在�
 ### 7.4 恢复后的执行
 
 - `CONTINUE_AGENT`：创建新 Agent，注入 continuation context，模型重新开始决策；所有后续工具调用
-  仍经过 Gate。
+  仍经过 Gate。新 Gate 对每个不同的幂等只读签名允许一次额外执行，用于重建未持久化的旧
+  observation；不得据此放宽写、执行、非幂等调用或总工具预算。
 - `WAIT_FOR_APPROVAL`：不创建执行动作；由 WP-11 展示审批并结束或等待。
 - `REENTER_GATE`：使用持久化 Invocation 重新经过 Gate；模型不能改写其工具名/参数。
 - `RESUME_CLAIM_THEN_REENTER_GATE`：先恢复既有 claim，再经 Gate 重新检查，最多启动一次 handler。

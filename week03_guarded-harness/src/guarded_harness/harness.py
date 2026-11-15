@@ -397,6 +397,7 @@ class Harness:
                 sandbox=sandbox,
                 clock=self._clock,
                 id_factory=self._ids,
+                resume_read_replay_allowance=True,
             )
             completion = CompletionChecker(
                 storage,

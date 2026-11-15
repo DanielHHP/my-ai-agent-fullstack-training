@@ -798,7 +798,7 @@ class CheckpointService:
             *(
                 [
                     f"- {evidence.evidence_id} {evidence.kind.value} "
-                    f"{evidence.path or '<none>'} {evidence.content_digest}"
+                    f"{_render_evidence_location(evidence)} {evidence.content_digest}"
                     for evidence in context.valid_evidence
                 ]
                 if context.valid_evidence
@@ -1994,6 +1994,13 @@ def _continuation_digest(context: ContinuationContext) -> str:
             "context": payload,
         }
     )
+
+
+def _render_evidence_location(evidence: ContinuationEvidence) -> str:
+    location = evidence.path or "<none>"
+    if evidence.line_start is None or evidence.line_end is None:
+        return location
+    return f"{location}:{evidence.line_start}-{evidence.line_end}"
 
 
 def _gate_phase_for_recovery(action: RecoveryAction) -> GatePhase:

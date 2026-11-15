@@ -112,7 +112,7 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 | 编号 | 优先级 | WP12 场景 | 主要自动化证据 |
 | --- | --- | --- | --- |
 | G1 | P0 | 参数缺字段/类型错误，handler 为 0 | `tests/test_gate.py`、`tests/test_harness_loop.py` |
-| G2 | P0 | 三次相同只读调用，第三次拒绝，handler 为 2 | `tests/test_gate.py`、`tests/test_tools.py` |
+| G2 | P0 | 单次 START 三次相同只读调用，第三次拒绝、handler 为 2；新 resume Agent 每个不同只读签名可额外重读一次并审计 | `tests/test_gate.py`、`tests/test_harness_loop.py`、`tests/test_tools.py` |
 | G3 | P0 | 未审批写进入 `WAITING_APPROVAL`，文件不变 | `tests/test_gate.py`、`tests/test_harness_loop.py`、`tests/test_cli.py` |
 | G4 | P0 | 审批后只执行一次，重放不重复写 | `tests/test_gate.py`、`tests/test_harness_loop.py`、`tests/test_cli.py` |
 | S1 | P0 | `artifacts/../../.env` 逃逸被拒绝且 handler 为 0 | `tests/test_gate.py`、`tests/test_sandbox.py`、`tests/test_harness_loop.py` |

@@ -712,6 +712,56 @@ def test_third_equivalent_read_is_denied_after_two_handler_calls(
     assert any(event.code == gh.ErrorCode.GATE_REPEATED_CALL.value for event in events)
 
 
+def test_resume_allows_one_bounded_reread_for_each_read_signature(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    read = {"path": "src/app.py"}
+    start_model = FakeScriptedModel(
+        (
+            tool_call("read-1", "read_file", read),
+            tool_call("read-2", "read_file", read),
+            tool_call(
+                "write-1",
+                "write_file",
+                {"path": "artifacts/report.md", "content": _valid_document()},
+            ),
+        )
+    )
+
+    waiting = _run_start(fixture, start_model)
+
+    assert waiting.status == gh.RunStatus.WAITING_APPROVAL
+    assert waiting.approval_id is not None
+    _approve(fixture, waiting.run_id, waiting.approval_id)
+    resume_model = FakeScriptedModel(
+        (
+            tool_call("read-3", "read_file", read),
+            tool_call("read-4", "read_file", read),
+            final_answer("report updated"),
+        )
+    )
+
+    completed = _run_resume(fixture, waiting.run_id, resume_model)
+
+    assert completed.status == gh.RunStatus.COMPLETED
+    assert completed.acceptance_status == gh.AcceptanceStatus.ACCEPTED
+    snapshot = _snapshot(fixture, completed.run_id)
+    reads = [call for call in snapshot.invocations if call.tool_name == "read_file"]
+    assert [call.tool_call_id for call in reads] == ["read-1", "read-2", "read-3"]
+    storage = gh.SQLiteStorage(
+        fixture.database_path,
+        fixture.workspace,
+        gh.SystemClock(),
+    )
+    storage.initialize()
+    with storage.transaction(actor="auditor") as unit:
+        allowed_events = unit.audit.list_tool_events(completed.run_id, "read-3")
+        denied_events = unit.audit.list_tool_events(completed.run_id, "read-4")
+    assert any(event.rule_id == "GATE_RESUME_READ_REPLAY_V1" for event in allowed_events)
+    assert any(event.code == gh.ErrorCode.GATE_REPEATED_CALL.value for event in denied_events)
+
+
 def test_agent_path_escape_is_denied_before_invocation(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     result = _run_start(

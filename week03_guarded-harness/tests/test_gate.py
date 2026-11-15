@@ -94,6 +94,8 @@ class GateFixture:
     storage: SQLiteStorage
     sandbox: Sandbox
     gate: Gate
+    registry: ToolRegistry
+    policy: PolicyEngine
     fault_injector: object | None
     lease_token: str
     context: ToolExecutionContext
@@ -571,6 +573,8 @@ def _gate_fixture(
         storage=storage,
         sandbox=sandbox,
         gate=gate,
+        registry=registry,
+        policy=policy,
         fault_injector=fault_injector,
         lease_token=lease.token,
         context=context,
@@ -906,6 +910,55 @@ def test_g2_third_equivalent_read_is_denied(tmp_path: Path) -> None:
     assert denied.code == ErrorCode.GATE_REPEATED_CALL.value
     assert denied.phase == GatePhase.REPEAT
     assert len(fixture.read_handler_calls) == 2
+
+
+def test_resumed_gate_allows_one_bounded_read_replay_per_signature(tmp_path: Path) -> None:
+    fixture = _gate_fixture(tmp_path)
+    args = {"path": "src/app.py"}
+
+    for index in range(2):
+        observation = fixture.gate.invoke(
+            _request(
+                fixture,
+                call_id=f"call-read-{index}",
+                tool="read_file",
+                args=args,
+            )
+        )
+        assert observation.status == ObservationStatus.ALLOWED
+
+    resumed = Gate(
+        storage=fixture.storage,
+        registry=fixture.registry,
+        policy=fixture.policy,
+        sandbox=fixture.sandbox,
+        clock=fixture.output["clock"],
+        resume_read_replay_allowance=True,
+    )
+    allowed = resumed.invoke(
+        _request(
+            fixture,
+            call_id="call-resume-read",
+            tool="read_file",
+            args=args,
+        )
+    )
+    denied = resumed.invoke(
+        _request(
+            fixture,
+            call_id="call-resume-read-again",
+            tool="read_file",
+            args=args,
+        )
+    )
+
+    assert allowed.status == ObservationStatus.ALLOWED
+    assert denied.status == ObservationStatus.DENIED
+    assert denied.code == ErrorCode.GATE_REPEATED_CALL.value
+    assert len(fixture.read_handler_calls) == 3
+    with fixture.storage.transaction(actor="auditor") as unit:
+        events = unit.audit.list_tool_events(RUN_ID, "call-resume-read")
+    assert any(event.rule_id == "GATE_RESUME_READ_REPLAY_V1" for event in events)
 
 
 def test_approval_is_consumed_on_deterministic_failure(tmp_path: Path) -> None:

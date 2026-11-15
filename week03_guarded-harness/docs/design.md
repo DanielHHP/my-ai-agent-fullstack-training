@@ -455,6 +455,7 @@ CLI 命令语义：
 4. Harness 新建模型和 Agent 对象，不依赖旧进程内存。它从 StateStore 生成确定性的
    continuation prompt，注入原任务、生效配置、计划、已完成步骤摘要、仍有效证据、待执行调用、
    未决审批、预算消耗和剩余约束，再调用公开的 `agent.run(stream=True)`。
+   有效 Evidence 必须显示 `path:line_start-line_end` 与内容摘要，使新 Agent 能看到已覆盖范围。
    P1 先校验模型配置指纹和已有 ModelCall；若存在 `STARTED` 但无确定结果的模型调用，则进入
    `BLOCKED`，使用 `StopReason=UNKNOWN_RESULT` 和错误码 `MODEL_CALL_UNKNOWN`，不创建
    可执行 Agent，也不自动重发请求。
@@ -578,6 +579,8 @@ PENDING -> APPROVED -> CLAIMED -> CONSUMED
 
 重复调用键为 `(run_id, tool_name, canonical_args_digest)`，并排除已由审批消费的敏感明文。
 读取操作可在配置的重复预算内重复；写操作和进程操作默认只允许一次成功执行。
+新 Agent 通过 `RESUME` 创建时，每个不同的幂等只读签名可额外执行一次，以重建丢失的 observation；
+该配额随 Gate 实例存在、被显式审计，且仍受 Run 总工具预算约束。写、执行、非幂等调用没有此配额。
 若恢复上下文再次提出同一次已完成写操作，Gate 返回 `REPLAY_SUPPRESSED` 和原证据，不再次调用
 handler。
 

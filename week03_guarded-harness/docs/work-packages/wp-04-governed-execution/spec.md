@@ -383,7 +383,9 @@ validate schema
 | 写/执行工具 | 1 | `GATE_REPLAY_SUPPRESSED`，返回原证据摘要 |
 
 只读上限使飞书 G2 的第三次调用在执行前被拦截且前两次 handler 恰好执行。具体上限和工具覆盖方式
-见 D-40。
+见 D-40。`RESUME` 创建新 Agent/新 Gate 后，每个不同的幂等只读签名可额外执行一次，并写入
+`GATE_RESUME_READ_REPLAY_V1`；同一恢复会话中的再次等价读取仍按原上限拒绝。该配额不适用于写、
+执行或非幂等工具，见 D-109。
 
 replay suppression 规则：
 

@@ -2978,7 +2978,22 @@ def test_recovery_with_committed_result_and_checkpoint_continues(tmp_path: Path)
     fixture.service.create_checkpoint(RUN_ID, fixture.lease_token, _step_boundary())
     _create_checkpoint_invocation(fixture)
     _start_invocation(fixture)
+    source = fixture.sandbox.read_file("src/app.py")
     with fixture.storage.transaction(actor="agent") as unit:
+        unit.state.add_evidence(
+            Evidence(
+                evidence_id=EVIDENCE_ID,
+                run_id=RUN_ID,
+                tool_call_id=TOOL_CALL_ID,
+                kind=EvidenceKind.READ,
+                path="src/app.py",
+                line_start=1,
+                line_end=1,
+                content_digest=source.content_digest,
+                created_at=NOW,
+            ),
+            lease_token=fixture.lease_token,
+        )
         unit.state.transition_invocation(
             RUN_ID,
             TOOL_CALL_ID,
@@ -3002,9 +3017,14 @@ def test_recovery_with_committed_result_and_checkpoint_continues(tmp_path: Path)
     )
 
     plan = fixture.service.prepare_recovery(RUN_ID, fixture.lease_token)
+    context = fixture.service.build_continuation_context(plan)
+    rendered = fixture.service.render_continuation(context)
 
     assert plan.action == gh.RecoveryAction.CONTINUE_AGENT
     assert plan.status == gh.RecoveryStatus.RESUMABLE
+    assert context.valid_evidence[0].line_start == 1
+    assert context.valid_evidence[0].line_end == 1
+    assert "src/app.py:1-1" in rendered
     with fixture.storage.transaction(actor="agent") as unit:
         snapshot = unit.state.get_run_snapshot(RUN_ID)
     assert snapshot.invocations[0].status == InvocationStatus.SUCCEEDED
