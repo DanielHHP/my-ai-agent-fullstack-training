@@ -90,6 +90,42 @@ guarded-harness --config PATH inspect RUN_ID \
 `approvals approve/reject` 只改变授权/规定 Run 终态，不执行 handler。仓库操作只能由 `resume`
 重新经过 Gate 后执行。
 
+### 4.1 运行输出
+
+运行进度写入 stderr，最终结果写入 stdout。新 Run 创建后会立即显示：
+
+```text
+run created: run_id=run_... trace_id=...
+```
+
+`--wait-for-approval` 遇到审批时显示：
+
+```text
+approval required
+  run_id=run_...
+  approval_id=approval_...
+  tool=write_file
+  tool_call_id=write-1
+  status=PENDING
+  expires_at=...
+  roles=operator
+```
+
+同一等待命令对同一 `approval_id` 只提示一次。提示不展示原始工具参数，也不代表审批已通过。
+
+默认文本模式在 Run 结束后单独展示模型候选回答：
+
+```text
+final_answer (model candidate; not acceptance evidence):
+<保留换行和 Markdown 的文本>
+```
+
+该文本来自已经持久化、脱敏和限长的 `candidate_final_answer`，CLI 会移除 ANSI/控制字符。
+候选回答不改变退出码，也不表示 Completion 已验收通过。
+
+使用 `--json` 时，stdout 仍严格只有一个 JSON envelope；上述运行进度写入 stderr，机器可读
+`data.candidate_final_answer` 保持兼容。需要阅读最终回答时优先使用默认文本模式。
+
 ## 5. 审批流程
 
 默认流程：

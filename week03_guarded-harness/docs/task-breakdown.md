@@ -1261,6 +1261,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | 人工审批与恢复 | WP-11 | WP-12 | 新进程 resume 和一次性执行 |
 | 全量故障加固 | WP-12 | 无 | 完整测试、lint、格式和交付记录 |
 | 真实模型调用治理 | WP-13 | 后续 Provider 扩展 | 配置/凭据/预算/超时/响应/Audit/unknown 证据 |
+| CLI 运行可观测性 | WP-15 | 无 | Run 创建事件顺序、JSON/stderr 隔离、审批提示和纯文本最终回答 |
 | 工作包验收报告 | WP-00 | 每个 WP | `acceptance-report.md` 为 accepted，命令可复跑且场景/任务/限制完整 |
 
 ## 10. 风险与详细设计待确认项
@@ -1368,6 +1369,7 @@ WP04-AC-005：写操作参数变化后旧审批返回 APPROVAL_INVALID。
 | D-22 Evidence 单一生产者 | WP-01、WP-04、WP-05、WP-08、WP-09 |
 | D-29 至 D-36 Sandbox 边界 | WP-03、WP-04、WP-05、WP-06、WP-07、WP-09、WP-12 |
 | D-48 至 D-52 WP-06 写入与命令语义 | WP-06、WP-07、WP-09、WP-10、WP-12 |
+| D-111 CLI 运行可观测性 | WP-15 |
 | D-87 至 D-100 真实模型接入 | WP-13 |
 
 ## 14. 全局完成定义

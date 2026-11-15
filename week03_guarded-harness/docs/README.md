@@ -58,5 +58,8 @@
 | [WP-14 规格](work-packages/wp-14-cli-run-instruction/spec.md) | frozen：`run --instruction`、有效指令持久化、RESUME 禁止重传和权限边界 |
 | [WP-14 计划](work-packages/wp-14-cli-run-instruction/plan.md) | done：领域、Harness、CLI、恢复和文档修改 |
 | [WP-14 验收报告](work-packages/wp-14-cli-run-instruction/acceptance-report.md) | v1.0 accepted：11/11 AC、402 项全量测试和入口门禁通过 |
+| [WP-15 规格](work-packages/wp-15-cli-runtime-visibility/spec.md) | frozen：Run 创建进度、审批等待提示、纯文本最终回答和 JSON 输出隔离 |
+| [WP-15 计划](work-packages/wp-15-cli-runtime-visibility/plan.md) | done：Harness 观察接缝、CLI 显示策略、测试和文档同步 |
+| [WP-15 验收报告](work-packages/wp-15-cli-runtime-visibility/acceptance-report.md) | accepted：10/10 AC、输出隔离和全量门禁 |
 
 新增设计、决策或测试文档后，应同步更新本索引。

@@ -467,6 +467,74 @@ def test_run_defaults_to_waiting_and_does_not_write(tmp_path: Path) -> None:
     assert fixture.report_path.stat().st_mtime_ns == before.st_mtime_ns
 
 
+def test_run_created_progress_keeps_json_stdout_parseable(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    factory = SequenceModelFactory(((final_answer("candidate"),),))
+
+    code, payload, text, stderr = _invoke(
+        fixture,
+        ["run", "--json"],
+        model_factory=factory,
+    )
+
+    assert code == 7, stderr
+    assert payload is not None
+    assert payload["data"]["status"] == "COMPLETED"
+    assert json.loads(text) == payload
+    assert "run created:" in stderr
+    assert f"run_id={payload['data']['run_id']}" in stderr
+    assert f"trace_id={payload['data']['trace_id']}" in stderr
+    assert "run created:" not in text
+
+
+def test_text_mode_renders_final_answer_plainly_and_safely(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    secret = "super-secret-token-value"
+    answer = f"\x1b[31mfirst line\r\ntoken={secret}\x1b[0m"
+    factory = SequenceModelFactory(((final_answer(answer),),))
+
+    code, payload, text, stderr = _invoke(
+        fixture,
+        ["run"],
+        model_factory=factory,
+    )
+
+    assert code == 7, stderr
+    assert payload is None
+    assert "final_answer (model candidate; not acceptance evidence):" in text
+    assert "first line\n" in text
+    assert "\\n" not in text
+    assert "\x1b" not in text
+    assert secret not in text
+    assert "run created:" in stderr
+
+
+def test_run_wait_for_approval_prints_notice_without_empty_final_block(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    factory = SequenceModelFactory((_waiting_script(),))
+    times = iter((0.0, 0.0, 2.0))
+
+    code, payload, text, stderr = _invoke(
+        fixture,
+        ["run", "--wait-for-approval", "1"],
+        model_factory=factory,
+        sleeper=lambda _seconds: None,
+        monotonic=lambda: next(times),
+    )
+
+    assert code == 3, stderr
+    assert payload is None
+    assert "status=WAITING_APPROVAL" in text
+    assert "final_answer (model candidate; not acceptance evidence):" not in text
+    assert stderr.count("approval required") == 1
+    assert "tool=write_file" in stderr
+    assert "tool_call_id=write-1" in stderr
+    assert "status=PENDING" in stderr
+    assert "roles=operator" in stderr
+
+
 def test_approvals_list_is_bounded_and_does_not_execute(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     before = fixture.report_path.stat()
@@ -776,6 +844,13 @@ def test_wait_mode_approves_during_poll_and_resumes_once(tmp_path: Path) -> None
     assert code == 0, stderr
     assert payload is not None
     assert payload["data"]["acceptance_status"] == "ACCEPTED"
+    assert stderr.count("approval required") == 1
+    assert f"run_id={waiting['run_id']}" in stderr
+    assert f"approval_id={waiting['approval_id']}" in stderr
+    assert "tool=write_file" in stderr
+    assert "tool_call_id=write-1" in stderr
+    assert "status=PENDING" in stderr
+    assert "roles=operator" in stderr
     assert len(factory.models) == 2
     assert factory.models[0].calls == []
     assert len(factory.models[1].calls) == 1

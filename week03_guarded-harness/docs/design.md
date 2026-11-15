@@ -1143,6 +1143,10 @@ Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建
   `task.description`，未提供时继续使用配置描述。有效文本在 Run 创建时写入
   `Run.task_description`，审批后恢复和 continuation context 都从该持久化值重建。
 - `resume` 禁止重新提供指令，避免恢复后的 Agent 重新解释已经审批的调用上下文。
+- 新 Run 持久化并进入 `RUNNING` 后，Harness 通过可选只读 `RunEventSink` 发出
+  `RunCreatedEvent`；CLI 在 stderr 立即显示 `run_id`/`trace_id`，观察器不参与安全门禁。
+- `--wait-for-approval` 在 CLI 层对每条审批去重输出绑定摘要；默认文本模式从持久化
+  `candidate_final_answer` 独立展示纯文本，`--json` stdout 仍保持单一 envelope。
 
 `run/resume` 的模型通过可信 `model_factory` 注入。P0 不提供真实 Provider；标准入口在没有受控模型
 来源时返回 `CLI_MODEL_UNAVAILABLE`，测试通过注入 `smolagents.Model` 实现离线验收。CLI 不允许

@@ -170,6 +170,17 @@ class TokenCostPolicy:
 ToolFactory = Callable[[ResolvedHarnessConfig, Sandbox], ToolRegistry]
 
 
+@dataclass(frozen=True)
+class RunCreatedEvent:
+    """Display-only event emitted after a new Run is persisted and started."""
+
+    run_id: str
+    trace_id: str
+
+
+RunEventSink = Callable[[RunCreatedEvent], None]
+
+
 @dataclass
 class _Session:
     config: ResolvedHarnessConfig
@@ -244,6 +255,7 @@ class Harness:
         token_cost_policy: TokenCostPolicy | None = None,
         token_counter: TokenCounter | None = None,
         lease_policy: LeasePolicy | None = None,
+        run_event_sink: RunEventSink | None = None,
     ) -> None:
         self._config_path = Path(config_path)
         self._model = model
@@ -257,6 +269,9 @@ class Harness:
         self._lease_policy = lease_policy or LeasePolicy()
         if not isinstance(self._lease_policy, LeasePolicy):
             raise TypeError("lease_policy must be a LeasePolicy")
+        if run_event_sink is not None and not callable(run_event_sink):
+            raise TypeError("run_event_sink must be callable")
+        self._run_event_sink = run_event_sink
         self._lock = threading.RLock()
 
     def run(self, request: RunRequest) -> RunResult:
@@ -355,6 +370,7 @@ class Harness:
             )
             self._start_heartbeat(session)
             try:
+                self._notify_run_created(run)
                 if isinstance(config.config.task.acceptance, TestRepairAcceptance):
                     try:
                         completion.capture_test_baseline(
@@ -1389,6 +1405,15 @@ class Harness:
             created_at=now,
             updated_at=now,
         )
+
+    def _notify_run_created(self, run: Run) -> None:
+        if self._run_event_sink is None:
+            return
+        try:
+            self._run_event_sink(RunCreatedEvent(run_id=run.run_id, trace_id=run.trace_id))
+        except Exception:
+            # Progress reporting is observable only and must not alter governance state.
+            _LOGGER.error("run-created event sink failed")
 
     def _load_config(self) -> ResolvedHarnessConfig:
         try:

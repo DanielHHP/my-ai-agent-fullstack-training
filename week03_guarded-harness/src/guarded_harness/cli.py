@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
+import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TextIO
@@ -17,6 +19,8 @@ from .audit import AuditStoreError
 from .config import ResolvedHarnessConfig, load_config
 from .control import (
     ApprovalControlService,
+    ApprovalMutationResult,
+    ApprovalView,
     ControlError,
     InspectionService,
     json_dumps,
@@ -38,7 +42,7 @@ from .domain import (
     SystemClock,
     ToolCallId,
 )
-from .harness import Harness, HarnessError, ToolFactory
+from .harness import Harness, HarnessError, RunCreatedEvent, RunEventSink, ToolFactory
 from .model_runtime import create_model_from_config
 from .redaction import Redactor
 from .sandbox import CommandPolicy
@@ -53,6 +57,7 @@ _APPROVAL_LIST_DEFAULT_LIMIT = 100
 _AUDIT_DEFAULT_LIMIT = 100
 _APPROVAL_POLL_SECONDS = 0.5
 _MAX_INSTRUCTION_CHARS = 4000
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])")
 
 
 class CLIError(RuntimeError):
@@ -257,6 +262,7 @@ def main(
                 sleeper=sleeper or time.sleep,
                 monotonic=monotonic or time.monotonic,
                 approval_poll_seconds=approval_poll_seconds,
+                diagnostics=diagnostics,
             )
             _emit_success(output, command_name, result.model_dump(mode="json"), json_mode)
             return exit_code_for_run_result(result)
@@ -276,6 +282,7 @@ def main(
                 sleeper=sleeper or time.sleep,
                 monotonic=monotonic or time.monotonic,
                 approval_poll_seconds=approval_poll_seconds,
+                diagnostics=diagnostics,
             )
             _emit_success(output, command_name, result.model_dump(mode="json"), json_mode)
             return exit_code_for_run_result(result)
@@ -449,6 +456,7 @@ def _run_command(
     sleeper: Sleeper,
     monotonic: Monotonic,
     approval_poll_seconds: float,
+    diagnostics: TextIO,
 ) -> RunResult:
     del config
     result = _harness(
@@ -459,6 +467,7 @@ def _run_command(
         id_factory=id_factory,
         command_policy=command_policy,
         fault_injector=fault_injector,
+        run_event_sink=_progress_event_sink(diagnostics),
     ).run(
         RunRequest(
             mode=RunMode.START,
@@ -478,6 +487,7 @@ def _run_command(
         sleeper=sleeper,
         monotonic=monotonic,
         approval_poll_seconds=approval_poll_seconds,
+        diagnostics=diagnostics,
     )
 
 
@@ -496,6 +506,7 @@ def _resume_command(
     sleeper: Sleeper,
     monotonic: Monotonic,
     approval_poll_seconds: float,
+    diagnostics: TextIO,
 ) -> RunResult:
     del config
     result = _harness(
@@ -506,6 +517,7 @@ def _resume_command(
         id_factory=id_factory,
         command_policy=command_policy,
         fault_injector=fault_injector,
+        run_event_sink=_progress_event_sink(diagnostics),
     ).run(RunRequest(mode=RunMode.RESUME, run_id=run_id))
     return _wait_if_requested(
         result,
@@ -520,6 +532,7 @@ def _resume_command(
         sleeper=sleeper,
         monotonic=monotonic,
         approval_poll_seconds=approval_poll_seconds,
+        diagnostics=diagnostics,
     )
 
 
@@ -532,6 +545,7 @@ def _harness(
     id_factory: IdFactory | None,
     command_policy: CommandPolicy | None,
     fault_injector: FaultInjector | None,
+    run_event_sink: RunEventSink | None = None,
 ) -> Harness:
     try:
         model = model_factory(Path(config_path))
@@ -556,6 +570,7 @@ def _harness(
         id_factory=id_factory,
         command_policy=command_policy,
         fault_injector=fault_injector,
+        run_event_sink=run_event_sink,
     )
 
 
@@ -573,6 +588,7 @@ def _wait_if_requested(
     sleeper: Sleeper,
     monotonic: Monotonic,
     approval_poll_seconds: float,
+    diagnostics: TextIO,
 ) -> RunResult:
     if wait_seconds is None or result.status != RunStatus.WAITING_APPROVAL:
         return result
@@ -587,6 +603,7 @@ def _wait_if_requested(
     deadline = monotonic() + wait_seconds
     inspections = InspectionService(config_path, clock=clock)
     approvals = ApprovalControlService(config_path, clock=clock)
+    announced_approvals: set[str] = set()
     while current.status == RunStatus.WAITING_APPROVAL:
         remaining = deadline - monotonic()
         if remaining <= 0:
@@ -598,6 +615,9 @@ def _wait_if_requested(
                 "waiting run did not expose an approval id",
             )
         refreshed = approvals.refresh(approval_id)
+        if approval_id not in announced_approvals:
+            _emit_approval_required(diagnostics, refreshed)
+            announced_approvals.add(approval_id)
         if refreshed.effective_status == ApprovalStatus.APPROVED:
             current = _harness(
                 config_path=config_path,
@@ -607,6 +627,7 @@ def _wait_if_requested(
                 id_factory=id_factory,
                 command_policy=command_policy,
                 fault_injector=fault_injector,
+                run_event_sink=_progress_event_sink(diagnostics),
             ).run(RunRequest(mode=RunMode.RESUME, run_id=current.run_id))
             continue
         if refreshed.run.status != RunStatus.WAITING_APPROVAL:
@@ -675,6 +696,13 @@ def _emit_success(output: TextIO, command: str, data: object, json_mode: bool) -
         )
         if data.get("approval_id"):
             output.write(f"approval_id={data.get('approval_id')}\n")
+        final_answer = data.get("candidate_final_answer")
+        if isinstance(final_answer, str) and final_answer:
+            output.write("\nfinal_answer (model candidate; not acceptance evidence):\n")
+            rendered = _terminal_safe_text(final_answer)
+            output.write(rendered)
+            if not rendered.endswith("\n"):
+                output.write("\n")
     elif command.startswith("approvals.") and isinstance(data, dict):
         if "approvals" in data:
             for approval in data["approvals"]:
@@ -691,6 +719,55 @@ def _emit_success(output: TextIO, command: str, data: object, json_mode: bool) -
             )
     else:
         output.write(f"{json_dumps(data)}\n")
+
+
+def _progress_event_sink(diagnostics: TextIO) -> RunEventSink:
+    def emit(event: RunCreatedEvent) -> None:
+        _write_progress(
+            diagnostics,
+            f"run created: run_id={event.run_id} trace_id={event.trace_id}\n",
+        )
+
+    return emit
+
+
+def _emit_approval_required(
+    diagnostics: TextIO,
+    refreshed: ApprovalMutationResult,
+) -> None:
+    approval = refreshed.approval
+    effective_status = refreshed.effective_status
+    view = ApprovalView(approval=approval, effective_status=effective_status).as_dict()
+    roles = ", ".join(view["allowed_approver_roles"]) or "(none)"
+    _write_progress(
+        diagnostics,
+        (
+            "approval required\n"
+            f"  run_id={view['run_id']}\n"
+            f"  approval_id={view['approval_id']}\n"
+            f"  tool={view['tool_name']}\n"
+            f"  tool_call_id={view['tool_call_id']}\n"
+            f"  status={view['effective_status']}\n"
+            f"  expires_at={view['expires_at']}\n"
+            f"  roles={roles}\n"
+        ),
+    )
+
+
+def _write_progress(diagnostics: TextIO, text: str) -> None:
+    diagnostics.write(text)
+    diagnostics.flush()
+
+
+def _terminal_safe_text(value: str) -> str:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    without_ansi = _ANSI_ESCAPE_PATTERN.sub("", normalized)
+    return "".join(
+        character
+        if character in {"\n", "\t"} or not unicodedata.category(character).startswith("C")
+        else "\ufffd"
+        for character in without_ansi
+    )
 
 
 def _emit_error(

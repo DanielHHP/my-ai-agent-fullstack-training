@@ -141,7 +141,13 @@ from .domain import (
     validate_contract,
 )
 from .gate import Gate
-from .harness import Harness, HarnessError, TokenCostPolicy
+from .harness import (
+    Harness,
+    HarnessError,
+    RunCreatedEvent,
+    RunEventSink,
+    TokenCostPolicy,
+)
 from .model_runtime import (
     EnvironmentSecretResolver,
     GovernedModel,
@@ -318,7 +324,9 @@ __all__ = [
     "register_readonly_tools",
     "register_side_effect_tools",
     "Run",
+    "RunCreatedEvent",
     "RunBudget",
+    "RunEventSink",
     "RunLease",
     "RunMode",
     "RunPlan",

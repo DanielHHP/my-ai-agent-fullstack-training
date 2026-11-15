@@ -360,6 +360,57 @@ def test_code_understanding_waits_then_resumes_and_accepts(tmp_path: Path) -> No
     }.issubset(kinds)
 
 
+def test_run_created_event_observes_persisted_run_before_model_call(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    model = FakeScriptedModel((final_answer("candidate"),))
+    observed: list[tuple[gh.RunCreatedEvent, int, str | None]] = []
+
+    def observe(event: gh.RunCreatedEvent) -> None:
+        with sqlite3.connect(fixture.database_path) as connection:
+            row = connection.execute(
+                "SELECT status FROM runs WHERE run_id = ?",
+                (event.run_id,),
+            ).fetchone()
+        observed.append((event, len(model.calls), row[0] if row is not None else None))
+
+    result = gh.Harness(
+        config_path=fixture.config_path,
+        model=model,
+        clock=gh.SystemClock(),
+        run_event_sink=observe,
+    ).run(gh.RunRequest(mode=gh.RunMode.START))
+
+    assert result.status == gh.RunStatus.COMPLETED
+    assert len(observed) == 1
+    event, model_calls_at_event, persisted_status = observed[0]
+    assert event.run_id == result.run_id
+    assert event.trace_id == result.trace_id
+    assert model_calls_at_event == 0
+    assert persisted_status == gh.RunStatus.RUNNING.value
+    assert len(model.calls) == 1
+
+
+def test_run_created_event_failure_does_not_change_governance_result(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+
+    def fail_observer(_event: gh.RunCreatedEvent) -> None:
+        raise OSError("progress destination closed")
+
+    result = gh.Harness(
+        config_path=fixture.config_path,
+        model=FakeScriptedModel((final_answer("candidate"),)),
+        clock=gh.SystemClock(),
+        run_event_sink=fail_observer,
+    ).run(gh.RunRequest(mode=gh.RunMode.START))
+
+    assert result.status == gh.RunStatus.COMPLETED
+    assert result.acceptance_status == gh.AcceptanceStatus.REJECTED
+
+
 def test_final_answer_without_deliverable_is_rejected(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     result = _run_start(
