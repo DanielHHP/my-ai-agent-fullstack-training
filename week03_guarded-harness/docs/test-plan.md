@@ -208,7 +208,7 @@ live smoke 不得替代默认离线测试、P0 全量测试、lint 或格式检�
 | usage 缺失/非法 | fake response | `MODEL_USAGE_INVALID`，不得按 0 计费 |
 | 文本 tool-call fallback | fake response with content only | `MODEL_PROTOCOL_UNSUPPORTED` + `TOOL_CALLS_MISSING`，不调用文本解析 |
 | 缺失/重复 tool-call ID | fake structured call | `MODEL_TOOL_CALLS_INVALID` + 对应 `reason_code`，不合成 ID |
-| 工具调用超限/最终答案混用 | fake structured calls | 记录数量、上限、工具名摘要，不进入 Agent/Gate |
+| 工具调用上限告知/超限/最终答案混用 | v2 system prompt + fake structured calls | 提示词使用配置上限；违规调用记录数量、上限、工具名摘要，不进入 Agent/Gate |
 | 响应过大/usage 非法 | fake response | 记录固定分类和安全摘要，失败关闭 |
 | Agent/Gate 穿透 | fake tool call | 模型只看到 GovernedTool，实际执行仍经过 Gate |
 | `tool_choice` 兼容 | config + fake model kwargs | 默认 required；auto/null 精确转发；thinking 模式真实 smoke 返回结构化 tool call |

@@ -1944,11 +1944,15 @@ class _DocumentViolation(ValueError):
         super().__init__(message)
 
 
-def render_acceptance_instructions(task_kind: TaskKind) -> str | None:
+def render_acceptance_instructions(
+    task_kind: TaskKind,
+    *,
+    max_tool_calls_per_response: int | None = None,
+) -> str | None:
     """Return trusted system-prompt guidance for one supported task kind."""
 
     if task_kind == TaskKind.CODE_UNDERSTANDING:
-        return (
+        instructions = (
             "Program acceptance contract for code understanding:\n"
             f"- The deliverable must use the exact H2 headings `## {_SECTION_FACTS}`, "
             f"`## {_SECTION_INFERENCE}`, and `## {_SECTION_EVIDENCE}`, once each and in that "
@@ -1976,8 +1980,8 @@ def render_acceptance_instructions(task_kind: TaskKind) -> str | None:
             f"## {_SECTION_EVIDENCE}\n\n"
             "- E1: `src/example.py:1-2`"
         )
-    if task_kind == TaskKind.TEST_REPAIR:
-        return (
+    elif task_kind == TaskKind.TEST_REPAIR:
+        instructions = (
             "Program acceptance contract for test repair:\n"
             "- Final success is determined only by the trusted baseline and final test command, "
             "not by a model claim or a tool summary.\n"
@@ -1986,7 +1990,17 @@ def render_acceptance_instructions(task_kind: TaskKind) -> str | None:
             "- Keep changes within configured write paths and stop only after program acceptance "
             "has been run by the Harness."
         )
-    return None
+    else:
+        return None
+
+    if max_tool_calls_per_response is None:
+        return instructions
+    return (
+        "Program execution protocol:\n"
+        f"- Return at most {max_tool_calls_per_response} structured tool calls in one assistant "
+        "response. Split additional work across multiple assistant responses.\n\n"
+        f"{instructions}"
+    )
 
 
 def parse_code_understanding_document(text: str) -> _ParsedDocument:

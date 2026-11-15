@@ -668,11 +668,18 @@ class Harness:
                 token_counter=self._token_counter,
                 clock=self._now_clock(),
             )
+        model_config = session.config.config.model
+        response_tool_limit = (
+            model_config.max_tool_calls_per_response if model_config is not None else None
+        )
         agent = build_tool_calling_agent(
             model=model,
             adapter=session.adapter,
             step_callbacks=[observer],
-            instructions=render_acceptance_instructions(session.config.config.task.kind),
+            instructions=render_acceptance_instructions(
+                session.config.config.task.kind,
+                max_tool_calls_per_response=response_tool_limit,
+            ),
             max_steps=remaining_steps,
         )
         generator = agent.run(task, stream=True, reset=True)

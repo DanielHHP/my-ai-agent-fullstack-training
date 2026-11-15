@@ -254,7 +254,8 @@ WP13-BEH-011：响应内容、`raw` 摘要和工具调用参数总大小必须�
 
 WP13-BEH-012：同一次响应内最多允许 `max_tool_calls_per_response` 个调用；调用 ID 必须非空、
 唯一且稳定，不得自动合成。工具名和参数必须进入现有 adapter/Gate 校验。不能使用
-`final_answer` 与其它工具混合的响应绕过 Gate。
+`final_answer` 与其它工具混合的响应绕过 Gate。version 2 Run 应把经过校验的该配置值写入可信
+system prompt，要求模型不要超过单响应上限并拆分后续工作；提示词告知不替代运行时数量校验。
 
 WP13-BEH-013：完整响应、chain-of-thought、`raw` provider payload 和完整消息列表不得写入
 State/Audit；只保存有界摘要、协议版本、工具名、调用 ID、usage、耗时和结果状态。模型响应校验

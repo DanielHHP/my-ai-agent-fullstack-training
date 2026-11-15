@@ -1276,6 +1276,8 @@ GovernedModel 在返回 Agent 前限制：
 - 响应类型必须为 `ChatMessage`；
 - 响应内容、raw 摘要和工具参数总大小不超过 `max_response_bytes`；
 - 单响应 tool call 数量不超过 `max_tool_calls_per_response`；
+- version 2 Run 会把已校验的 `max_tool_calls_per_response` 写入可信 system prompt，要求模型
+  单次响应不要超过该数量并拆分后续工作；该告知只用于减少违规，不能替代运行时校验；
 - tool call ID 非空且同响应唯一；
 - `final_answer` 不得与其它工具混用；
 - 首版只接受 Chat Completions 结构化 tool calls，不调用文本内容 fallback 解析；缺少非空 ID

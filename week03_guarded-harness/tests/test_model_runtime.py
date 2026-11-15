@@ -205,6 +205,7 @@ def _config(
     *,
     max_token_cost: float = 1,
     max_response_bytes: int = 65536,
+    max_tool_calls_per_response: int = 4,
     tool_choice: str | None = "required",
 ) -> tuple[Path, Path]:
     workspace = _workspace(tmp_path)
@@ -227,7 +228,7 @@ def _config(
             "max_input_tokens": 1000,
             "max_output_tokens": 100,
             "max_response_bytes": max_response_bytes,
-            "max_tool_calls_per_response": 4,
+            "max_tool_calls_per_response": max_tool_calls_per_response,
             "max_retry_attempts": 1,
             "tool_choice": tool_choice,
             "pricing": {
@@ -336,6 +337,24 @@ def test_configured_tool_choice_is_forwarded_to_provider(tmp_path: Path) -> None
     _run(config, model)
 
     assert model.tool_choice == "auto"
+
+
+def test_configured_per_response_tool_limit_is_disclosed_in_system_prompt(
+    tmp_path: Path,
+) -> None:
+    config, _workspace_path = _config(tmp_path, max_tool_calls_per_response=7)
+    model = FakeScriptedModel((final_answer("candidate"),))
+
+    _run(config, model)
+
+    system_prompt = "\n".join(
+        str(message.content)
+        for message in model.calls[0].messages
+        if getattr(message.role, "value", None) == "system"
+    )
+    assert "Program execution protocol:" in system_prompt
+    assert "Return at most 7 structured tool calls in one assistant response." in system_prompt
+    assert "Split additional work across multiple assistant responses." in system_prompt
 
 
 def test_budget_rejection_happens_before_model_call(tmp_path: Path) -> None:
