@@ -43,6 +43,7 @@ from .domain import (
     ToolCallId,
 )
 from .harness import Harness, HarnessError, RunCreatedEvent, RunEventSink, ToolFactory
+from .inspect_view import render_inspection_text
 from .model_runtime import create_model_from_config
 from .redaction import Redactor
 from .sandbox import CommandPolicy
@@ -203,7 +204,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=_positive_limit,
         default=_AUDIT_DEFAULT_LIMIT,
     )
-    _json_flag(inspect_parser)
+    inspect_output = inspect_parser.add_mutually_exclusive_group()
+    inspect_output.add_argument("--json", action="store_true", help="emit one stable JSON envelope")
+    inspect_output.add_argument(
+        "--pretty",
+        action="store_true",
+        help="emit the hierarchical Turn view (default)",
+    )
     return parser
 
 
@@ -717,6 +724,8 @@ def _emit_success(output: TextIO, command: str, data: object, json_mode: bool) -
                 f"{approval['approval_id']} {approval['status']} "
                 f"run={run['run_id']} run_status={run['status']}\n"
             )
+    elif command == "inspect" and isinstance(data, dict):
+        output.write(render_inspection_text(data))
     else:
         output.write(f"{json_dumps(data)}\n")
 

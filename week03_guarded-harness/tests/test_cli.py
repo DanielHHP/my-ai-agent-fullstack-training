@@ -996,6 +996,51 @@ def test_inspect_exposes_denied_call_audit_without_raw_arguments(tmp_path: Path)
     assert "secret-value" not in json.dumps(payload)
 
 
+def test_inspect_default_text_is_a_hierarchical_turn_view(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _code, waiting = _start_waiting(fixture)
+
+    code, payload, text, stderr = _invoke(fixture, ["inspect", waiting["run_id"]])
+
+    assert code == 0, stderr
+    assert payload is None
+    lines = text.splitlines()
+    turn_lines = [line for line in lines if "Turn " in line]
+    assert len(turn_lines) == 2
+    assert "Turn 1/2  [COMPLETED]" in turn_lines[0]
+    assert "Turn 2/2  [COMPLETED]" in turn_lines[1]
+    assert any("response #8 TOOL_PREPARED" in line for line in lines)
+    assert any("gate #10 GATE_DECISION" in line for line in lines)
+    assert any("current tool read_file SUCCEEDED" in line for line in lines)
+    assert any(
+        "approval #21 APPROVAL_REQUESTED" in line and waiting["approval_id"] in line
+        for line in lines
+    )
+    assert "## 事实" not in text
+
+    pretty_code, pretty_payload, pretty_text, pretty_stderr = _invoke(
+        fixture,
+        ["inspect", waiting["run_id"], "--pretty"],
+    )
+    assert pretty_code == 0, pretty_stderr
+    assert pretty_payload is None
+    assert pretty_text == text
+
+
+def test_inspect_json_and_pretty_are_mutually_exclusive(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _code, waiting = _start_waiting(fixture)
+
+    code, payload, _text, _stderr = _invoke(
+        fixture,
+        ["inspect", waiting["run_id"], "--json", "--pretty"],
+    )
+
+    assert code == 2
+    assert payload is not None
+    assert payload["error"]["code"] == ErrorCode.CLI_USAGE_ERROR.value
+
+
 def test_inspect_can_filter_approval_audit_and_mark_truncation(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     _code, waiting = _start_waiting(fixture)

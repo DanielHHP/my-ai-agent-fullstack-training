@@ -301,7 +301,79 @@ Node 测试并检查 7 个基线节点、原失败修复、新增节点状态、
 CONFIG=config/1_login_demo.yaml
 RUN_ID="$RUN1_ID"
 STATE_DB=.guarded-harness/1_login_demo/harness.sqlite3
+```
 
+### 5.1 用 Turn 树检查运行事实
+
+`inspect` 默认输出适合人工阅读的 Turn 树；`--pretty` 是同一格式的显式写法。每一轮使用一个
+`Turn` 标题行，模型调用、候选工具调用、审批、Gate、工具执行、Checkpoint、预算和恢复等
+子操作各占一条缩进行。无法安全关联到具体 Step 的运行级事实会放在 `Run operations`。
+
+```bash
+inspect_exit=0
+guarded-harness --config "$CONFIG" \
+  inspect "$RUN_ID" --audit-limit 1000 \
+  >/tmp/governed-inspect.txt \
+  || inspect_exit=$?
+cat /tmp/governed-inspect.txt
+printf 'exit=%s\n' "$inspect_exit"
+```
+
+需要显式声明阅读模式时，可以加上 `--pretty`：
+
+```bash
+guarded-harness --config "$CONFIG" \
+  inspect "$RUN_ID" --audit-limit 1000 --pretty
+```
+
+`inspect` 参数口径：
+
+| 参数 | 用途与约束 |
+| --- | --- |
+| 无格式参数或 `--pretty` | 输出 Turn 层级阅读视图，供人工检查；不是 JSON，不要用 `jq` 解析 |
+| `--json` | 输出单个稳定 JSON envelope，供 `jq`、脚本和下面的字段断言使用 |
+| `--json --pretty` | 无效组合，CLI 返回 `CLI_USAGE_ERROR`；两者必须二选一 |
+| `--tool-call-id ID` | 只查询该工具调用的 Gate、审批、执行和 Evidence 关联事件 |
+| `--approval-id ID` | 只查询该审批的生命周期和绑定关联事件 |
+| `--model-call-id ID` | 只查询该模型 attempt 的调用、失败分类和用量关联事件 |
+| `--audit-limit N` | 限制关联 Audit 事件数量，范围为 `1..1000`，默认 `100` |
+
+`--tool-call-id`、`--approval-id` 和 `--model-call-id` 互斥，一次只能选择一个目标。过滤只影响
+Audit 关联事件；Run、Step、当前 Invocation、审批和 Completion 的 Snapshot 摘要仍可用于判读，
+`data.recoveries` 则只反映当前可见的 `RECOVERY_RECORDED` 事件。
+
+阅读视图应重点核对：
+
+- 根节点显示 Run 状态、`acceptance`、`stop`、预算用量、最新 Checkpoint 和审批汇总；
+- `Turn n/m [STATUS]` 应覆盖预期的 Agent 决策轮次，标题中的摘要是该轮已持久化的 Step 摘要；
+- `current` 行表示 Snapshot 的当前事实，例如工具最终状态、审批有效期、模型 usage 和成本；
+- `response ... TOOL_PREPARED` 表示模型提出候选工具调用，不代表 Gate 已允许或工具已执行；
+- 同一 Turn 下应按稳定 sequence 看到 `gate`、`approval`、`tool`、`checkpoint`、`budget` 等子行；
+- `Completion` 应展示程序化验收项；`Audit chain` 行应显示 `valid=yes`、事件总数和 head sequence；
+- 出现 `truncated=yes` 时，应以 `current` 行判断当前状态，不能把不可见的历史子操作推断为未发生。
+
+示例只保留关键行，实际 ID 和事件数量会不同：
+
+```text
+Run run_...  WAITING_APPROVAL
+├─ acceptance NOT_EVALUATED  stop=-
+├─ last checkpoint checkpoint_...
+├─ approvals 1  PENDING:1
+├─ Turns
+│  └─ Turn 2/2  [COMPLETED]  Agent tool call: write_file
+│     current tool write_file PREPARED call=write-1 risk=WRITE approval=approval_...
+│     current approval approval_... PENDING tool=write_file call=write-1 roles=operator
+│     response #20 TOOL_PREPARED PENDING actor=agent tool=write_file call=write-1
+│     approval #21 APPROVAL_REQUESTED PENDING ... roles=operator ttl=86400
+│     gate #23 GATE_DECISION PENDING ... rule=GATE_APPROVAL_V1 code=APPROVAL_REQUIRED
+└─ Audit chain valid=yes  events=28  shown=28  truncated=no  head=#28
+```
+
+### 5.2 用 JSON 核对稳定字段
+
+需要脚本断言或完整字段检查时使用 `--json`，不要从 Turn 树提取机器字段：
+
+```bash
 inspect_exit=0
 guarded-harness --config "$CONFIG" \
   inspect "$RUN_ID" --audit-limit 1000 --json \
@@ -320,6 +392,11 @@ printf 'exit=%s\n' "$inspect_exit"
 - `data.recoveries`：只包含可见 `RECOVERY_RECORDED` 审计事实；
 - `data.invocations`：工具开始/结束、审批、结果摘要和 Evidence ID；
 - `data.completion`：程序化验收项和最终结论。
+
+JSON 和 Turn 树来自同一只读 inspection projection。若两者状态不一致，应停止人工验收并检查
+查询版本、Audit 链和状态库，不要手工修改 SQLite 或只保留其中一个视图。
+
+### 5.3 读取 Checkpoint、Recovery 和完整 Audit
 
 读取整个 Run 的 Audit、Checkpoint 和恢复记录：
 
@@ -370,15 +447,33 @@ PY
 - Audit 链无效、Checkpoint 哈希/关联损坏或恢复记录与实际 App/Invocation 不一致时，保持阻塞，
   不手工改库，也不把部分产物判为成功。
 
-查看单个审批或工具调用的关联审计：
+### 5.4 过滤单个审批、工具或模型调用
 
 ```bash
+APPROVAL_ID='<从 inspect JSON data.approvals 或 approvals list 复制>'
 guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
-  --approval-id "$APPROVAL1_ID" --audit-limit 1000 --json
+  --approval-id "$APPROVAL_ID" --audit-limit 1000 --pretty
 ```
 
-先从上一步的 `invocations` 选择一个 `tool_call_id`，再执行同样的 `inspect --tool-call-id ...`。
-这样可以确认门禁决定、审批生命周期、工具执行、错误码和 Evidence 的稳定顺序。
+先从上一步的 `data.invocations` 选择一个 `tool_call_id`，再检查工具关联事实：
+
+```bash
+TOOL_CALL_ID='<从 inspect JSON data.invocations 复制>'
+guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
+  --tool-call-id "$TOOL_CALL_ID" --audit-limit 1000 --pretty
+```
+
+需要检查真实模型 attempt、失败分类或 usage 时，从 `data.model_calls` 选择
+`model_call_id`：
+
+```bash
+MODEL_CALL_ID='<从 inspect JSON data.model_calls 复制>'
+guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
+  --model-call-id "$MODEL_CALL_ID" --audit-limit 1000 --pretty
+```
+
+三个过滤参数不能组合使用。默认输出适合依次查看审批生命周期、Gate 决定、工具执行、错误码和
+Evidence；需要落盘或脚本断言时，将对应命令中的 `--pretty` 换成 `--json`，不要同时传入两者。
 
 ## 6. 已确认运行口径
 

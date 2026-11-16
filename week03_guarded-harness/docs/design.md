@@ -1147,6 +1147,9 @@ Harness 在 Agent 启动前持久化完整启动 `WorkspaceBaseline`，并创建
   `RunCreatedEvent`；CLI 在 stderr 立即显示 `run_id`/`trace_id`，观察器不参与安全门禁。
 - `--wait-for-approval` 在 CLI 层对每条审批去重输出绑定摘要；默认文本模式从持久化
   `candidate_final_answer` 独立展示纯文本，`--json` stdout 仍保持单一 envelope。
+- `inspect` 默认及 `--pretty` 文本模式按 `Step` 渲染 Turn 层级：每轮一行，模型调用、
+  候选工具调用、审批、Gate、Checkpoint 和运行级事实各占一条缩进子行；`--json` 保留稳定
+  envelope。该视图只格式化既有的脱敏、有界检查投影，不成为新的执行或验收入口。
 
 `run/resume` 的模型通过可信 `model_factory` 注入。P0 不提供真实 Provider；标准入口在没有受控模型
 来源时返回 `CLI_MODEL_UNAVAILABLE`，测试通过注入 `smolagents.Model` 实现离线验收。CLI 不允许

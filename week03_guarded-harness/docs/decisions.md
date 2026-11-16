@@ -7,14 +7,14 @@
 | 文档状态 | P0 与 WP-13 P1 决策均已确认 |
 | 对应需求 | [requirements.md](requirements.md) |
 | 对应设计 | [design.md](design.md) |
-| 决策范围 | D-01 至 D-111 已确认 |
+| 决策范围 | D-01 至 D-112 已确认 |
 
 本文记录项目设计决策。D-01 至 D-86 是 P0 已确认基线；D-87 至 D-100 是 2026-11-09 至
 2026-11-10 基于真实模型接入评估确认的 WP-13 P1 决策；D-101 至 D-104 是 version 2 demo 的
 CLI 指令、Node 测试适配、基线上下文与 Provider 工具选择兼容扩展；D-105 至 D-107 是真实
 模型失败分类、租约心跳和脱敏参数恢复缺陷加固；D-108 至 D-110 是代码理解格式、恢复重读和
-完成交接提示；D-111 是 CLI 运行可观测性和输出通道。D-07、D-78 继续约束 P0 和 version 1 配置，
-不阻止 version 2 的受控 P1 Provider 扩展。
+完成交接提示；D-111 是 CLI 运行可观测性和输出通道；D-112 是 `inspect` 的 Turn 层级视图。
+D-07、D-78 继续约束 P0 和 version 1 配置，不阻止 version 2 的受控 P1 Provider 扩展。
 
 ## 2. 已确认决策
 
@@ -131,3 +131,4 @@ CLI 指令、Node 测试适配、基线上下文与 Provider 工具选择兼容�
 | D-109 | Resume 只读重读配额与 Evidence 范围提示 | continuation context 的每条有效 Evidence 必须渲染其 `path:line_start-line_end`，不能只显示路径和内容摘要。新 Agent 由 `RESUME` 创建时，Gate 对每个不同的幂等只读签名最多额外允许一次执行，以恢复因旧模型 memory 不持久化而丢失的源码 observation；该配额不适用于写/执行或非幂等工具，不能绕过 schema、权限、路径、预算或工作区检查，并写入 `GATE_RESUME_READ_REPLAY_V1` 审计。单次 START 仍保持默认只读执行上限，第三个等价读取继续拒绝。首版不持久化源码 observation 摘要：缓存源码会扩大敏感数据落盘面并引入版本、迁移和保留策略；当前文件重读使用 Sandbox 的当前字节并由现有 Evidence 机制重新绑定版本，成本和风险更低。 |
 | D-110 | Resume 完成与验收交接提示 | 每次 `RESUME` 重建 Agent 时，任务提示必须在结构化 continuation context 后明确：不得重放已成功副作用；交付物已成功写入且符合受信验收契约时，不得仅为润色或重排而再次调用 `write_file`，只有发现具体缺失或验收失败才允许重写；必要写入和检查完成后应立即调用 `final_answer` 结束 Agent 循环。`final_answer` 只结束模型执行，随后由 Harness 将 Run 转入 `VERIFYING`、独立执行最终验收并记录 `acceptance_status`，模型不得在 Agent 循环内自行完成或等待程序验收。该提示只减少无效重写，不改变审批绑定、Gate replay suppression 或程序验收事实。 |
 | D-111 | CLI 运行可观测性与输出通道 | Harness 可通过可选只读 `RunEventSink` 在 Run 持久化并进入 `RUNNING` 后、首次模型调用前发出仅含 `run_id`/`trace_id` 的 `RunCreatedEvent`；观察器故障不得改变治理、执行或验收。CLI 的人类进度写入 stderr，`--json` stdout 继续为单一 envelope。`--wait-for-approval` 对每条审批按 ID 去重展示 Run、审批、工具、调用、状态、有效期和角色摘要，不展示原始参数。文本模式从已脱敏、限长的持久化 `candidate_final_answer` 独立输出纯文本，清理 ANSI 和控制字符；模型候选答案仍不构成验收证据。 |
+| D-112 | Inspect Turn 层级视图 | `inspect` 默认文本输出按持久化 `Step` 组织为 Turn：每轮标题单独一行，该轮的模型调用、候选工具调用、审批、Gate/Checkpoint 等事实各占一条缩进子行；关联 Audit 事件保持 sequence 顺序，未关联到 Step 的运行级事件单列。`--pretty` 显式选择同一视图，`--json` 保留稳定 envelope。视图只消费脱敏、有界 inspection projection，不展示原始工具参数、完整文件内容或隐藏推理；Audit 截断和当前审批/Snapshot 事实必须显式可辨。 |

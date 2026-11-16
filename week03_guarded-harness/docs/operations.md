@@ -81,7 +81,8 @@ guarded-harness --config PATH approvals approve APPROVAL_ID \
 guarded-harness --config PATH approvals reject APPROVAL_ID \
   --actor ACTOR --role ROLE [--json]
 guarded-harness --config PATH inspect RUN_ID \
-  [--tool-call-id TOOL_CALL_ID] [--approval-id APPROVAL_ID] [--json]
+  [--tool-call-id TOOL_CALL_ID] [--approval-id APPROVAL_ID] \
+  [--json | --pretty]
 ```
 
 `--instruction` 只允许用于 `run`，要求非空白且最长 4000 字符。它不能改变工具权限、路径、
@@ -125,6 +126,31 @@ final_answer (model candidate; not acceptance evidence):
 
 使用 `--json` 时，stdout 仍严格只有一个 JSON envelope；上述运行进度写入 stderr，机器可读
 `data.candidate_final_answer` 保持兼容。需要阅读最终回答时优先使用默认文本模式。
+
+### 4.2 Inspect 阅读视图
+
+`inspect` 默认输出按 Turn 组织的树状事实视图，`--pretty` 可显式选择同一格式；需要稳定
+机器输出时继续使用 `--json`。每轮标题占一行，该轮的模型调用、候选工具调用、审批、
+Gate/Checkpoint 和运行级 Audit 事实各占一条缩进子行：
+
+```text
+Run run_...  WAITING_APPROVAL
+├─ task understand_app (code_understanding)
+├─ approvals 1  PENDING:1
+├─ Turns
+│  └─ Turn 2/2  [COMPLETED]  Agent tool call: write_file
+│     current tool write_file PREPARED call=write-1 risk=WRITE approval=approval_...
+│     current approval approval_... PENDING tool=write_file call=write-1 roles=operator
+│     response #20 TOOL_PREPARED PENDING actor=agent tool=write_file call=write-1
+│     approval #21 APPROVAL_REQUESTED PENDING ... roles=operator ttl=86400
+│     gate #23 GATE_DECISION PENDING ... rule=GATE_APPROVAL_V1 code=APPROVAL_REQUIRED
+└─ Audit chain valid=yes  events=28  shown=28  truncated=no  head=#28
+```
+
+关联到 Step 的 Audit 事件按 sequence 排序；无法安全关联的运行级事件单列在
+`Run operations`。视图不展示原始工具参数值或完整内容，只展示参数名、摘要和事实 ID。
+出现 `truncated=yes` 时，应结合 Snapshot 的 `current` 行判断当前状态，不能把缺失的
+历史子操作解释为未发生。
 
 ## 5. 审批流程
 

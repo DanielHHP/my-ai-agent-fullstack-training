@@ -38,7 +38,7 @@
 | Gate | `tests/test_gate.py` | 固定检查链、审批、脱敏可恢复性、重复、预算、零 handler 拒绝 |
 | Completion | `tests/test_completion.py` | 代码理解/测试修复程序化验收和旧证据失效 |
 | Agent/Harness | `tests/test_harness_loop.py` | Fake Model、原生 `ToolCallingAgent`、observation 纠正、恢复收口、预算和终态 |
-| CLI | `tests/test_cli.py` | run/resume/approval/inspect、`--instruction`、运行进度、审批提示、纯文本最终回答、跨进程和退出码 |
+| CLI | `tests/test_cli.py` | run/resume/approval/inspect、Turn 层级阅读视图、`--instruction`、运行进度、审批提示、纯文本最终回答、跨进程和退出码 |
 | WP-12 故障矩阵 | `tests/test_fault_recovery.py` | 硬进程退出、DB 锁、Checkpoint 损坏、租约和正式样例 |
 | P1 模型配置/运行时 | `tests/test_model_config.py`、`tests/test_model_runtime.py` | version 2 配置、凭据、Provider、响应、usage、超时和重试 |
 | P1 模型调用生命周期 | `tests/test_model_calls.py` | STARTED/结果、预算 reservation、Audit、崩溃和 unknown |
@@ -227,6 +227,7 @@ python -m pytest tests/test_cli.py tests/test_harness_loop.py -q
 | STARTED 后崩溃 | 子进程硬退出 | 恢复为 `MODEL_CALL_UNKNOWN` 且不重发 |
 | 模型配置漂移 | resume with changed profile | `HARNESS_CONFIG_RELOAD_FAILED`/明显配置错误 |
 | 只读命令零网络 | CLI inspect/approvals | Provider 创建和网络调用均为 0 |
+| Inspect 层级输出 | CLI default/`--pretty` | 每 Step 一个 Turn 标题；子操作独立缩进；Audit 保持顺序；省略原始参数值；`--json` envelope 不变 |
 | live smoke | explicit marker + fixed model snapshot | 真实只读任务产生模型调用、工具调用和 Completion 结果 |
 
 WP-13 测试必须使用 fake client/transport 覆盖正常和故障路径；真实服务调用只允许出现在
