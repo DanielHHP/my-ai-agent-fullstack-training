@@ -301,6 +301,7 @@ Node 测试并检查 7 个基线节点、原失败修复、新增节点状态、
 CONFIG=config/1_login_demo.yaml
 RUN_ID="$RUN1_ID"
 STATE_DB=.guarded-harness/1_login_demo/harness.sqlite3
+AUDIT_LIMIT=50
 ```
 
 ### 5.1 用 Turn 树检查运行事实
@@ -312,7 +313,7 @@ STATE_DB=.guarded-harness/1_login_demo/harness.sqlite3
 ```bash
 inspect_exit=0
 guarded-harness --config "$CONFIG" \
-  inspect "$RUN_ID" --audit-limit 1000 \
+  inspect "$RUN_ID" --audit-limit "$AUDIT_LIMIT" \
   >/tmp/governed-inspect.txt \
   || inspect_exit=$?
 cat /tmp/governed-inspect.txt
@@ -323,7 +324,7 @@ printf 'exit=%s\n' "$inspect_exit"
 
 ```bash
 guarded-harness --config "$CONFIG" \
-  inspect "$RUN_ID" --audit-limit 1000 --pretty
+  inspect "$RUN_ID" --audit-limit "$AUDIT_LIMIT" --pretty
 ```
 
 `inspect` 参数口径：
@@ -336,11 +337,15 @@ guarded-harness --config "$CONFIG" \
 | `--tool-call-id ID` | 只查询该工具调用的 Gate、审批、执行和 Evidence 关联事件 |
 | `--approval-id ID` | 只查询该审批的生命周期和绑定关联事件 |
 | `--model-call-id ID` | 只查询该模型 attempt 的调用、失败分类和用量关联事件 |
-| `--audit-limit N` | 限制关联 Audit 事件数量，范围为 `1..1000`，默认 `100` |
+| `--audit-limit N` | 限制关联 Audit 事件数量，范围为 `1..1000`，默认 `100`；这是条数上限，不是输出字节上限 |
 
 `--tool-call-id`、`--approval-id` 和 `--model-call-id` 互斥，一次只能选择一个目标。过滤只影响
 Audit 关联事件；Run、Step、当前 Invocation、审批和 Completion 的 Snapshot 摘要仍可用于判读，
 `data.recoveries` 则只反映当前可见的 `RECOVERY_RECORDED` 事件。
+
+长 Run 建议从 `AUDIT_LIMIT=50` 开始。`inspect` 会把整个 Run Snapshot 和当前 Audit 窗口一起
+交给 Redactor，完整投影的默认上限是 64 KiB；事件较多或单个事件摘要较大时，90、100 或 1000
+条都可能超过该预算。
 
 阅读视图应重点核对：
 
@@ -349,8 +354,12 @@ Audit 关联事件；Run、Step、当前 Invocation、审批和 Completion 的 S
 - `current` 行表示 Snapshot 的当前事实，例如工具最终状态、审批有效期、模型 usage 和成本；
 - `response ... TOOL_PREPARED` 表示模型提出候选工具调用，不代表 Gate 已允许或工具已执行；
 - 同一 Turn 下应按稳定 sequence 看到 `gate`、`approval`、`tool`、`checkpoint`、`budget` 等子行；
-- `Completion` 应展示程序化验收项；`Audit chain` 行应显示 `valid=yes`、事件总数和 head sequence；
-- 出现 `truncated=yes` 时，应以 `current` 行判断当前状态，不能把不可见的历史子操作推断为未发生。
+- `Completion` 应展示程序化验收项；`Audit chain` 行应显示 `valid=yes`、事件总数、当前展示数和
+  head sequence；
+- `events` 大于 `shown` 时，Audit 历史只展示了一个窗口；应以 `current` 行判断当前状态，不能把
+  不可见的历史子操作推断为未发生；
+- 当前无筛选查询的 `truncated` 只表示查询额外取到了第 `N+1` 条事件，不保证能覆盖
+  `shown < event_count` 的情况；长 Run 必须先按 `events/shown` 判读。
 
 示例只保留关键行，实际 ID 和事件数量会不同：
 
@@ -376,7 +385,7 @@ Run run_...  WAITING_APPROVAL
 ```bash
 inspect_exit=0
 guarded-harness --config "$CONFIG" \
-  inspect "$RUN_ID" --audit-limit 1000 --json \
+  inspect "$RUN_ID" --audit-limit "$AUDIT_LIMIT" --json \
   >/tmp/governed-inspect.json \
   || inspect_exit=$?
 cat /tmp/governed-inspect.json
@@ -392,6 +401,12 @@ printf 'exit=%s\n' "$inspect_exit"
 - `data.recoveries`：只包含可见 `RECOVERY_RECORDED` 审计事实；
 - `data.invocations`：工具开始/结束、审批、结果摘要和 Evidence ID；
 - `data.completion`：程序化验收项和最终结论。
+
+正常 JSON 投影应包含 `data.run`、`data.steps` 和 `data.audit`。若 `data` 只有 `value`、
+`redaction_truncated` 和 `redaction_count`，说明完整投影超过 64 KiB 后被折叠为字符串预览；
+该结果不是可解析的检查视图。此时不要继续用 `jq` 提取字段，应先把 `AUDIT_LIMIT` 降到 `50`，
+再逐步尝试 `60`、`70`、`80`。完整历史必须使用下一节的只读 SQLite 查询，不能继续提高
+`--audit-limit` 来绕过字节预算。
 
 JSON 和 Turn 树来自同一只读 inspection projection。若两者状态不一致，应停止人工验收并检查
 查询版本、Audit 链和状态库，不要手工修改 SQLite 或只保留其中一个视图。
@@ -452,7 +467,7 @@ PY
 ```bash
 APPROVAL_ID='<从 inspect JSON data.approvals 或 approvals list 复制>'
 guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
-  --approval-id "$APPROVAL_ID" --audit-limit 1000 --pretty
+  --approval-id "$APPROVAL_ID" --audit-limit "$AUDIT_LIMIT" --pretty
 ```
 
 先从上一步的 `data.invocations` 选择一个 `tool_call_id`，再检查工具关联事实：
@@ -460,7 +475,7 @@ guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
 ```bash
 TOOL_CALL_ID='<从 inspect JSON data.invocations 复制>'
 guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
-  --tool-call-id "$TOOL_CALL_ID" --audit-limit 1000 --pretty
+  --tool-call-id "$TOOL_CALL_ID" --audit-limit "$AUDIT_LIMIT" --pretty
 ```
 
 需要检查真实模型 attempt、失败分类或 usage 时，从 `data.model_calls` 选择
@@ -469,7 +484,7 @@ guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
 ```bash
 MODEL_CALL_ID='<从 inspect JSON data.model_calls 复制>'
 guarded-harness --config "$CONFIG" inspect "$RUN_ID" \
-  --model-call-id "$MODEL_CALL_ID" --audit-limit 1000 --pretty
+  --model-call-id "$MODEL_CALL_ID" --audit-limit "$AUDIT_LIMIT" --pretty
 ```
 
 三个过滤参数不能组合使用。默认输出适合依次查看审批生命周期、Gate 决定、工具执行、错误码和
