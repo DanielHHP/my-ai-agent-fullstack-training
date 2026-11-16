@@ -237,6 +237,7 @@ WP-06 不改变已冻结的 `register_readonly_tools` 公共行为。Harness 可
 
 - 只修改一个已有普通 UTF-8 文件，不使用整文件覆盖创建新文件；
 - 按 `edits` 数组顺序应用；每段 `oldText` 必须在前一段应用后的文本中恰好出现一次；
+- `oldText` 必须非空；`oldText` 与 `newText` 均可包含换行、制表符等布局空白，只禁止 NUL；
 - 任一 `oldText` 出现 0 次、出现多次、空数组、全空操作或输入超限时整批失败；
 - 所有编辑先在内存中计算完成，随后对原文件摘要执行一次 `Sandbox.write_file_atomic(REPLACE)`；
 - 任一段失败不得写入目标文件，不得留下临时文件或部分修改；

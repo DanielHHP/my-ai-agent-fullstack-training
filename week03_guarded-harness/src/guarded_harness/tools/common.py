@@ -83,12 +83,23 @@ def file_content_schema(*, max_length: int = MAX_WRITE_CHARS) -> dict[str, JsonV
     }
 
 
+def patch_text_schema(*, max_length: int = MAX_PATCH_EDIT_CHARS) -> dict[str, JsonValue]:
+    """Return a bounded, non-empty patch text schema that permits line breaks."""
+
+    return {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": max_length,
+        "pattern": r"^[^\u0000]*$",
+    }
+
+
 def patch_edit_schema() -> dict[str, JsonValue]:
     """Return the strict schema for one exact text replacement."""
 
     return object_schema(
         {
-            "oldText": text_schema(max_length=MAX_PATCH_EDIT_CHARS),
+            "oldText": patch_text_schema(max_length=MAX_PATCH_EDIT_CHARS),
             "newText": file_content_schema(max_length=MAX_PATCH_EDIT_CHARS),
         },
         ("oldText", "newText"),

@@ -1243,6 +1243,47 @@ def test_patch_context_missing_and_ambiguous(tmp_path: Path) -> None:
     assert original != target.read_bytes()
 
 
+def test_patch_accepts_multiline_old_text_and_keeps_old_text_non_empty(
+    tmp_path: Path,
+) -> None:
+    fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
+    target = fixture.workspace / "src" / "app.py"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+    empty = fixture.invoke(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "", "newText": "replacement"}],
+        },
+    )
+    assert empty.status == gh.ObservationStatus.DENIED
+    assert empty.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+    assert empty.phase == gh.GatePhase.SCHEMA
+
+    nul = fixture.invoke(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "alpha\x00", "newText": "replacement"}],
+        },
+    )
+    assert nul.status == gh.ObservationStatus.DENIED
+    assert nul.code == gh.ErrorCode.GATE_INVALID_ARGUMENT.value
+    assert nul.phase == gh.GatePhase.SCHEMA
+
+    result = fixture.invoke_approved(
+        "apply_patch",
+        {
+            "path": "src/app.py",
+            "edits": [{"oldText": "alpha\nbeta\n", "newText": "ALPHA\nBETA\n"}],
+        },
+    )
+    assert result.status == gh.ObservationStatus.ALLOWED
+    assert result.output["edits_applied"] == 1
+    assert target.read_text(encoding="utf-8") == "ALPHA\nBETA\ngamma\n"
+
+
 def test_patch_later_failure_does_not_commit_earlier_edits(tmp_path: Path) -> None:
     fixture = _side_effect_fixture(tmp_path, task_kind=gh.TaskKind.TEST_REPAIR)
     target = fixture.workspace / "src" / "app.py"
