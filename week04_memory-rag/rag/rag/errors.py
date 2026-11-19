@@ -11,3 +11,7 @@ class ConfigurationError(RagError):
 
 class IndexError(RagError):
     """Missing, incompatible, or corrupt persisted index."""
+
+
+class LLMError(RagError):
+    """DashScope text generation failed or returned an invalid response."""

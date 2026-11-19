@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rag-search-tool"
 version = "0.1.0"
-description = "CLI RAG indexing and retrieval with BM25, DashScope vectors, and hybrid search"
+description = "CLI RAG indexing, hybrid retrieval, and grounded DashScope answers"
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
 dependencies = [

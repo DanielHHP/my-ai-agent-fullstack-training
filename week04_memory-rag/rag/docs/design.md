@@ -5,7 +5,8 @@
 ```text
 CLI
  ├── build -> loader -> chunker -> vector index + BM25 index -> store
- └── search -> BM25 and/or vector retrieval -> RRF -> formatted output
+ ├── search -> BM25 and/or vector retrieval -> RRF -> formatted output
+ └── ask -> retrieval -> numbered evidence -> DashScope Generation.call -> answer
 ```
 
 `rag/` 包按职责拆分，根目录脚本只做兼容入口。安装后的主入口是
@@ -20,6 +21,8 @@ CLI
 | `chunking.py` | Markdown 标题分块、长节二次切分、元数据补全 |
 | `bm25.py` | jieba 分词、BM25 检索、节点 JSON 持久化 |
 | `embedding.py` | 创建 DashScope embedding，校验 API Key |
+| `answer.py` | 装配带编号证据、控制回答生成和失败降级 |
+| `llm.py` | 直接调用 DashScope `Generation.call` |
 | `vector_store.py` | LlamaIndex `SimpleVectorStore` 的建立和加载 |
 | `hybrid.py` | 两路召回及加权 RRF |
 | `storage.py` | manifest、schema 版本和后端完整性校验 |
@@ -81,6 +84,11 @@ score = vector_weight / (60 + vector_rank)
 - 索引缺失或 manifest 与文件不一致：提示重新建库。
 - 无检索结果：正常退出，返回空结果及外层状态。
 - JSON 模式：成功结果只写 stdout 的 JSON；可预期错误写 stderr 并以非零码退出。
+
+回答生成使用 DashScope 原生文本生成 API，模型默认 `qwen-plus`。默认模式下，
+LLM 失败不会丢弃检索结果：JSON 中 `answer=null`，同时返回 `llm_error`、
+`degraded=true` 和 `degradation_reason=llm_error`。`--strict-llm` 将同一情况
+转为非零退出码；`--no-llm` 则不发起模型请求。
 
 ## 7. 兼容性
 
