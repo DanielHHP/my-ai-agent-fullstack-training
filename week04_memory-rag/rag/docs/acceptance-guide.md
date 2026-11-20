@@ -137,7 +137,7 @@ rag build \
   --corpus "$RAG_ACCEPTANCE_DIR/corpus" \
   --store "$RAG_ACCEPTANCE_DIR/storage" \
   --chunk-size 384 \
-  --chunk-overlap 0 \
+  --chunk-overlap 10 \
   --overwrite \
   --json
 ```

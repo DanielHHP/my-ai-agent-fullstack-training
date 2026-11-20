@@ -18,6 +18,34 @@ SYSTEM_PROMPT = """你是严格的知识库 RAG 助手。
 每条事实性结论后必须使用 [编号] 标注来源；证据不足时直接回答“证据不足”。
 """
 
+MULTIMODAL_MODEL_MARKERS = (
+    "-vl",
+    "-omni",
+    "qwen3.7-plus",
+    "qwen3.8-flash",
+    "qwen3.8-max",
+)
+
+
+def _uses_multimodal_endpoint(model: str) -> bool:
+    """Return whether DashScope routes this model through multimodal-generation."""
+    normalized = model.lower()
+    return any(marker in normalized for marker in MULTIMODAL_MODEL_MARKERS)
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(part.strip() for part in parts if part.strip())
+    return ""
+
 
 def _choice_message_content(output: Any) -> str:
     if output is None:
@@ -38,9 +66,10 @@ def _choice_message_content(output: Any) -> str:
         content = message.get("content")
     else:
         content = getattr(message, "content", None)
-    if not isinstance(content, str) or not content.strip():
+    text = _content_text(content)
+    if not text:
         raise LLMError("DashScope returned an empty answer.")
-    return content.strip()
+    return text
 
 
 def generate_answer(prompt: str, model: str | None = None) -> str:
@@ -51,22 +80,37 @@ def generate_answer(prompt: str, model: str | None = None) -> str:
     if not resolved_model:
         raise LLMError("DashScope LLM model must not be empty.")
 
-    response = dashscope.Generation.call(
-        model=resolved_model,
-        messages=[
+    if _uses_multimodal_endpoint(resolved_model):
+        messages = [
+            {"role": "system", "content": [{"text": SYSTEM_PROMPT}]},
+            {"role": "user", "content": [{"text": prompt}]},
+        ]
+        response = dashscope.MultiModalConversation.call(
+            model=resolved_model,
+            messages=messages,
+            api_key=dashscope_api_key(),
+            result_format="message",
+            temperature=0,
+            max_tokens=DASHSCOPE_LLM_MAX_TOKENS,
+            stream=False,
+            request_timeout=DASHSCOPE_LLM_TIMEOUT_SECONDS,
+        )
+    else:
+        messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
-        ],
-        api_key=dashscope_api_key(),
-        result_format="message",
-        temperature=0,
-        max_tokens=DASHSCOPE_LLM_MAX_TOKENS,
-        stream=False,
-        request_timeout=DASHSCOPE_LLM_TIMEOUT_SECONDS,
-    )
+        ]
+        response = dashscope.Generation.call(
+            model=resolved_model,
+            messages=messages,
+            api_key=dashscope_api_key(),
+            result_format="message",
+            temperature=0,
+            max_tokens=DASHSCOPE_LLM_MAX_TOKENS,
+            stream=False,
+            request_timeout=DASHSCOPE_LLM_TIMEOUT_SECONDS,
+        )
     if response.status_code != HTTPStatus.OK:
         message = getattr(response, "message", "unknown error")
-        raise LLMError(
-            f"DashScope generation failed ({response.status_code}): {message}"
-        )
+        raise LLMError(f"DashScope generation failed ({response.status_code}): {message}")
     return _choice_message_content(response.output)

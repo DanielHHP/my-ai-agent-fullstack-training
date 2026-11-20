@@ -100,6 +100,45 @@ def test_generate_answer_uses_dashscope_generation_api(monkeypatch) -> None:
     assert calls[0]["messages"][1]["content"] == "测试提示词"
 
 
+def test_generate_answer_uses_multimodal_api_for_multimodal_model(monkeypatch) -> None:
+    calls = []
+
+    class Response:
+        status_code = 200
+        output = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"text": "登录会话有效期为 30 分钟。[1]"}],
+                    }
+                }
+            ]
+        }
+
+    def fake_call(**kwargs):
+        calls.append(kwargs)
+        return Response()
+
+    def fail_text_endpoint(**kwargs):
+        raise AssertionError("multimodal models must not use Generation.call")
+
+    monkeypatch.setattr(dashscope.Generation, "call", fail_text_endpoint)
+    monkeypatch.setattr(dashscope.MultiModalConversation, "call", fake_call)
+    monkeypatch.setattr("rag.llm.dashscope_api_key", lambda: "test-key")
+
+    from rag.llm import SYSTEM_PROMPT, generate_answer
+
+    answer = generate_answer("测试提示词", model="qwen3.8-flash")
+
+    assert answer == "登录会话有效期为 30 分钟。[1]"
+    assert calls[0]["model"] == "qwen3.8-flash"
+    assert calls[0]["api_key"] == "test-key"
+    assert calls[0]["result_format"] == "message"
+    assert calls[0]["messages"][0]["content"] == [{"text": SYSTEM_PROMPT}]
+    assert calls[0]["messages"][1]["content"] == [{"text": "测试提示词"}]
+
+
 def test_generate_answer_rejects_empty_model(monkeypatch) -> None:
     from rag.llm import generate_answer
 

@@ -85,10 +85,12 @@ score = vector_weight / (60 + vector_rank)
 - 无检索结果：正常退出，返回空结果及外层状态。
 - JSON 模式：成功结果只写 stdout 的 JSON；可预期错误写 stderr 并以非零码退出。
 
-回答生成使用 DashScope 原生文本生成 API，模型默认 `qwen-plus`。默认模式下，
-LLM 失败不会丢弃检索结果：JSON 中 `answer=null`，同时返回 `llm_error`、
-`degraded=true` 和 `degradation_reason=llm_error`。`--strict-llm` 将同一情况
-转为非零退出码；`--no-llm` 则不发起模型请求。
+回答生成使用 DashScope 原生 API，模型默认 `qwen-plus`。纯文本模型走
+`Generation.call()`；`qwen3.8-flash`、`*-vl`、`*-omni` 等多模态模型走
+`MultiModalConversation.call()`。默认模式下，LLM 失败不会丢弃检索结果：
+JSON 中 `answer=null`，同时返回 `llm_error`、`degraded=true` 和
+`degradation_reason=llm_error`。`--strict-llm` 将同一情况转为非零退出码；
+`--no-llm` 则不发起模型请求。
 
 ## 7. 兼容性
 
